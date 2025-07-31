@@ -7,7 +7,7 @@ import pandas as pd
 import akshare as ak
 from tqdm import tqdm
 from datetime import datetime
-from sqlalchemy import create_engine
+# from sqlalchemy import create_engine
 
 # ========== 配置路径 ==========
 BASE_DIR = "data"
@@ -33,11 +33,17 @@ def save_data(df, path_prefix, table_name):
 
 # ========== 获取最新的交易日（不晚于今天） ==========
 def get_latest_trade_date():
-    today = datetime.today().strftime("%Y%m%d")
+    """
+    获取最新的交易日（不晚于今天）
+    """
+    from datetime import datetime
+
+    today = datetime.today().date()  # 👈 转成 datetime.date 类型
     trade_dates = ak.tool_trade_date_hist_sina()
+    trade_dates["trade_date"] = pd.to_datetime(trade_dates["trade_date"]).dt.date  # 👈 确保列为 date 类型
     trade_dates = trade_dates[trade_dates["trade_date"] <= today]
     latest_date = trade_dates["trade_date"].max()
-    return latest_date
+    return latest_date.strftime("%Y%m%d")  # 👈 最终返回字符串格式如 '20250729'
 
 # ========== 股票列表 ==========
 def get_stock_list(refresh=False):
