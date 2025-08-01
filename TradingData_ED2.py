@@ -17,6 +17,8 @@ META_DIR = os.path.join(BASE_DIR, "metadata")
 
 for d in [BASE_DIR, HIST_DIR, FIN_DIR, META_DIR]:
     os.makedirs(d, exist_ok=True)
+
+empty_finance_codes = []
 # ========== 保存函数：CSV + Parquet + MySQL ==========
 def save_data(df, path_prefix, table_name):
     # 保存 CSV
@@ -175,15 +177,11 @@ def get_finance_data(code):
     try:
         df = fetch_finance_with_retry(symbol=code)
         if df.empty:
-            print("df is empty")
+            empty_finance_codes.append(code)  # ✅ 记录为空的代码
             return
         save_data(df, path_prefix, table_name)
     except Exception as e:
         print(f"[失败] 财务数据获取失败：{code} → {e}")
-    # df = fetch_finance_with_retry(symbol=code)
-    # if df.empty:
-    #     return
-    # save_data(df, path_prefix, table_name)
 
 # ========== 概念板块 ==========
 def get_stock_concept():
@@ -235,3 +233,6 @@ def init_all_data():
 # ========== 启动入口 ==========
 if __name__ == '__main__':
     init_all_data()
+    if empty_finance_codes:
+        print(f"[警告] {len(empty_finance_codes)} 个股票财务数据为空，写入 empty_finance.csv")
+        pd.DataFrame({"代码": empty_finance_codes}).to_csv("empty_finance.csv", index=False)
