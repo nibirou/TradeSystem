@@ -22,6 +22,15 @@ for d in [BASE_DIR, HIST_DIR, FIN_DIR, META_DIR]:
 # DB_URI = "mysql+pymysql://zongcaicv:zongcaicv-mysql@10.223.48.244:8660/stock_data?charset=utf8mb4"
 # engine = create_engine(DB_URI)
 
+# 判断下载的CSV是否存在且有效（非空）
+def is_valid_csv(path):
+    if not os.path.exists(path):
+        return False
+    try:
+        df = pd.read_csv(path)
+        return not df.empty
+    except:
+        return False
 # ========== 保存函数：CSV + Parquet + MySQL ==========
 def save_data(df, path_prefix, table_name):
     # 保存 CSV
@@ -41,7 +50,7 @@ def get_latest_trade_date():
     today = datetime.today().date()  # 👈 转成 datetime.date 类型
     trade_dates = ak.tool_trade_date_hist_sina()
     trade_dates["trade_date"] = pd.to_datetime(trade_dates["trade_date"]).dt.date  # 👈 确保列为 date 类型
-    trade_dates = trade_dates[trade_dates["trade_date"] <= today]
+    trade_dates = trade_dates[trade_dates["trade_date"] < today]
     latest_date = trade_dates["trade_date"].max()
     return latest_date.strftime("%Y%m%d")  # 👈 最终返回字符串格式如 '20250729'
 
@@ -53,39 +62,49 @@ def get_stock_list(refresh=False):
     if os.path.exists(f"{path_prefix}.csv") and not refresh:
         return pd.read_csv(f"{path_prefix}.csv", dtype=str)
 
-    # 获取全A股代码（代码 + 名称）
-    code_df = ak.stock_info_a_code_name()
-    code_df["代码"] = code_df["code"].apply(lambda x: x[:6])  # 去掉后缀如 ".SH"
-    code_df = code_df[~code_df["代码"].str.startswith(("300", "688"))]
+    # 1. 初步筛选：实时行情数据（静态信息用）
+    df = ak.stock_zh_a_spot_em()
+    print(f"[初筛] 股票数量: {len(df)}")
 
-    print(f"共获取A股代码数：{len(code_df)}")
+    # 字段转换
+    df["总市值"] = pd.to_numeric(df["总市值"], errors="coerce")
 
-    # 设置前一交易日（你也可以使用交易日历获取最近可用交易日）
+    # 初筛条件：非ST + 总市值 > 200亿 + 排除300/688
+    df = df[~df["名称"].str.contains("ST", na=False)]
+    df = df[df["总市值"] > 200e8]
+    df["代码"] = df["代码"].apply(lambda x: x[:6])
+    df = df[~df["代码"].str.startswith(("300", "688"))]
+
+    print(f"[初筛] 股票数量: {len(df)}")
+
+    # 2. 获取前一交易日（自动识别）
     end_date = get_latest_trade_date()
+    print(f"[使用交易日] {end_date}")
 
+    # 3. 精筛成交量 > 0（逐个获取历史行情）
     filtered = []
-    for _, row in tqdm(code_df.iterrows(), total=len(code_df)):
+    for _, row in tqdm(df.iterrows(), total=len(df)):
         code = row["代码"]
-        name = row["name"]
         try:
             hist = ak.stock_zh_a_hist(symbol=code, start_date=end_date, end_date=end_date, adjust="qfq")
             if hist.empty:
                 continue
-            # 筛选条件
-            if "ST" in name:
-                continue
-            volume = pd.to_numeric(hist.at[0, "成交量"], errors="coerce")
-            value = pd.to_numeric(hist.at[0, "流通市值"], errors="coerce")
 
-            if pd.notna(volume) and pd.notna(value):
-                if volume > 0 and value > 200e8:
-                    filtered.append({"代码": code, "名称": name, "成交量": volume, "流通市值": value})
+            volume = pd.to_numeric(hist.at[0, "成交量"], errors="coerce")
+            if volume > 0:
+                filtered.append({
+                    "代码": code,
+                    "名称": row["名称"],
+                    "总市值": row["总市值"],
+                    "成交量": volume
+                })
         except:
             continue
 
-    df = pd.DataFrame(filtered)
-    save_data(df, path_prefix, table_name)
-    return df
+    df_final = pd.DataFrame(filtered)
+    save_data(df_final, path_prefix, table_name)
+    print(f"[最终筛选] 股票数量: {len(df_final)}")
+    return df_final
 
 # ========== 历史行情 ==========
 def get_stock_hist(code, start_date="20100101", end_date = "20250730", adjust="qfq", freq="D"):
@@ -155,19 +174,38 @@ def get_stock_hist(code, start_date="20100101", end_date = "20250730", adjust="q
     return df
 
 # ========== 财务指标 ==========
+# def get_finance_data(code):
+#     path_prefix = os.path.join(FIN_DIR, code)
+#     table_name = f"stock_finance_{code}"
+
+#     if os.path.exists(f"{path_prefix}.csv"):
+#         return pd.read_csv(f"{path_prefix}.csv")
+
+#     try:
+#         df = ak.stock_financial_analysis_indicator(symbol=code, start_year="2010")
+#         save_data(df, path_prefix, table_name)
+#         return df
+#     except:
+#         return pd.DataFrame()
 def get_finance_data(code):
     path_prefix = os.path.join(FIN_DIR, code)
     table_name = f"stock_finance_{code}"
+    csv_path = f"{path_prefix}.csv"
 
-    if os.path.exists(f"{path_prefix}.csv"):
-        return pd.read_csv(f"{path_prefix}.csv")
+    if is_valid_csv(csv_path):
+        return
 
-    try:
-        df = ak.stock_financial_analysis_indicator(symbol=code)
-        save_data(df, path_prefix, table_name)
-        return df
-    except:
-        return pd.DataFrame()
+    # try:
+    #     df = fetch_finance_with_retry(symbol=code)
+    #     if df.empty:
+    #         return
+    #     save_data(df, path_prefix, table_name)
+    # except Exception as e:
+    #     print(f"[失败] 财务数据获取失败：{code} → {e}")
+    df = ak.stock_financial_analysis_indicator(symbol=code, start_year="2010")
+    if df.empty:
+        return
+    save_data(df, path_prefix, table_name)
 
 # ========== 概念板块 ==========
 def get_stock_concept():
@@ -196,9 +234,9 @@ def get_stock_concept():
 def init_all_data():
     stocks = get_stock_list()
     for code in tqdm(stocks["代码"].tolist()):
-        get_stock_hist(code)
+        # get_stock_hist(code)
         get_finance_data(code)
-    get_stock_concept()
+    # get_stock_concept()
 
 # ========== 启动入口 ==========
 if __name__ == '__main__':
