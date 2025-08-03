@@ -102,8 +102,6 @@ def get_stock_list(refresh=False):
     print(f"[最终筛选] 股票数量: {len(df_final)}")
     return df_final
 
-
-
 @retry(stop=stop_after_attempt(3), wait=wait_random(min=1, max=3))
 def fetch_hist_with_retry(symbol, start_date, end_date, adjust):
     time.sleep(random.uniform(0.5, 1.5))  # ✅ 限速防封：每次请求前随机等待
