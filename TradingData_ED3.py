@@ -42,10 +42,43 @@ def get_stock_list():
     path_prefix = os.path.join(META_DIR, "stock_list")
     if is_valid_csv(f"{path_prefix}.csv"):
         return pd.read_csv(f"{path_prefix}.csv")
-
+    # 1. 获取全A股股票列表
     codes = xtdata.get_stock_list_in_sector("沪深A股")
-    df = pd.DataFrame({"代码": codes})
-    df = df[~df["代码"].str.startswith(("300", "688"))]  # 剔除创业/科创板
+    print(f"[获取] 原始股票数：{len(codes)}")
+    
+    # 2. 剔除创业板和科创板（300 和 688 开头）
+    codes = [c for c in codes if not c.startswith(("300", "688"))]
+    print(f"[筛选] 非创业/科创板股票数：{len(codes)}")
+    
+    # 3. 获取个股基本信息（instrument detail）
+    info_map = xtdata.get_instrument_detail(codes)
+    valid_records = []
+    for code in codes:
+        info = info_map.get(code, {})
+        name = info.get("InstrumentName", "")
+        total_vol = info.get("TotalVolume", 0)
+        price = info.get("PreClose", 0)
+        
+         # 剔除 ST 股、价格/市值异常、无效数据
+        if "ST" in name or total_vol is None or price is None:
+            continue
+        try:
+            market_cap = float(total_vol) * float(price)
+        except:
+            continue
+        
+        if market_cap < 200e8:  # 小于200亿市值剔除
+            continue
+        
+        valid_records.append({
+            "代码": code,
+            "名称": name,
+            "总股本": total_vol,
+            "前收盘": price,
+            "估算总市值": market_cap
+        })
+    df = pd.DataFrame(valid_records)
+    print(f"[最终筛选] 股票数量：{len(df)}")
     save_data(df, path_prefix)
     return df
 
