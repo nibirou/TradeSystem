@@ -18,7 +18,12 @@ META_DIR = os.path.join(BASE_DIR, "metadata")
 for d in [BASE_DIR, HIST_DIR, FIN_DIR, META_DIR]:
     os.makedirs(d, exist_ok=True)
 
+# ========== MySQL配置 ==========
+# DB_URI = "mysql+pymysql://zongcaicv:zongcaicv-mysql@10.223.48.244:8660/stock_data?charset=utf8mb4"
+# engine = create_engine(DB_URI)
+
 empty_finance_codes = []
+empty_hist_codes = []
 # ========== 保存函数：CSV + Parquet + MySQL ==========
 def save_data(df, path_prefix, table_name):
     # 保存 CSV
@@ -111,6 +116,7 @@ def fetch_hist_with_retry(symbol, start_date, end_date, adjust):
         end_date=end_date,
         adjust=adjust
     )
+    
 def get_stock_hist(code, start_date="20100101", end_date="20250730", adjust="qfq", freq="D"):
     symbol = code
     path_prefix = os.path.join(HIST_DIR, f"{symbol}_{freq}")
@@ -124,9 +130,11 @@ def get_stock_hist(code, start_date="20100101", end_date="20250730", adjust="qfq
         raw = fetch_hist_with_retry(symbol, start_date, end_date, adjust)
     except Exception as e:
         print(f"[失败] 历史行情获取失败：{symbol} → {e}")
+        empty_hist_codes.append(code)
         return
 
     if raw.empty:
+        empty_hist_codes.append(code)
         return
 
     raw["日期"] = pd.to_datetime(raw["日期"])
@@ -180,6 +188,7 @@ def get_finance_data(code):
         save_data(df, path_prefix, table_name)
     except Exception as e:
         print(f"[失败] 财务数据获取失败：{code} → {e}")
+        empty_finance_codes.append(code)
 
 # ========== 概念板块 ==========
 def get_stock_concept():
@@ -228,9 +237,16 @@ def init_all_data():
     except Exception as e:
         print(f"[跳过] 概念板块失败：{e}")
 
-# ========== 启动入口 ==========
-if __name__ == '__main__':
-    init_all_data()
+
+def save_failed_logs():
+    if empty_hist_codes:
+        pd.DataFrame({"代码": empty_hist_codes}).to_csv("failed_hist.csv", index=False)
+        print(f"[警告] {len(empty_hist_codes)} 只股票历史行情下载失败，已记录 failed_hist.csv")
     if empty_finance_codes:
         print(f"[警告] {len(empty_finance_codes)} 个股票财务数据为空，写入 empty_finance.csv")
         pd.DataFrame({"代码": empty_finance_codes}).to_csv("empty_finance.csv", index=False)
+        
+# ========== 启动入口 ==========
+if __name__ == '__main__':
+    init_all_data()
+    save_failed_logs()

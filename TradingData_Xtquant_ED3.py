@@ -11,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from xtquant import xtdata
 # from xtquant import fundamental
 
+# 免费渠道可获取的数据时间太短，近一年的1分钟 5分钟是亮点
+
 # ========== 路径配置 ==========
 BASE_DIR = "data_xt"
 HIST_DIR = os.path.join(BASE_DIR, "stock_hist")
@@ -98,8 +100,9 @@ def get_latest_trade_date():
 @retry(stop=stop_after_attempt(3), wait=wait_random(1, 3))
 def fetch_xtquant_hist(code, start_date, end_date, freq="1d"):
     time.sleep(random.uniform(0.5, 1.5))
+    xtdata.download_history_data2(stock_list=[code], period=freq,start_time=start_date,end_time=end_date)
     fields = ["open", "high", "low", "close", "volume", "amount"]
-    df = xtdata.get_market_data(code, freq, start_date, end_date, fields, dividend_type=1)
+    df = xtdata.get_local_data(field_list=fields, period=freq,start_time=start_date,end_time=end_date)
     if df is None or df.empty:
         return pd.DataFrame()
     df.reset_index(inplace=True)
@@ -190,5 +193,6 @@ def save_failed_logs():
 
 # ========== 启动 ==========
 if __name__ == "__main__":
+    
     init_all_data()
     save_failed_logs()
