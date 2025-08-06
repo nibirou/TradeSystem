@@ -1,4 +1,4 @@
-# 【自动重试 + 多线程并发下载 + 增量更新覆盖】
+# 个股量价面 + 个股财务基本面数据获取【自动重试 + 多线程并发下载 + 增量更新覆盖】
 # 要注意两点：
 # 1、akshare要时刻保持在最新版本 pip install --upgrade akshare
 # 2、东方财富访问频繁后会封ip，手动登录东方财富网可以解决
@@ -134,14 +134,14 @@ def get_stock_hist(code, start_date="20100101", end_date=None, adjust="qfq", fre
     try:
         raw = fetch_hist_with_retry(symbol, start_date, latest_date, adjust)
         print(raw)
-        print(f"下载到数据了: {symbol}")
+        print(f"下载到历史行情数据了: {symbol}")
     except Exception as e:
         print(f"[失败] 历史行情获取失败：{symbol} → {e}")
         empty_hist_codes.append(code)
         return
 
     if raw.empty:
-        print(f"数据为空: {symbol}")
+        print(f"历史行情数据为空: {symbol}")
         empty_hist_codes.append(code)
         return
 
@@ -180,16 +180,34 @@ def get_finance_data(code):
 
     old_df = None
     if is_valid_csv(csv_path):
-        old_df = pd.read_csv(csv_path)
+        try:
+            old_df = pd.read_csv(csv_path)
+        except Exception as e:
+            print(f"[警告] 读取旧财务数据失败：{code} → {e}")
+            old_df = None
 
     try:
         df = fetch_finance_with_retry(symbol=code)
+        print(df)
+        print(f"下载到财务数据了: {code}")
+        
         if df.empty:
+            print(f"财务数据为空: {code}")
             empty_finance_codes.append(code)
             return
+
+        # 如果旧数据存在，进行合并去重 + 排序
         if old_df is not None:
-            df = pd.concat([old_df, df]).drop_duplicates().sort_values("报告期")
+            combined = pd.concat([old_df, df]).drop_duplicates().sort_values("报告期")
+
+            # ✅ 判断内容是否一致（避免重复保存）
+            if combined.equals(old_df):
+                return  # 数据未更新，跳过保存
+            else:
+                df = combined  # 使用合并后的 df
+
         save_data(df, path_prefix, f"stock_finance_{code}")
+
     except Exception as e:
         print(f"[失败] 财务数据获取失败：{code} → {e}")
         empty_finance_codes.append(code)
@@ -221,21 +239,21 @@ def get_stock_concept():
     return concept_df
 
 def init_all_data():
-    stocks = get_stock_list(refresh=False)
+    stocks = get_stock_list(refresh=True) # 是否开启增量更新
     codes = stocks["代码"].tolist()
 
     max_workers = 10
-    print("[并发] 下载历史行情中...")
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(get_stock_hist, code): code for code in codes}
-        for _ in tqdm(as_completed(futures), total=len(futures)):
-            pass
-
-    # print("[并发] 下载财务指标中...")
+    # print("[并发] 下载历史行情中...")
     # with ThreadPoolExecutor(max_workers=max_workers) as executor:
-    #     futures = {executor.submit(get_finance_data, code): code for code in codes}
+    #     futures = {executor.submit(get_stock_hist, code): code for code in codes}
     #     for _ in tqdm(as_completed(futures), total=len(futures)):
     #         pass
+
+    print("[并发] 下载财务指标中...")
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {executor.submit(get_finance_data, code): code for code in codes}
+        for _ in tqdm(as_completed(futures), total=len(futures)):
+            pass
 
     # print("[执行] 下载概念板块中...")
     # try:

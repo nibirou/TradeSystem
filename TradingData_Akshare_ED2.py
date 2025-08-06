@@ -212,6 +212,7 @@ def get_stock_concept():
     concept_df = pd.DataFrame(records)
     save_data(concept_df, path_prefix, table_name)
     return concept_df
+
 # ========== 全量初始化 ==========
 def init_all_data():
     stocks = get_stock_list()
