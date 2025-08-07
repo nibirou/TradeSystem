@@ -2,6 +2,7 @@
 # 要注意两点：
 # 1、akshare要时刻保持在最新版本 pip install --upgrade akshare
 # 2、东方财富访问频繁后会封ip，手动登录东方财富网可以解决
+# 3、由于这个代码选取的是上一个交易日，
 
 import os
 import pandas as pd
@@ -171,7 +172,7 @@ def get_stock_hist(code, start_date="20100101", end_date=None, adjust="qfq", fre
 
 @retry(stop=stop_after_attempt(3), wait=wait_random(min=1, max=3))
 def fetch_finance_with_retry(symbol):
-    time.sleep(random.uniform(0.5, 1.5))
+    time.sleep(random.uniform(2, 3))
     return ak.stock_financial_analysis_indicator(symbol=symbol, start_year="2010")
 
 def get_finance_data(code):
@@ -180,11 +181,14 @@ def get_finance_data(code):
 
     old_df = None
     if is_valid_csv(csv_path):
-        try:
-            old_df = pd.read_csv(csv_path)
-        except Exception as e:
-            print(f"[警告] 读取旧财务数据失败：{code} → {e}")
-            old_df = None
+        # 财务数据由于不经常更新，直接跳过重复代码的财务数据下载也可以
+        print(f"财务数据已存在: {code}")
+        return
+        # try:
+        #     old_df = pd.read_csv(csv_path)
+        # except Exception as e:
+        #     print(f"[警告] 读取旧财务数据失败：{code} → {e}")
+        #     old_df = None
 
     try:
         df = fetch_finance_with_retry(symbol=code)
@@ -239,7 +243,7 @@ def get_stock_concept():
     return concept_df
 
 def init_all_data():
-    stocks = get_stock_list(refresh=True) # 是否开启增量更新
+    stocks = get_stock_list(refresh=False) # 是否开启增量更新
     codes = stocks["代码"].tolist()
 
     max_workers = 10
