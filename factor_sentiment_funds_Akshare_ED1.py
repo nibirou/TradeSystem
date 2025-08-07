@@ -29,8 +29,9 @@ def get_news_sentiment(code, topk=20):
 
     if df is None or df.empty:
         return 0.0
+    print(df)
 
-    titles = df["标题"].dropna().astype(str).head(topk).tolist()
+    titles = df["新闻内容"].dropna().astype(str).head(topk).tolist()
     scores = []
     for title in titles:
         try:
@@ -110,6 +111,6 @@ def extract_sentiment_fund_features(code_list):
 if __name__ == '__main__':
     # 示例：跑一遍股票列表
     df_list = pd.read_csv("data/metadata/stock_list.csv", dtype=str)
-    df_feat = extract_sentiment_fund_features(df_list["代码"].tolist()[:50])
+    df_feat = extract_sentiment_fund_features(df_list["代码"].tolist())
     df_feat.to_csv(os.path.join(META_DIR, "sentiment_fund_factors.csv"), index=False)
     print(df_feat.head())
