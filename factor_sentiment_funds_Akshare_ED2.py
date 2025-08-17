@@ -7,6 +7,7 @@
 - 龙虎榜：flag & 次数
 - 并发提速 + 轻量限速
 """
+
 import os
 import time
 import random
@@ -141,6 +142,10 @@ def get_news_sentiment(code: str, topk: int = NEWS_TOPK) -> float:
 
     if df is None or df.empty:
         return 0.0
+    
+    print(df)
+    print(df["文章来源"])
+    print(df["新闻链接"])
 
     # 找标题列
     title_col = _get_first_existing_col(df, ["新闻内容", "新闻标题", "标题", "title"])
@@ -267,26 +272,26 @@ def _one_code(code: str) -> dict:
         _log_fail(f"SENTIMENT_FAIL {code} -> {e}")
         senti = 0.0
 
-    try:
-        net_in = get_fund_flow(code, days=FUND_DAYS)
-    except Exception as e:
-        _log_fail(f"FUND_FAIL {code} -> {e}")
-        net_in = 0.0
+    # try:
+    #     net_in = get_fund_flow(code, days=FUND_DAYS)
+    # except Exception as e:
+    #     _log_fail(f"FUND_FAIL {code} -> {e}")
+    #     net_in = 0.0
 
-    try:
-        lhb_flag, lhb_count = get_lhb_features(code, days=LHB_DAYS)
-    except Exception as e:
-        _log_fail(f"LHB_FAIL {code} -> {e}")
-        lhb_flag, lhb_count = 0, 0
+    # try:
+    #     lhb_flag, lhb_count = get_lhb_features(code, days=LHB_DAYS)
+    # except Exception as e:
+    #     _log_fail(f"LHB_FAIL {code} -> {e}")
+    #     lhb_flag, lhb_count = 0, 0
 
     _random_pause()
 
     return {
         "代码": code,
         "新闻情绪": senti,
-        f"主力净流入_{FUND_DAYS}日(万元)": net_in,
-        "龙虎榜": lhb_flag,
-        f"龙虎榜_{LHB_DAYS}日次数": lhb_count,
+        # f"主力净流入_{FUND_DAYS}日(万元)": net_in,
+        # "龙虎榜": lhb_flag,
+        # f"龙虎榜_{LHB_DAYS}日次数": lhb_count,
     }
 
 
