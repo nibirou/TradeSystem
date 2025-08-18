@@ -46,16 +46,30 @@ except Exception:
 
 
 # =================== 可配置参数 ===================
+R00T_DIR = "data"
 META_DIR = "data/metadata"
-SENTIMENT_DIR = os.path.join(META_DIR, "sentiment")
-FUND_DIR = os.path.join(META_DIR, "fund")
-ARTICLES_DIR = os.path.join(SENTIMENT_DIR, "articles")     # 正文缓存目录
-OUT_PATH = os.path.join(META_DIR, "sentiment_fund_factors.csv")
-FAIL_LOG = os.path.join(META_DIR, "failures.log")
+STOCK_NEWS_DIR = os.path.join(R00T_DIR, "stock_news")
+RESULT_DIR = os.path.join(STOCK_NEWS_DIR, "news_nlp_result_by_day")
+os.makedirs(META_DIR, exist_ok=True)
+os.makedirs(RESULT_DIR, exist_ok=True)
+
+RUN_TS = datetime.now().strftime("%Y%m%d_%H%M%S")
+OUT_PATH = os.path.join(RESULT_DIR, f"stock_news_factors_{RUN_TS}.csv") # 新闻评分结果输出(带日期)
+FAIL_LOG = os.path.join(RESULT_DIR, f"stock_news_failures_{RUN_TS}.log") # 新闻获取失败结果（带日期）
+
+# Akshare 东财个股新闻接口
+AKSHARE_STOCK_NEWS_EM_DIR = os.path.join(STOCK_NEWS_DIR, "akshare_stock_news_em")
+AKSHARE_STOCK_NEWS_EM_ARTICLES_DIR = os.path.join(AKSHARE_STOCK_NEWS_EM_DIR, "articles")     # 正文缓存目录
+os.makedirs(AKSHARE_STOCK_NEWS_EM_DIR, exist_ok=True)
+os.makedirs(AKSHARE_STOCK_NEWS_EM_ARTICLES_DIR, exist_ok=True)
+
+
+
+# 其他方法/接口目录
+
 
 # 缓存文件最大有效期（小时），超过则刷新抓取
 MAX_AGE_HOURS_NEWS = 24        # 新闻列表缓存
-MAX_AGE_HOURS_FUND = 6         # 资金流缓存
 MAX_AGE_HOURS_ARTICLE = 24*7   # 正文缓存：一周
 
 # 抓取重试
@@ -70,12 +84,6 @@ RANDOM_SLEEP_RANGE = (0.05, 0.2)
 
 # 新闻情绪：取“最近 topk 条”用于情绪打分
 NEWS_TOPK = 20
-
-# 资金面：近 N 日主力净流入合计（默认 5 日）
-FUND_DAYS = 5
-
-# 龙虎榜：统计近 N 天是否上榜（flag）以及上榜次数（count）
-LHB_DAYS = 30
 
 # 正文最小长度阈值（太短说明抽取失败，回退标题/摘要）
 MIN_ARTICLE_CHARS = 60
@@ -92,13 +100,6 @@ REQ_HEADERS = {
     ),
     "Accept-Language": "zh-CN,zh;q=0.9",
 }
-
-# =================================================
-
-os.makedirs(SENTIMENT_DIR, exist_ok=True)
-os.makedirs(FUND_DIR, exist_ok=True)
-os.makedirs(ARTICLES_DIR, exist_ok=True)
-os.makedirs(META_DIR, exist_ok=True)
 
 
 # =================== 工具函数 ===================
@@ -173,7 +174,7 @@ def _sanitize_text(txt: str) -> str:
 
 # =================== 正文抓取与缓存 ===================
 def _article_cache_path(url: str) -> str:
-    return os.path.join(ARTICLES_DIR, f"{_md5(url)}.json")
+    return os.path.join(AKSHARE_STOCK_NEWS_EM_ARTICLES_DIR, f"{_md5(url)}.json")
 
 
 def _read_article_cache(url: str):
@@ -354,11 +355,11 @@ def fetch_article_text(url: str) -> str:
 
 
 # =================== 新闻情绪因子 ===================
-def get_news_sentiment(code: str, topk: int = NEWS_TOPK) -> float:
+def get_news_AKSHARE_STOCK_NEWS_EM(code: str, topk: int = NEWS_TOPK) -> float:
     """
     获取个股最近新闻“完整正文”的情感平均值（[-1, 1]），抓不到正文则回退标题/摘要。
     """
-    path = os.path.join(SENTIMENT_DIR, f"{code}.csv")
+    path = os.path.join(AKSHARE_STOCK_NEWS_EM_DIR, f"{code}.csv")
 
     def fetch():
         return ak.stock_news_em(symbol=code)
@@ -440,120 +441,30 @@ def get_news_sentiment(code: str, topk: int = NEWS_TOPK) -> float:
     return round(float(pd.Series(mapped).mean()), 4)
 
 
-# =================== 资金流因子 ===================
-def get_fund_flow(code: str, days: int = FUND_DAYS) -> float:
-    """
-    获取近 days 日“主力净流入-净额”的合计，单位“万元”。
-    缓存 6h 刷新；显式按日期排序后取最近 N 日。
-    """
-    path = os.path.join(FUND_DIR, f"{code}.csv")
-
-    def fetch():
-        # market="沪深"：A股
-        return ak.stock_individual_fund_flow(stock=code, market="沪深")
-
-    df = None
-    try:
-        if _need_refresh(path, MAX_AGE_HOURS_FUND):
-            df = _retry(fetch)
-            if isinstance(df, pd.DataFrame) and not df.empty:
-                df.to_csv(path, index=False, encoding="utf-8-sig")
-        else:
-            df = pd.read_csv(path)
-    except Exception as e:
-        _log_fail(f"FUND_FETCH_FAIL {code} -> {e}")
-        if os.path.exists(path):
-            try:
-                df = pd.read_csv(path)
-            except Exception:
-                df = None
-
-    if df is None or df.empty:
-        return 0.0
-
-    # 日期排序
-    df = _to_datetime_sorted(df)
-
-    # 数值列名（不同接口版本可能有差异）
-    flow_col = _get_first_existing_col(df, ["主力净流入-净额", "主力净流入净额", "净流入净额"])
-    if not flow_col:
-        return 0.0
-
-    df[flow_col] = pd.to_numeric(df[flow_col], errors="coerce").fillna(0.0)
-
-    # 取最近 N 日
-    if len(df) >= days:
-        recent = df.tail(days)
-    else:
-        recent = df
-
-    total = float(recent[flow_col].sum())
-
-    # 常见情况：接口给的是“元”。如果你确认是“万元”，把下面一行注释掉即可。
-    total_wan = total / 1e4
-
-    return round(total_wan, 2)
-
-
-# =================== 龙虎榜热度 ===================
-def get_lhb_features(code: str, days: int = LHB_DAYS):
-    """
-    返回 (flag, count)：
-    - flag: 近 days 天是否上过龙虎榜（0/1）
-    - count: 近 days 天上过几次（整数）
-    """
-    end_date = datetime.now().strftime("%Y%m%d")
-    start_date = (datetime.now() - timedelta(days=days)).strftime("%Y%m%d")
-
-    def fetch():
-        return ak.stock_lhb_stock_statistic_em(symbol=code, start_date=start_date, end_date=end_date)
-
-    try:
-        df = _retry(fetch)
-    except Exception as e:
-        _log_fail(f"LHB_FETCH_FAIL {code} -> {e}")
-        return 0, 0
-
-    if df is None or df.empty:
-        return 0, 0
-
-    count = len(df)
-    flag = 1 if count > 0 else 0
-    return flag, int(count)
-
-
-# =================== 批量提取（并发） ===================
+# =================== 批量提取（并发 + 可扩展） ===================
 def _one_code(code: str) -> dict:
+    # 获取Akshare个股新闻（东财接口）
     try:
-        senti = get_news_sentiment(code, topk=NEWS_TOPK)
+        senti = get_news_AKSHARE_STOCK_NEWS_EM(code, topk=NEWS_TOPK)
     except Exception as e:
-        _log_fail(f"SENTIMENT_FAIL {code} -> {e}")
+        _log_fail(f"AKSHARE_STOCK_NEWS_EM_FAIL {code} -> {e}")
         senti = 0.0
-
-    # try:
-    #     net_in = get_fund_flow(code, days=FUND_DAYS)
-    # except Exception as e:
-    #     _log_fail(f"FUND_FAIL {code} -> {e}")
-    #     net_in = 0.0
-
-    # try:
-    #     lhb_flag, lhb_count = get_lhb_features(code, days=LHB_DAYS)
-    # except Exception as e:
-    #     _log_fail(f"LHB_FAIL {code} -> {e}")
-    #     lhb_flag, lhb_count = 0, 0
+        
+    # 其他新闻模块
+    
+    
+    # 其他消息模块 
 
     _random_pause()
 
     return {
         "代码": code,
         "新闻情绪": senti,
-        # f"主力净流入_{FUND_DAYS}日(万元)": net_in,
-        # "龙虎榜": lhb_flag,
-        # f"龙虎榜_{LHB_DAYS}日次数": lhb_count,
+        # 其他结果返回
     }
 
 
-def extract_sentiment_fund_features(code_list, max_workers: int = MAX_WORKERS) -> pd.DataFrame:
+def extract_AKSHARE_STOCK_NEWS_EM_fund_features(code_list, max_workers: int = MAX_WORKERS) -> pd.DataFrame:
     rows = []
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
         futs = {ex.submit(_one_code, code): code for code in code_list}
@@ -593,7 +504,7 @@ if __name__ == '__main__':
             raise ValueError("股票列表缺少‘代码’列（或常见等价列）。")
 
     codes = df_list["代码"].dropna().astype(str).unique().tolist()
-    df_feat = extract_sentiment_fund_features(codes, max_workers=MAX_WORKERS)
+    df_feat = extract_AKSHARE_STOCK_NEWS_EM_fund_features(codes, max_workers=MAX_WORKERS)
     df_feat.to_csv(OUT_PATH, index=False, encoding="utf-8-sig")
     print(df_feat.head())
     print(f"\n✅ 已保存：{OUT_PATH}")
