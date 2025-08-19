@@ -6,7 +6,6 @@
 - 正文/新闻缓存（避免重复抓）
 - 缓存过期刷新（新闻列表/资金流/正文）
 - 重试 + 指数退避 + 失败日志
-- 龙虎榜：flag & 次数
 - 并发提速 + 轻量限速
 """
 
@@ -103,6 +102,18 @@ REQ_HEADERS = {
 
 
 # =================== 工具函数 ===================
+def _format_pub_time(val) -> str:
+    """
+    将发布时间值统一格式化为 YYYYMMDD_HHMMSS；失败则返回 'unknown'
+    """
+    try:
+        ts = pd.to_datetime(val, errors="coerce")
+        if pd.isna(ts):
+            return "unknown"
+        return ts.strftime("%Y%m%d_%H%M%S")
+    except Exception:
+        return "unknown"
+    
 def _need_refresh(path: str, max_age_hours: int) -> bool:
     if not os.path.exists(path):
         return True
@@ -173,18 +184,24 @@ def _sanitize_text(txt: str) -> str:
 
 
 # =================== 正文抓取与缓存 ===================
-def _article_cache_path(url: str) -> str:
-    return os.path.join(AKSHARE_STOCK_NEWS_EM_ARTICLES_DIR, f"{_md5(url)}.json")
+def _article_cache_path(url: str, cache_key: str = None) -> str:
+    """
+    若提供 cache_key（形如 '000001_20250815_180505'），则用它命名；
+    否则退回用 url 的 md5 命名（向后兼容）。
+    """
+    if cache_key:
+        fname = f"{cache_key}.json"
+    else:
+        fname = f"{_md5(url)}.json"
+    return os.path.join(AKSHARE_STOCK_NEWS_EM_ARTICLES_DIR, fname)
 
-
-def _read_article_cache(url: str):
-    path = _article_cache_path(url)
+def _read_article_cache(url: str, cache_key: str = None):
+    path = _article_cache_path(url, cache_key)
     if not os.path.exists(path):
         return None
     try:
         with open(path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        # 过期判断
         ts = datetime.fromisoformat(data.get("fetched_at"))
         if (datetime.now() - ts).total_seconds() > MAX_AGE_HOURS_ARTICLE * 3600:
             return None
@@ -193,11 +210,15 @@ def _read_article_cache(url: str):
         return None
 
 
-def _write_article_cache(url: str, text: str):
-    path = _article_cache_path(url)
+def _write_article_cache(url: str, text: str, cache_key: str = None):
+    path = _article_cache_path(url, cache_key)
     try:
         with open(path, "w", encoding="utf-8") as f:
-            json.dump({"url": url, "text": text, "fetched_at": datetime.now().isoformat()}, f, ensure_ascii=False)
+            json.dump(
+                {"url": url, "text": text, "fetched_at": datetime.now().isoformat()},
+                f,
+                ensure_ascii=False
+            )
     except Exception as e:
         _log_fail(f"WRITE_ARTICLE_CACHE_FAIL {url} -> {e}")
 
@@ -298,9 +319,10 @@ def _extract_with_newspaper(url: str) -> str:
         return ""
 
 
-def fetch_article_text(url: str) -> str:
+def fetch_article_text(url: str, cache_key: str = None) -> str:
     """
     获取文章完整正文（带缓存），步骤：
+    - 命中缓存（若给了 cache_key 则按 {code}_{pubtime} 命名）
     1) 命中缓存返回
     2) newspaper3k
     3) requests + readability
@@ -310,59 +332,58 @@ def fetch_article_text(url: str) -> str:
         return ""
 
     # 命中缓存
-    cached = _read_article_cache(url)
+    cached = _read_article_cache(url, cache_key)
     if cached:
         return cached
 
     text = ""
 
-    # 方案 1：newspaper3k
+    # 1) newspaper3k
     if _HAS_NEWSPAPER:
         try:
             text = _retry(lambda: _extract_with_newspaper(url))
         except Exception as e:
             _log_fail(f"NEWSPAPER_FETCH_FAIL {url} -> {e}")
 
-    # 方案 2/3：requests + readability / bs4
+    # 2/3) requests + readability / bs4
     if not text or len(text) < MIN_ARTICLE_CHARS:
         if not _HAS_REQUESTS:
             _log_fail(f"REQUESTS_MISSING {url}")
         else:
             try:
                 html = _retry(lambda: _requests_html(url))
-                # 2) readability
                 if _HAS_READABILITY:
                     try:
                         text = _extract_with_readability(url, html)
                     except Exception:
                         pass
-                # 3) BeautifulSoup（站点特化 + 通用）
                 if not text or len(text) < MIN_ARTICLE_CHARS:
                     text = _extract_with_bs4(url, html)
             except Exception as e:
                 _log_fail(f"REQUESTS_FETCH_FAIL {url} -> {e}")
 
-    # 清洗 + 截断
+    # 清洗 + 截断 + 写缓存
     text = _sanitize_text(text)
     if len(text) > MAX_ARTICLE_CHARS:
         text = text[:MAX_ARTICLE_CHARS]
-
-    # 写缓存（即使较短也写入，避免频繁请求）
     if text:
-        _write_article_cache(url, text)
-
+        _write_article_cache(url, text, cache_key)
     return text
 
 
 # =================== 新闻情绪因子 ===================
-def get_news_AKSHARE_STOCK_NEWS_EM(code: str, topk: int = NEWS_TOPK) -> float:
+def get_news_AKSHARE_STOCK_NEWS_EM(code: str, name: str = None, topk: int = NEWS_TOPK) -> float:
     """
-    获取个股最近新闻“完整正文”的情感平均值（[-1, 1]），抓不到正文则回退标题/摘要。
+    获取个股最近新闻“完整正文”的情感平均值（[-1, 1]）。
+    - symbol 优先用股票名称（若传入 name），否则用 code
+    - 正文缓存命名：{code}_{pub_time}
+    - SnowNLP sentiments 修正 + 简单去重
     """
     path = os.path.join(AKSHARE_STOCK_NEWS_EM_DIR, f"{code}.csv")
 
     def fetch():
-        return ak.stock_news_em(symbol=code)
+        symbol_str = name if (name and isinstance(name, str) and name.strip()) else code
+        return ak.stock_news_em(symbol=symbol_str)
 
     # 读取或刷新缓存
     df = None
@@ -375,7 +396,6 @@ def get_news_AKSHARE_STOCK_NEWS_EM(code: str, topk: int = NEWS_TOPK) -> float:
             df = pd.read_csv(path)
     except Exception as e:
         _log_fail(f"NEWS_FETCH_FAIL {code} -> {e}")
-        # 失败就尝试用旧缓存
         if os.path.exists(path):
             try:
                 df = pd.read_csv(path)
@@ -385,29 +405,52 @@ def get_news_AKSHARE_STOCK_NEWS_EM(code: str, topk: int = NEWS_TOPK) -> float:
     if df is None or df.empty:
         return 0.0
 
-    # 标题/内容/链接列
+    # 列名鲁棒：标题/内容/链接/时间
     title_col = _get_first_existing_col(df, ["新闻标题", "标题", "news_title", "title"])
     content_col = _get_first_existing_col(df, ["新闻内容", "摘要", "content", "desc"])
     link_col = _get_first_existing_col(df, ["新闻链接", "链接", "url", "link"])
-    # 日期排序
-    df = _to_datetime_sorted(df)
+    time_col = _get_first_existing_col(df, ["日期", "时间", "发布时间", "time", "pub_time"])
 
-    # 取最近 topk 条
+    # 时间列转 datetime 并升序
+    df = _to_datetime_sorted(df)
+    if time_col in df.columns:
+        try:
+            df[time_col] = pd.to_datetime(df[time_col], errors="coerce")
+        except Exception:
+            pass
+
+    # 取最近 topk
     df_recent = df.tail(topk) if len(df) > topk else df
+
+    # 简单去重：优先按链接去重；没有链接则按 [标题, 时间] 去重
+    if link_col and link_col in df_recent.columns:
+        df_recent = df_recent.drop_duplicates(subset=[link_col])
+    else:
+        keys = [c for c in [title_col, time_col] if c and c in df_recent.columns]
+        if keys:
+            df_recent = df_recent.drop_duplicates(subset=keys)
 
     texts = []
     for _, row in df_recent.iterrows():
         full_text = ""
-        # 1) 优先抓取新闻链接的完整正文
+        pub_key = None
+
+        # 生成缓存 key：{code}_{发布时间}
+        if time_col and pd.notna(row.get(time_col, None)):
+            pub_key = f"{code}_{_format_pub_time(row[time_col])}"
+        else:
+            pub_key = f"{code}_unknown"
+
+        # 1) 优先抓链接正文（带 cache_key 命名）
         if link_col and pd.notna(row.get(link_col, None)):
             url = str(row[link_col]).strip()
             if url.startswith("http"):
                 try:
-                    full_text = fetch_article_text(url)
+                    full_text = fetch_article_text(url, cache_key=pub_key)
                 except Exception as e:
                     _log_fail(f"FETCH_ARTICLE_FAIL {code} {url} -> {e}")
 
-        # 2) 抓不到正文则回退到“新闻内容/摘要/标题”
+        # 2) 回退摘要/标题
         if not full_text or len(full_text) < MIN_ARTICLE_CHARS:
             fallback = None
             if content_col and pd.notna(row.get(content_col, None)):
@@ -423,29 +466,27 @@ def get_news_AKSHARE_STOCK_NEWS_EM(code: str, topk: int = NEWS_TOPK) -> float:
     if not texts:
         return 0.0
 
-    # SnowNLP 情感：对每篇取分，再平均
+    # SnowNLP 情感：修正为 .sentiments ∈ [0,1]
     scores = []
     for t in texts:
         try:
-            s = SnowNLP(t).sentiments  # [0,1]
+            s = SnowNLP(t).sentiments
             scores.append(s)
         except Exception as e:
             _log_fail(f"SNOWNLP_FAIL {code} -> {e}")
-            continue
 
     if not scores:
         return 0.0
 
-    # 映射到 [-1, 1] 后取均值
     mapped = [(s - 0.5) * 2 for s in scores]
     return round(float(pd.Series(mapped).mean()), 4)
 
 
 # =================== 批量提取（并发 + 可扩展） ===================
-def _one_code(code: str) -> dict:
+def _one_code(code: str, name: str = None) -> dict:
     # 获取Akshare个股新闻（东财接口）
     try:
-        senti = get_news_AKSHARE_STOCK_NEWS_EM(code, topk=NEWS_TOPK)
+        senti = get_news_AKSHARE_STOCK_NEWS_EM(code, name=name, topk=NEWS_TOPK)
     except Exception as e:
         _log_fail(f"AKSHARE_STOCK_NEWS_EM_FAIL {code} -> {e}")
         senti = 0.0
@@ -465,21 +506,30 @@ def _one_code(code: str) -> dict:
 
 
 def extract_AKSHARE_STOCK_NEWS_EM_fund_features(code_list, max_workers: int = MAX_WORKERS) -> pd.DataFrame:
+    """
+    code_list 支持两种元素形态：
+    - "000001"（只有代码）
+    - ("000001", "平安银行")（代码 + 名称）
+    """
     rows = []
     with ThreadPoolExecutor(max_workers=max_workers) as ex:
-        futs = {ex.submit(_one_code, code): code for code in code_list}
+        futs = {}
+        for item in code_list:
+            if isinstance(item, (list, tuple)) and len(item) >= 2:
+                code, name = item[0], item[1]
+            else:
+                code, name = item, None
+            fut = ex.submit(_one_code, code, name)
+            futs[fut] = code
+
         for fut in tqdm(as_completed(futs), total=len(futs), desc="Extracting"):
             try:
                 rows.append(fut.result())
             except Exception as e:
-                code = "UNKNOWN"
-                try:
-                    code = futs[fut]
-                except Exception:
-                    pass
+                code = futs.get(fut, "UNKNOWN")
                 _log_fail(f"TASK_FAIL {code} -> {e}")
+
     df = pd.DataFrame(rows)
-    # 附加元数据列（可选）
     df.insert(0, "生成时间", datetime.now().strftime("%Y-%m-%d %H:%M:%S"))
     df.insert(1, "新闻topk", NEWS_TOPK)
     # df.insert(2, "资金天数", FUND_DAYS)
@@ -495,6 +545,7 @@ if __name__ == '__main__':
         raise FileNotFoundError(f"未找到股票列表：{stock_list_path}，请先准备包含‘代码’列的CSV。")
 
     df_list = pd.read_csv(stock_list_path, dtype=str)
+    # 获取股票代码列
     if "代码" not in df_list.columns:
         # 做一个兜底：常见字段名 candidates
         cand = _get_first_existing_col(df_list, ["代码", "symbol", "ts_code", "code"])
@@ -504,7 +555,22 @@ if __name__ == '__main__':
             raise ValueError("股票列表缺少‘代码’列（或常见等价列）。")
 
     codes = df_list["代码"].dropna().astype(str).unique().tolist()
-    df_feat = extract_AKSHARE_STOCK_NEWS_EM_fund_features(codes, max_workers=MAX_WORKERS)
+
+    # 获取股票名称列（可选）：['名称','股票名称','股票简称','name']
+    name_col = _get_first_existing_col(df_list, ["名称", "股票名称", "股票简称", "name"])
+    if name_col and name_col in df_list.columns:
+        # 组装 (code, name) 列表
+        merged = (
+            df_list.dropna(subset=["代码"])
+                .astype({"代码": str})
+        )
+        # 每个代码只取第一条名称
+        merged = merged.drop_duplicates(subset=["代码"])
+        code_name_list = list(zip(merged["代码"].tolist(), merged[name_col].astype(str).tolist()))
+    else:
+        code_name_list = codes  # 没有名称列就只用代码
+
+    df_feat = extract_AKSHARE_STOCK_NEWS_EM_fund_features(code_name_list, max_workers=MAX_WORKERS)
     df_feat.to_csv(OUT_PATH, index=False, encoding="utf-8-sig")
     print(df_feat.head())
     print(f"\n✅ 已保存：{OUT_PATH}")
