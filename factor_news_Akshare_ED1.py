@@ -43,6 +43,24 @@ try:
 except Exception:
     _HAS_REQUESTS = False
 
+try:
+    import trafilatura  # pip install trafilatura
+    _HAS_TRAFILATURA = True
+except Exception:
+    _HAS_TRAFILATURA = False
+
+try:
+    from boilerpy3 import extractors as _bp_extractors
+    _HAS_BOILERPY3 = True
+except Exception:
+    _HAS_BOILERPY3 = False
+
+try:
+    from goose3 import Goose
+    _HAS_GOOSE3 = True
+except Exception:
+    _HAS_GOOSE3 = False   
+
 
 # =================== 可配置参数 ===================
 R00T_DIR = "data"
@@ -61,8 +79,6 @@ AKSHARE_STOCK_NEWS_EM_DIR = os.path.join(STOCK_NEWS_DIR, "akshare_stock_news_em"
 AKSHARE_STOCK_NEWS_EM_ARTICLES_DIR = os.path.join(AKSHARE_STOCK_NEWS_EM_DIR, "articles")     # 正文缓存目录
 os.makedirs(AKSHARE_STOCK_NEWS_EM_DIR, exist_ok=True)
 os.makedirs(AKSHARE_STOCK_NEWS_EM_ARTICLES_DIR, exist_ok=True)
-
-
 
 # 其他方法/接口目录
 
@@ -172,6 +188,73 @@ def _to_datetime_sorted(df: pd.DataFrame, date_candidates=("日期", "时间", "
 def _md5(s: str) -> str:
     return hashlib.md5(s.encode("utf-8")).hexdigest()
 
+# —— 常见“免责声明/声明/版权尾巴”关键词 —— 
+_DISCLAIMER_PREFIXES = [
+    "郑重声明", "特别声明", "免责声明", "风险提示"
+]
+_DISCLAIMER_KEYWORDS = [
+    "不构成投资建议", "仅供参考", "东方财富网不对", "以中国证监会指定",
+    "版权", "转载", "责任编辑", "来源：东方财富"
+]
+
+def _looks_like_disclaimer(p: str) -> bool:
+    if not p: 
+        return False
+    p = p.strip()
+    if any(p.startswith(pre) for pre in _DISCLAIMER_PREFIXES):
+        return True
+    if len(p) < 120 and any(k in p for k in _DISCLAIMER_KEYWORDS):
+        # 段落很短而且包含声明关键词，更像声明/版权尾巴或提示条
+        return True
+    return False
+
+def _strip_disclaimer_tail(txt: str) -> str:
+    if not txt:
+        return txt
+    # 从出现声明关键词的位置截断（保守做法：仅在靠后时截）
+    for kw in _DISCLAIMER_PREFIXES + _DISCLAIMER_KEYWORDS:
+        idx = txt.rfind(kw)
+        if idx != -1 and idx > len(txt) * 0.6:
+            return txt[:idx].strip()
+    return txt
+
+def _clean_join_paragraphs(paras):
+    """合并段落并去掉声明/工具条/很短的UI文案"""
+    out = []
+    for p in paras:
+        p = re.sub(r"\s+", " ", p or "").strip()
+        if not p: 
+            continue
+        if _looks_like_disclaimer(p):
+            continue
+        # 过滤分享、编辑、收藏、打印等工具条
+        if len(p) < 12 and any(w in p for w in ["微信", "微博", "QQ", "收藏", "打印", "客户端", "APP", "分享"]):
+            continue
+        out.append(p)
+    text = " ".join(out).strip()
+    return _strip_disclaimer_tail(text)
+
+def _score_candidate_text(t: str) -> float:
+    """给多个抽取结果打分，选最像“正文”的那个"""
+    if not t:
+        return -1e9
+    n = len(t)
+    zh = sum(0x4e00 <= ord(c) <= 0x9fff for c in t)
+    digits = sum(c.isdigit() for c in t)
+    punct = sum(c in "，。；：？！,.:%；、" for c in t)
+    has_disclaimer = any(k in t for k in _DISCLAIMER_PREFIXES + _DISCLAIMER_KEYWORDS)
+
+    # 长度（上限 5000）、中文占比、是否含数字&标点（财经稿常见）、声明惩罚
+    score = min(n, 5000) / 5000.0
+    if n > 0:
+        score += 0.5 * (zh / n)
+    if digits > 0:
+        score += 0.15
+    if punct > 5:
+        score += 0.1
+    if has_disclaimer and n < 400:
+        score -= 1.0
+    return score
 
 def _sanitize_text(txt: str) -> str:
     if not txt:
@@ -239,57 +322,131 @@ def _requests_html(url: str) -> str:
     resp.encoding = enc
     return resp.text
 
-
-def _extract_with_bs4(url: str, html: str) -> str:
+def _extract_eastmoney_main(html: str) -> str:
     """
-    通用 + 站点特化的正文抽取（BeautifulSoup）
+    东方财富站点（finance.eastmoney.com 等）的定制抽取：
+    - 优先锁定正文容器
+    - 仅收集正文段落，并过滤“免责声明/版权尾巴/工具条”
     """
     soup = BeautifulSoup(html, "lxml")
+    # 常见容器候选（东财不同频道 class/id 会变，所以多准备几个）
+    containers = [
+        "#ContentBody", "#newsContent", ".newsContent", ".articleBody", ".article", ".content", ".media_article",
+        ".main-content", ".m-article", ".g-article", ".detail"
+    ]
+    candidates = []
+    for sel in containers:
+        node = soup.select_one(sel)
+        if not node:
+            continue
+        paras = [tag.get_text(" ", strip=True) for tag in node.find_all(["p","div","section","span"], recursive=True)]
+        t = _clean_join_paragraphs(paras)
+        if len(t) >= 60:
+            candidates.append(t)
 
-    # —— 站点特化：东方财富（eastmoney）常见容器选择器 —— 
-    # 不同频道/年代 class/id 可能不同，准备多个候选
-    if "eastmoney.com" in url:
-        candidates = [
-            "#ContentBody",               # 常见内容容器
-            ".newsContent",               # 旧版
-            ".content",                   # 通用
-            ".articleBody", ".article", ".media_article", "#newsContent"
-        ]
-        for sel in candidates:
-            node = soup.select_one(sel)
-            if node:
-                text = node.get_text(separator=" ", strip=True)
-                if len(text) >= MIN_ARTICLE_CHARS:
-                    return text
+    # 如果上述容器都不靠谱，退化为“从页面所有段落中选密度最高的若干段”
+    if not candidates:
+        blocks = []
+        for tag in soup.find_all(["p","div","section"]):
+            txt = tag.get_text(" ", strip=True)
+            if not txt or len(txt) < 15:
+                continue
+            blocks.append(txt)
+        blocks.sort(key=lambda x: len(x), reverse=True)
+        t = _clean_join_paragraphs(blocks[:20])
+        if len(t) >= 60:
+            candidates.append(t)
 
-    # —— 每日经济新闻（nbd.com.cn） / 同源转载到 eastmoney —— 
-    if "nbd.com.cn" in url:
-        candidates = [".g-article", ".article", ".content", ".m-article"]
-        for sel in candidates:
-            node = soup.select_one(sel)
-            if node:
-                text = node.get_text(separator=" ", strip=True)
-                if len(text) >= MIN_ARTICLE_CHARS:
-                    return text
+    if not candidates:
+        return ""
+    # 选分数最高的候选
+    candidates.sort(key=_score_candidate_text, reverse=True)
+    return candidates[0]
 
-    # —— 通用：尝试寻找常见正文容器 —— 
+def _extract_with_boilerpy3(html: str) -> str:
+    """
+    boilerpy3 抽取正文（对中文也友好）
+    """
+    if not _HAS_BOILERPY3 or not html:
+        return ""
+    try:
+        extractor = _bp_extractors.ArticleExtractor()
+        text = extractor.get_content(html) or ""
+        return text.strip()
+    except Exception:
+        return ""
+
+
+def _extract_with_goose3(url: str, html: str) -> str:
+    """
+    goose3 抽取正文：优先用 raw_html，避免再次发起网络请求
+    """
+    if not _HAS_GOOSE3 or not html:
+        return ""
+    try:
+        g = Goose({
+            "enable_image_fetching": False,
+            "use_meta_language": False,
+            "target_language": "zh",
+            "browser_user_agent": REQ_HEADERS.get("User-Agent", ""),
+        })
+        art = g.extract(raw_html=html)
+        text = (art.cleaned_text or art.meta_description or "") if art else ""
+        return text.strip()
+    except Exception:
+        return ""
+def _extract_with_bs4(url: str, html: str) -> str:
+    """
+    通用 + 站点特化（优先东财），返回尽可能接近正文的文本。
+    """
+    try:
+        host = ""
+        m = re.search(r"https?://([^/]+)/", url)
+        if m:
+            host = m.group(1).lower()
+    except Exception:
+        host = ""
+
+    # —— 东方财富强定制 —— 
+    if "eastmoney.com" in host:
+        t = _extract_eastmoney_main(html)
+        if len(t) >= MIN_ARTICLE_CHARS:
+            return t
+
+    # —— 通用容器 —— 
+    soup = BeautifulSoup(html, "lxml")
     common_candidates = [
         "article", ".article", ".article-content", ".content", ".post", "#article",
         ".main-content", ".detail", ".news_content", "#content", ".rich_media_content"
     ]
+    texts = []
     for sel in common_candidates:
         node = soup.select_one(sel)
-        if node:
-            text = node.get_text(separator=" ", strip=True)
-            if len(text) >= MIN_ARTICLE_CHARS:
-                return text
+        if not node:
+            continue
+        paras = [tag.get_text(" ", strip=True) for tag in node.find_all(["p","div","section","span"], recursive=True)]
+        t = _clean_join_paragraphs(paras)
+        if len(t) >= 60:
+            texts.append(t)
 
-    # —— 退化：取最大文本块（段落综合） —— 
-    blocks = [p.get_text(" ", strip=True) for p in soup.find_all(["p", "div", "section"]) if p]
-    blocks = [b for b in blocks if b and len(b) > 10]
-    blocks.sort(key=lambda x: len(x), reverse=True)
-    text = " ".join(blocks[:15])  # 取若干大块拼接
-    return text
+    # 退化：大块拼接
+    if not texts:
+        blocks = []
+        for tag in soup.find_all(["p","div","section"]):
+            txt = tag.get_text(" ", strip=True)
+            if not txt or len(txt) < 15:
+                continue
+            blocks.append(txt)
+        blocks.sort(key=lambda x: len(x), reverse=True)
+        t = _clean_join_paragraphs(blocks[:20])
+        if len(t) >= 60:
+            texts.append(t)
+
+    if not texts:
+        return ""
+    texts.sort(key=_score_candidate_text, reverse=True)
+    return texts[0]
+
 
 
 def _extract_with_readability(url: str, html: str) -> str:
@@ -318,57 +475,158 @@ def _extract_with_newspaper(url: str) -> str:
         _log_fail(f"NEWSPAPER_FAIL {url} -> {e}")
         return ""
 
-
+def _maybe_fetch_amp_html(url: str, html: str) -> str:
+    """
+    如页面提供 <link rel="amphtml" href="...">，抓取 AMP 版本再尝试抽取。
+    """
+    try:
+        soup = BeautifulSoup(html, "lxml")
+        amp = soup.find("link", rel=lambda v: v and "amphtml" in v.lower())
+        if amp and amp.get("href"):
+            amp_url = amp["href"]
+            if amp_url.startswith("//"):
+                amp_url = "https:" + amp_url
+            if amp_url.startswith("/"):
+                # 相对路径情况
+                base = re.match(r"(https?://[^/]+)", url)
+                if base:
+                    amp_url = base.group(1) + amp_url
+            amp_html = _requests_html(amp_url)
+            return amp_html
+    except Exception as e:
+        _log_fail(f"AMP_FETCH_FAIL {url} -> {e}")
+    return ""
 def fetch_article_text(url: str, cache_key: str = None) -> str:
     """
-    获取文章完整正文（带缓存），步骤：
-    - 命中缓存（若给了 cache_key 则按 {code}_{pubtime} 命名）
-    1) 命中缓存返回
-    2) newspaper3k
-    3) requests + readability
-    4) requests + BeautifulSoup（站点特化 + 通用）
+    获取文章完整正文（带缓存）：
+    - 命中缓存（若给了 cache_key 则用 {code}_{pubtime}.json 命名）
+    - 抽取逻辑：newspaper3k → readability → bs4（站点特化+通用）→ AMP 回退 → trafilatura
+    - 多候选打分择优 + 免责声明去除
     """
     if not url or not isinstance(url, str) or not url.startswith("http"):
         return ""
 
-    # 命中缓存
+    # 1) 缓存
     cached = _read_article_cache(url, cache_key)
     if cached:
         return cached
 
-    text = ""
+    candidates = []
 
-    # 1) newspaper3k
+    # 2) newspaper3k
     if _HAS_NEWSPAPER:
         try:
-            text = _retry(lambda: _extract_with_newspaper(url))
+            t = _retry(lambda: _extract_with_newspaper(url))
+            t = _strip_disclaimer_tail(_sanitize_text(t))
+            if len(t) >= MIN_ARTICLE_CHARS:
+                candidates.append(("newspaper", t))
         except Exception as e:
             _log_fail(f"NEWSPAPER_FETCH_FAIL {url} -> {e}")
 
-    # 2/3) requests + readability / bs4
-    if not text or len(text) < MIN_ARTICLE_CHARS:
-        if not _HAS_REQUESTS:
-            _log_fail(f"REQUESTS_MISSING {url}")
-        else:
-            try:
-                html = _retry(lambda: _requests_html(url))
-                if _HAS_READABILITY:
-                    try:
-                        text = _extract_with_readability(url, html)
-                    except Exception:
-                        pass
-                if not text or len(text) < MIN_ARTICLE_CHARS:
-                    text = _extract_with_bs4(url, html)
-            except Exception as e:
-                _log_fail(f"REQUESTS_FETCH_FAIL {url} -> {e}")
+    # 3) requests + readability / bs4
+    html = ""
+    try:
+        html = _retry(lambda: _requests_html(url))
+    except Exception as e:
+        _log_fail(f"REQUESTS_FETCH_FAIL {url} -> {e}")
 
-    # 清洗 + 截断 + 写缓存
-    text = _sanitize_text(text)
-    if len(text) > MAX_ARTICLE_CHARS:
-        text = text[:MAX_ARTICLE_CHARS]
-    if text:
-        _write_article_cache(url, text, cache_key)
-    return text
+    if html:
+        # 3a) readability
+        if _HAS_READABILITY:
+            try:
+                t = _extract_with_readability(url, html)
+                t = _strip_disclaimer_tail(_sanitize_text(t))
+                if len(t) >= MIN_ARTICLE_CHARS:
+                    candidates.append(("readability", t))
+            except Exception:
+                pass
+
+        # 3b) bs4（含 eastmoney 特化）
+        try:
+            t = _extract_with_bs4(url, html)
+            t = _strip_disclaimer_tail(_sanitize_text(t))
+            if len(t) >= MIN_ARTICLE_CHARS:
+                candidates.append(("bs4", t))
+        except Exception as e:
+            _log_fail(f"BS4_EXTRACT_FAIL {url} -> {e}")
+        
+        # —— boilerpy3 候选 —— 
+        try:
+            t = _extract_with_boilerpy3(html)
+            t = _strip_disclaimer_tail(_sanitize_text(t))
+            if len(t) >= MIN_ARTICLE_CHARS:
+                candidates.append(("boilerpy3", t))
+        except Exception as e:
+            _log_fail(f"BOILERPY3_FAIL {url} -> {e}")
+
+        # —— goose3 候选 —— 
+        try:
+            t = _extract_with_goose3(url, html)
+            t = _strip_disclaimer_tail(_sanitize_text(t))
+            if len(t) >= MIN_ARTICLE_CHARS:
+                candidates.append(("goose3", t))
+        except Exception as e:
+            _log_fail(f"GOOSE3_FAIL {url} -> {e}")
+
+        # 3c) AMP 回退再试
+        try:
+            amp_html = _maybe_fetch_amp_html(url, html)
+            if amp_html:
+                # 先 readability
+                if _HAS_READABILITY:
+                    t = _extract_with_readability(url, amp_html)
+                    t = _strip_disclaimer_tail(_sanitize_text(t))
+                    if len(t) >= MIN_ARTICLE_CHARS:
+                        candidates.append(("amp_readability", t))
+                # 再 bs4
+                t = _extract_with_bs4(url, amp_html)
+                t = _strip_disclaimer_tail(_sanitize_text(t))
+                if len(t) >= MIN_ARTICLE_CHARS:
+                    candidates.append(("amp_bs4", t))
+                # AMP + boilerpy3
+                try:
+                    t = _extract_with_boilerpy3(amp_html)
+                    t = _strip_disclaimer_tail(_sanitize_text(t))
+                    if len(t) >= MIN_ARTICLE_CHARS:
+                        candidates.append(("amp_boilerpy3", t))
+                except Exception as e:
+                    _log_fail(f"AMP_BOILERPY3_FAIL {url} -> {e}")
+
+                # AMP + goose3
+                try:
+                    t = _extract_with_goose3(url, amp_html)
+                    t = _strip_disclaimer_tail(_sanitize_text(t))
+                    if len(t) >= MIN_ARTICLE_CHARS:
+                        candidates.append(("amp_goose3", t))
+                except Exception as e:
+                    _log_fail(f"AMP_GOOSE3_FAIL {url} -> {e}")
+        except Exception as e:
+            _log_fail(f"AMP_EXTRACT_FAIL {url} -> {e}")
+
+    # 4) trafilatura 兜底
+    if (not candidates) and _HAS_TRAFILATURA and html:
+        try:
+            t = trafilatura.extract(html, include_comments=False, favor_recall=True, output_format="txt")
+            t = _strip_disclaimer_tail(_sanitize_text(t or ""))
+            if len(t) >= MIN_ARTICLE_CHARS:
+                candidates.append(("trafilatura", t))
+        except Exception as e:
+            _log_fail(f"TRAFILATURA_FAIL {url} -> {e}")
+
+    # 5) 选择最佳候选
+    best = ""
+    if candidates:
+        # 根据 _score_candidate_text 打分择优
+        best = max(candidates, key=lambda kv: _score_candidate_text(kv[1]))[1]
+
+    # 6) 截断 + 写缓存
+    if best and len(best) > MAX_ARTICLE_CHARS:
+        best = best[:MAX_ARTICLE_CHARS]
+    if best:
+        _write_article_cache(url, best, cache_key)
+
+    return best or ""
+
 
 
 # =================== 新闻情绪因子 ===================
@@ -486,10 +744,10 @@ def get_news_AKSHARE_STOCK_NEWS_EM(code: str, name: str = None, topk: int = NEWS
 def _one_code(code: str, name: str = None) -> dict:
     # 获取Akshare个股新闻（东财接口）
     try:
-        senti = get_news_AKSHARE_STOCK_NEWS_EM(code, name=name, topk=NEWS_TOPK)
+        senti_akshre_em = get_news_AKSHARE_STOCK_NEWS_EM(code, name=name, topk=NEWS_TOPK)
     except Exception as e:
         _log_fail(f"AKSHARE_STOCK_NEWS_EM_FAIL {code} -> {e}")
-        senti = 0.0
+        senti_akshre_em = 0.0
         
     # 其他新闻模块
     
@@ -500,7 +758,7 @@ def _one_code(code: str, name: str = None) -> dict:
 
     return {
         "代码": code,
-        "新闻情绪": senti,
+        "AKSHARE东财接口的新闻情绪": senti_akshre_em,
         # 其他结果返回
     }
 
