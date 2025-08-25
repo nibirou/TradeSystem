@@ -17,6 +17,18 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 try:
+    from curl_cffi import requests as cf_requests
+    _HAS_CURL_CFFI = True
+except Exception:
+    _HAS_CURL_CFFI = False
+
+try:
+    import tls_client
+    _HAS_TLS_CLIENT = True
+except Exception:
+    _HAS_TLS_CLIENT = False
+
+try:
     import requests
     from bs4 import BeautifulSoup  # pip install beautifulsoup4 lxml
     _HAS_REQUESTS = True
@@ -103,6 +115,12 @@ DEBUG_SAVE_OK_PDF = False  # True=连成功的 PDF 也落盘
 ENABLE_OCR = True
 OCR_MAX_PAGES = 3  # 只 OCR 前几页以控时
 
+VERIFY_SSL = True              # 如确实被内网拦，可临时 False（不推荐）
+DEBUG_SAVE_RAW = True          # 失败时把 HTML/PDF 原始字节落盘以便排查
+DEBUG_SAVE_OK_PDF = False      # True=连成功的 PDF 也保存（调试用）
+ENABLE_OCR = True              # 启用 OCR 兜底
+OCR_MAX_PAGES = 3              # 仅 OCR 前几页控制耗时
+
 # —— 研报（个股研报）缓存工具 ——
 def _log_fail(msg: str):
     ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -178,48 +196,103 @@ def _is_pdf_bytes(b: bytes) -> bool:
     return isinstance(b, (bytes, bytearray)) and len(b) > 5 and b[:5] == b"%PDF-"
 
 def _download_pdf_bytes(url: str) -> bytes:
-    if not _HAS_REQUESTS:
-        raise RuntimeError("Missing 'requests' for PDF download")
-
-    sess = _get_session()
-    # 第 1 次：常规 UA
-    r1 = sess.get(url, timeout=REQ_TIMEOUT, allow_redirects=True, verify=VERIFY_SSL)
-    c1 = r1.content or b""
-    ct1 = (r1.headers.get("Content-Type") or "").lower()
-    if _is_pdf_bytes(c1):
-        if DEBUG_SAVE_OK_PDF:
-            _debug_dump_bytes(c1, url, ".pdf")
-        return c1
-    else:
-        if DEBUG_SAVE_RAW and c1 and ("pdf" not in ct1):
-            _debug_dump_bytes(c1, url, ".html")
-
-    # 第 2 次：加 Referer/Origin/Accept
+    """
+    智能下载器：
+    1) curl_cffi（Chrome 指纹）+ 预热 Cookie
+    2) tls_client（Chrome 指纹）+ 预热 Cookie
+    3) 回退 requests（你原本的逻辑）
+    全程带 Referer/Origin/Accept，失败落盘 HTML 便于排查
+    """
+    # 通用头
     h2 = {
         "Referer": "https://data.eastmoney.com/report/stock.jshtml",
         "Origin": "https://data.eastmoney.com",
         "Accept": "application/pdf,text/html;q=0.9,*/*;q=0.8",
         "Connection": "keep-alive",
     }
+
+    # ---------- 1) curl_cffi ----------
+    if _HAS_CURL_CFFI:
+        try:
+            s = cf_requests.Session(impersonate="chrome")
+            # 预热：获取 Cookie
+            s.get("https://data.eastmoney.com/report/stock.jshtml",
+                  headers=REQ_HEADERS, timeout=REQ_TIMEOUT, verify=VERIFY_SSL)
+            r = s.get(url, headers={**REQ_HEADERS, **h2},
+                      timeout=REQ_TIMEOUT, verify=VERIFY_SSL, allow_redirects=True)
+            c = r.content or b""
+            ct = (r.headers.get("Content-Type") or "").lower()
+            if _is_pdf_bytes(c):
+                if DEBUG_SAVE_OK_PDF: _debug_dump_bytes(c, url, ".pdf")
+                return c
+            else:
+                if DEBUG_SAVE_RAW and c and ("pdf" not in ct):
+                    _debug_dump_bytes(c, url, ".html")
+        except Exception as e:
+            _log_fail(f"CURL_CFFI_DOWNLOAD_FAIL {url} -> {e}")
+
+    # ---------- 2) tls_client ----------
+    if _HAS_TLS_CLIENT:
+        try:
+            s = tls_client.Session(client_identifier="chrome_120")
+            s.headers.update(REQ_HEADERS)
+            s.get("https://data.eastmoney.com/report/stock.jshtml",
+                  timeout=REQ_TIMEOUT, allow_redirects=True, verify=VERIFY_SSL)
+            r = s.get(url, headers=h2, timeout=REQ_TIMEOUT,
+                      allow_redirects=True, verify=VERIFY_SSL)
+            c = r.content or b""
+            ct = (r.headers.get("Content-Type") or "").lower()
+            if _is_pdf_bytes(c):
+                if DEBUG_SAVE_OK_PDF: _debug_dump_bytes(c, url, ".pdf")
+                return c
+            else:
+                if DEBUG_SAVE_RAW and c and ("pdf" not in ct):
+                    _debug_dump_bytes(c, url, ".html")
+        except Exception as e:
+            _log_fail(f"TLS_CLIENT_DOWNLOAD_FAIL {url} -> {e}")
+
+    # ---------- 3) 回退：requests（保留你原逻辑） ----------
+    if not _HAS_REQUESTS:
+        raise RuntimeError("Missing 'requests' for PDF download")
+
+    # 简易会话 + 重试
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
+    sess = requests.Session()
+    sess.headers.update(REQ_HEADERS)
+    retry = Retry(total=2, backoff_factor=0.4,
+                  status_forcelist=[429,500,502,503,504], allowed_methods=["GET"])
+    sess.mount("https://", HTTPAdapter(max_retries=retry))
+    sess.mount("http://", HTTPAdapter(max_retries=retry))
+
+    # 第一次
+    r1 = sess.get(url, timeout=REQ_TIMEOUT, allow_redirects=True, verify=VERIFY_SSL)
+    c1 = r1.content or b""
+    ct1 = (r1.headers.get("Content-Type") or "").lower()
+    if _is_pdf_bytes(c1):
+        if DEBUG_SAVE_OK_PDF: _debug_dump_bytes(c1, url, ".pdf")
+        return c1
+    else:
+        if DEBUG_SAVE_RAW and c1 and ("pdf" not in ct1):
+            _debug_dump_bytes(c1, url, ".html")
+
+    # 第二次：加 Referer/Origin
     r2 = sess.get(url, headers=h2, timeout=REQ_TIMEOUT, allow_redirects=True, verify=VERIFY_SSL)
     c2 = r2.content or b""
     ct2 = (r2.headers.get("Content-Type") or "").lower()
     if _is_pdf_bytes(c2):
-        if DEBUG_SAVE_OK_PDF:
-            _debug_dump_bytes(c2, url, ".pdf")
+        if DEBUG_SAVE_OK_PDF: _debug_dump_bytes(c2, url, ".pdf")
         return c2
     else:
         if DEBUG_SAVE_RAW and c2 and ("pdf" not in ct2):
             _debug_dump_bytes(c2, url, ".html")
 
-    # 第 3 步：若返回 HTML 中间页，抓真实 .pdf
+    # 若 HTML，尝试从中提取真实 .pdf 再拉
     try:
-        enc = r2.apparent_encoding or r2.encoding or "utf-8"
-        r2.encoding = enc
+        enc = r2.apparent_encoding or r2.encoding or "utf-8"; r2.encoding = enc
         html = r2.text or ""
     except Exception:
         html = ""
-
     if html:
         m = re.search(r"https?://[^\"'>]+\.pdf", html, flags=re.I)
         if m:
@@ -228,19 +301,17 @@ def _download_pdf_bytes(url: str) -> bytes:
             c3 = r3.content or b""
             ct3 = (r3.headers.get("Content-Type") or "").lower()
             if _is_pdf_bytes(c3):
-                if DEBUG_SAVE_OK_PDF:
-                    _debug_dump_bytes(c3, real_pdf, ".pdf")
+                if DEBUG_SAVE_OK_PDF: _debug_dump_bytes(c3, real_pdf, ".pdf")
                 return c3
             else:
                 _log_fail(f"REPORT_PDF_NOT_PDF_AFTER_REDIRECT {real_pdf} -> {ct3}")
-                if DEBUG_SAVE_RAW and c3:
-                    _debug_dump_bytes(c3, real_pdf, ".html")
+                if DEBUG_SAVE_RAW and c3: _debug_dump_bytes(c3, real_pdf, ".html")
         else:
             _log_fail(f"REPORT_PDF_HTML_RETURNED_NO_PDF_LINK {url}")
     else:
         _log_fail(f"REPORT_PDF_NOT_PDF {url} -> {ct2}")
 
-    _log_fail(f"REPORT_PDF_DOWNLOAD_FAIL_NOT_PDF {url} -> {ct1}/{ct2}")
+    _log_fail(f"REPORT_PDF_DOWNLOAD_FAIL_NOT_PDF {url}")
     return b""
 
 
@@ -383,8 +454,9 @@ def _need_refresh(path: str, max_age_hours: int) -> bool:
     if not os.path.exists(path):
         return True
     try:
-        mtime = datetime.fromtimestamp(os.path.getmtime(path))
-        return (datetime.now() - mtime).total_seconds() > max_age_hours * 3600
+        # mtime = datetime.fromtimestamp(os.path.getmtime(path))
+        # return (datetime.now() - mtime).total_seconds() > max_age_hours * 3600
+        return True
     except Exception:
         return True
 def get_research_report_em_score(code: str, topk: int = REPORT_TOPK) -> float:
@@ -596,3 +668,4 @@ if __name__ == '__main__':
     print(df_feat.head())
     print(f"\n✅ 已保存：{OUT_PATH}")
     print(f"📄 失败日志（如有）：{FAIL_LOG}")
+
