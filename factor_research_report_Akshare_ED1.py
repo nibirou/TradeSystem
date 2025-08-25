@@ -65,6 +65,9 @@ FAIL_LOG = os.path.join(RESULT_DIR, f"stock_reports_failures_{RUN_TS}.log") # �
 os.makedirs(AKSHARE_STOCK_REPORT_EM_DIR, exist_ok=True)
 os.makedirs(AKSHARE_STOCK_REPORT_EM_TEXT_DIR, exist_ok=True)
 
+# 仅分析近 N 年研报
+REPORT_WINDOW_YEARS = 2
+
 # 并发线程数
 MAX_WORKERS = 8
 
@@ -497,13 +500,27 @@ def get_research_report_em_score(code: str, topk: int = REPORT_TOPK) -> float:
     date_col   = _get_first_existing_col(df, ["日期", "time", "发布时间", "pub_time"])
     pdf_col    = _get_first_existing_col(df, ["报告PDF链接", "pdf链接", "pdf", "url"])
 
-    # 时间升序排序后取最近 topk
+    # 仅保留“近两年”的研报，然后排序取最近 topk
     if date_col:
         try:
             df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
         except Exception:
             pass
+
+        # 计算时间窗：当前时刻往回 REPORT_WINDOW_YEARS 年，只获取近年来的研报数据
+        cutoff = pd.Timestamp.now() - pd.DateOffset(years=REPORT_WINDOW_YEARS)
+        # 丢掉没有日期的、以及早于窗口的
+        df = df[df[date_col].notna() & (df[date_col] >= cutoff)]
+
+        # 若过滤后为空，直接返回 0（也可记录一条日志便于排查）
+        if df.empty:
+            # _log_fail(f"REPORT_DATE_FILTER_EMPTY {code} cutoff={cutoff.date()}")
+            return 0.0
+
+        # 升序排序，便于 tail(topk) 取最近
         df = df.sort_values(date_col, ascending=True)
+
+    # 取最近 topk
     df_recent = df.tail(topk) if len(df) > topk else df
 
     # 简单去重（优先按 PDF 链接）
