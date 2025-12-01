@@ -2,7 +2,7 @@
 # 要注意两点：
 # 1、akshare要时刻保持在最新版本 pip install --upgrade akshare
 # 2、东方财富访问频繁后会封ip，手动登录东方财富网可以解决
-# 3、由于这个代码选取的是上一个交易日，
+# 3、由于这个代码选取的是上一个交易日，需要每日盘后手动更新
 
 import os
 import pandas as pd
@@ -247,17 +247,17 @@ def init_all_data():
     codes = stocks["代码"].tolist()
 
     max_workers = 10
-    # print("[并发] 下载历史行情中...")
-    # with ThreadPoolExecutor(max_workers=max_workers) as executor:
-    #     futures = {executor.submit(get_stock_hist, code): code for code in codes}
-    #     for _ in tqdm(as_completed(futures), total=len(futures)):
-    #         pass
-
-    print("[并发] 下载财务指标中...")
+    print("[并发] 下载历史行情中...")
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        futures = {executor.submit(get_finance_data, code): code for code in codes}
+        futures = {executor.submit(get_stock_hist, code): code for code in codes}
         for _ in tqdm(as_completed(futures), total=len(futures)):
             pass
+
+    # print("[并发] 下载财务指标中...")
+    # with ThreadPoolExecutor(max_workers=max_workers) as executor:
+    #     futures = {executor.submit(get_finance_data, code): code for code in codes}
+    #     for _ in tqdm(as_completed(futures), total=len(futures)):
+    #         pass
 
     # print("[执行] 下载概念板块中...")
     # try:
