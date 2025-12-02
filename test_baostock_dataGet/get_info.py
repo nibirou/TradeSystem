@@ -10,7 +10,7 @@ print('login respond error_code:'+lg.error_code)
 print('login respond  error_msg:'+lg.error_msg)
 
 #### 获取某日所有证券信息 ####
-rs = bs.query_all_stock(day="2025-11-28")  #当参数“day”为空时，默认取当天日期。闭市后日K线数据更新，该接口才会返回当天数据，否则返回空。
+rs = bs.query_all_stock(day="2025-12-02")  #当参数“day”为空时，默认取当天日期。闭市后日K线数据更新，该接口才会返回当天数据，否则返回空。
 print('query_all_stock respond error_code:'+rs.error_code)
 print('query_all_stock respond  error_msg:'+rs.error_msg)
 
@@ -22,7 +22,7 @@ while (rs.error_code == '0') & rs.next():
 result = pd.DataFrame(data_list, columns=rs.fields)
 
 #### 结果集输出到csv文件 ####   
-result.to_csv("D:\\all_stock.csv", encoding="gbk", index=False)
+# result.to_csv("D:\\all_stock.csv", encoding="gbk", index=False)
 print(result)
 
 #### 登出系统 ####

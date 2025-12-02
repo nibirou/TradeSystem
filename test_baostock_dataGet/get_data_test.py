@@ -96,7 +96,8 @@ def run_history_download(pool="hs300", freq="d", workers=8):
     
     for code in codes:
         rs = bs.query_history_k_data_plus(code,
-            "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST",
+            # "date,code,open,high,low,close,preclose,volume,amount,adjustflag,turn,tradestatus,pctChg,isST",
+            "date,time,code,open,high,low,close,volume,amount,adjustflag",
             start_date='1990-12-19', end_date=get_latest_end_date(),
             frequency=freq, adjustflag="2")
         print('query_history_k_data_plus respond error_code:'+rs.error_code)
@@ -125,4 +126,4 @@ def run_history_download(pool="hs300", freq="d", workers=8):
 if __name__ == "__main__":
     # freq=D/W/M/5/15/30/60
     # run_history_download(pool="hs300", freq="5", workers=10)
-    run_history_download(pool="hs300", freq="d", workers=10)
+    run_history_download(pool="hs300", freq="15", workers=10)

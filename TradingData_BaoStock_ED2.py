@@ -137,7 +137,7 @@ def split_months(start_date, end_date):
 def get_stock_hist_bs(code, pool="hs300", start_date=None, end_date=None,
                       freq="d", adjustflag="2"):
 
-    bs_login()
+    # bs_login()
     try:
         # ========== 最早起始日期 ==========
         is_index = (

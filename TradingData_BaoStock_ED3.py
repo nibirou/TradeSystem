@@ -57,11 +57,13 @@ def get_stock_list_bs(mode="hs300", day=None):
     elif mode == "all":
         if day is None:
             raise ValueError("mode='all' 需要 day='YYYY-MM-DD'")
+        print(day)
         rs = bs.query_all_stock(day=day)
     else:
         raise ValueError(f"未知股票池模式：{mode}")
 
     df = _bs_query_to_df(rs)
+    print(df)
 
     if "code_name" in df.columns:
         df = df.rename(columns={"code_name": "name"})
@@ -75,8 +77,50 @@ def get_stock_list_bs(mode="hs300", day=None):
 #       获取最新交易日
 # ===========================
 def get_latest_end_date():
-    today = datetime.now().date()
-    return (today - timedelta(days=1)).strftime("%Y-%m-%d")
+    """
+    根据 Baostock 交易日历，获取距离程序运行当天最近的一个交易日
+    - 如果今天是交易日 → 返回今天
+    - 如果今天不是交易日（周末/节假日）→ 返回最近交易日
+    """
+
+    # ---- 登录 ----
+    # lg = bs.login()
+    # if lg.error_code != "0":
+    #     raise Exception(f"Baostock login failed: {lg.error_msg}")
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    # 仅查询今年的交易日即可（快）
+    year_start = f"{datetime.now().year}-01-01"
+
+    rs = bs.query_trade_dates(start_date=year_start, end_date=today)
+
+    # ---- 解析交易日数据 ----
+    data_list = []
+    while (rs.error_code == "0") & rs.next():
+        data_list.append(rs.get_row_data())
+
+    # 退出
+    # bs.logout()
+
+    if not data_list:
+        raise Exception("baostock query_trade_dates 返回空数据")
+
+    df = pd.DataFrame(data_list, columns=rs.fields)
+
+    # DataFrame 字段：calendar_date, is_trading_day
+    df["calendar_date"] = pd.to_datetime(df["calendar_date"])
+    df["is_trading_day"] = df["is_trading_day"].astype(int)
+
+    # 提取所有交易日
+    trade_days = df[df["is_trading_day"] == 1]["calendar_date"].tolist()
+
+    if len(trade_days) == 0:
+        raise Exception("没有找到任何交易日")
+
+    # 最近一个交易日
+    latest_trade_day = trade_days[-1].strftime("%Y-%m-%d")
+    return latest_trade_day
 
 
 # ===========================
@@ -134,6 +178,31 @@ def split_months(start_date, end_date):
 # ===========================
 #         下载单只股票
 # ===========================
+def clean_baostock_df(df):
+    """
+    修复 Baostock 字段类型，使之可安全写入 parquet。
+    - 将空字符串转为 NaN
+    - 将本应为 float/int 的列强制转 numeric
+    """
+
+    # 1) 空字符串全部转 NaN
+    df = df.replace("", pd.NA)
+
+    # 2) 针对数字字段进行强制转换
+    numeric_cols = [
+        "open", "high", "low", "close", "preclose",
+        "volume", "amount",
+        "turn", "pctChg",
+        "peTTM", "psTTM", "pcfNcfTTM", "pbMRQ",
+        "tradestatus", "isST", "adjustflag"
+    ]
+
+    for col in numeric_cols:
+        if col in df.columns:
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+
+    return df
+
 def get_stock_hist_bs(code, pool, start_date, end_date, freq, adjustflag):
 
     # ========== 最早起始日期 ==========
@@ -217,6 +286,7 @@ def get_stock_hist_bs(code, pool, start_date, end_date, freq, adjustflag):
     if old_df is not None:
         df = pd.concat([old_df, df]).drop_duplicates(subset="date").sort_values("date")
 
+    df = clean_baostock_df(df)
     df.to_csv(csv_path, index=False)
     df.to_parquet(parquet_path, index=False)
 
@@ -231,7 +301,7 @@ def run_history_download(pool="hs300", freq="d"):
         stocks = get_stock_list_bs("all", day=get_latest_end_date())
     else:
         stocks = get_stock_list_bs(pool)
-    bs_logout()
+    # bs_logout()
 
     # 保存快照
     snapshot_path = os.path.join(
@@ -247,14 +317,14 @@ def run_history_download(pool="hs300", freq="d"):
 
     # 顺序逐只下载
     for code in tqdm(codes):
-        try:
-            bs_login()
-            get_stock_hist_bs(code, pool, None, None, freq, adjustflag="2")
-        except Exception as e:
-            failed_list.append(code)
-            print(f"[失败] {code}: {e}")
-        finally:
-            bs_logout()
+        # try:
+            # bs_login()
+        get_stock_hist_bs(code, pool, None, None, freq, adjustflag="2")
+        # except Exception as e:
+        #     failed_list.append(code)
+        #     print(f"[失败] {code}: {e}")
+        # finally:
+        #     bs_logout()
 
     # 写入失败日志
     if failed_list:
@@ -262,10 +332,11 @@ def run_history_download(pool="hs300", freq="d"):
         print(f"[失败数量] {len(failed_list)}，已写入 failed_hist.csv")
     else:
         print("[成功] 全部数据下载成功！")
-
+    
 
 # ===========================
 #             MAIN
 # ===========================
 if __name__ == "__main__":
-    run_history_download(pool="all", freq="5")
+    run_history_download(pool="hs300", freq="d")
+    bs_logout()
