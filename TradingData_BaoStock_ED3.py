@@ -181,20 +181,23 @@ def split_months(start_date, end_date):
 def clean_baostock_df(df):
     """
     修复 Baostock 字段类型，使之可安全写入 parquet。
-    - 将空字符串转为 NaN
-    - 将本应为 float/int 的列强制转 numeric
     """
 
-    # 1) 空字符串全部转 NaN
+    # 1) 空字符串转 NaN
     df = df.replace("", pd.NA)
 
-    # 2) 针对数字字段进行强制转换
+    # 2) 强制将 time 字段转为字符串
+    if "time" in df.columns:
+        df["time"] = df["time"].astype("string")
+
+    # 3) 数值列强制转 numeric
     numeric_cols = [
         "open", "high", "low", "close", "preclose",
         "volume", "amount",
         "turn", "pctChg",
         "peTTM", "psTTM", "pcfNcfTTM", "pbMRQ",
-        "tradestatus", "isST", "adjustflag"
+        "tradestatus", "isST",
+        "adjustflag"
     ]
 
     for col in numeric_cols:
@@ -338,5 +341,5 @@ def run_history_download(pool="hs300", freq="d"):
 #             MAIN
 # ===========================
 if __name__ == "__main__":
-    run_history_download(pool="hs300", freq="d")
+    run_history_download(pool="hs300", freq="5")
     bs_logout()
