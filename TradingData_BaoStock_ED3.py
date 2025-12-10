@@ -341,5 +341,5 @@ def run_history_download(pool="hs300", freq="d"):
 #             MAIN
 # ===========================
 if __name__ == "__main__":
-    run_history_download(pool="hs300", freq="5")
+    run_history_download(pool="hs300", freq="d")
     bs_logout()
