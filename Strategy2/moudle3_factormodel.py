@@ -381,13 +381,13 @@ if __name__ == "__main__":
         base_dir="./data_baostock",
     )
     period_cfg = PeriodConfig(
-        factor_start="2025-11-01",
+        factor_start="2025-10-01",
         factor_end="2025-12-01",
         backtest_start="2025-11-15",
         backtest_end="2025-11-30",
     )
     # bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300", "zz500"))
-    bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300",))
+    bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300", "zz500"))
     daily = bundle["daily"]
     minute5 = bundle["minute5"]
     trade_dates = bundle["trade_dates"]

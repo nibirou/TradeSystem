@@ -46,6 +46,13 @@ class FactorEngine:
         self.date_col = "date"
         self.datetime_col = "datetime"
 
+        # 确保 minute 里有 date 列，并且是 datetime64[ns] 格式
+        if self.date_col not in self.minute.columns:
+            # 如果你的 minute5 里没有 date 列，这里统一从 datetime 推导
+            self.minute[self.date_col] = self.minute[self.datetime_col].dt.normalize()
+        else:
+            self.minute[self.date_col] = pd.to_datetime(self.minute[self.date_col])
+
         # 统一排序
         self.daily.sort_values([self.code_col, self.date_col], inplace=True)
         self.minute.sort_values([self.code_col, self.datetime_col], inplace=True)
@@ -89,37 +96,62 @@ class FactorEngine:
 
     def factor_S2_vwap_deviation_5min(self):
         """
-        使用 5min 构造 VWAP 偏离因子
+        使用 5min 构造 VWAP 偏离因子：
+        VWAP = sum(price * volume) / sum(volume)
+        然后用当日收盘价与 VWAP 的偏离作为因子。
         """
         df = self.minute.copy()
 
-        # VWAP = sum(price * volume) / sum(volume)
-        df["pv"] = df["close"] * df["volume"]
-        minute_vwap = df.groupby(["code", df[self.datetime_col].dt.date]).apply(
-            lambda x: x["pv"].sum() / (x["volume"].sum() + 1e-9)
-        ).reset_index()
-        minute_vwap.columns = ["code", "date", "vwap_5min"]
+        # 这里假定 minute 数据中已经有 `date` 列（来自 loader），是 datetime64[ns]
+        # 如果是字符串，请先转换：
+        # df["date"] = pd.to_datetime(df["date"])
 
-        # 合并进 daily
+        # 计算 price * volume
+        df["pv"] = df["close"] * df["volume"]
+
+        # 按 (code, date) 聚合，得到当日全时段的 VWAP
+        minute_vwap = (
+            df.groupby(["code", "date"])
+              .agg({"pv": "sum", "volume": "sum"})
+              .reset_index()
+        )
+        minute_vwap["vwap_5min"] = minute_vwap["pv"] / (minute_vwap["volume"] + 1e-9)
+        minute_vwap = minute_vwap[["code", "date", "vwap_5min"]]
+
+        # 合并到日频数据
         d = self.daily.merge(minute_vwap, on=["code", "date"], how="left")
 
         d["S2"] = (d["close"] - d["vwap_5min"]) / (d["vwap_5min"] + 1e-9)
+
         return d[["date", "code", "S2"]]
+
 
     def factor_S3_volume_spike(self):
         """
-        突然放量（minute5 对比前 48 根）
+        突然放量：当日 5 分钟成交量相对过去 48 根均值的最大放大倍数
         """
         df = self.minute.copy()
-        df["vol_ma48"] = df.groupby("code")["volume"].rolling(48).mean().reset_index(0, drop=True)
+
+        # 计算 48 根滚动均值（约等于 4 小时）
+        df = df.sort_values(["code", self.datetime_col])
+        df["vol_ma48"] = (
+            df.groupby("code")["volume"]
+              .rolling(48)
+              .mean()
+              .reset_index(0, drop=True)
+        )
         df["vol_spike"] = df["volume"] / (df["vol_ma48"] + 1e-9)
 
-        # 转成日频
-        daily_spike = df.groupby(["code", df[self.datetime_col].dt.date])["vol_spike"].max()
-        daily_spike = daily_spike.reset_index()
-        daily_spike.columns = ["code", "date", "S3"]
+        # 聚合到日频：取当日 vol_spike 的最大值作为放量程度
+        daily_spike = (
+            df.groupby(["code", "date"])["vol_spike"]
+              .max()
+              .reset_index()
+        )
+        daily_spike.rename(columns={"vol_spike": "S3"}, inplace=True)
 
-        return daily_spike
+        return daily_spike[["date", "code", "S3"]]
+
 
     def factor_S4_volume_contraction(self):
         """
@@ -136,19 +168,23 @@ class FactorEngine:
 
     def factor_F1_active_buy_ratio(self):
         """
-        主动买入占比 —— 分钟线没有拆 bid/ask，
-        用 替代方法：涨的时候 volume 较大
+        主动买入占比（替代实现）：
+        - 没有真实买卖盘拆分，只能用“上涨时的成交量”近似主动买入。
         """
         df = self.minute.copy()
-        df["return"] = df.groupby("code")["close"].pct_change()
-        df["active_buy"] = (df["return"] > 0).astype(int) * df["volume"]
+        df = df.sort_values(["code", self.datetime_col])
 
-        buy_ratio = df.groupby(["code", df[self.datetime_col].dt.date]).apply(
-            lambda x: x["active_buy"].sum() / (x["volume"].sum() + 1e-9)
-        ).reset_index()
-        buy_ratio.columns = ["code", "date", "F1"]
+        df["ret"] = df.groupby("code")["close"].pct_change()
+        df["active_buy_vol"] = (df["ret"] > 0).astype(int) * df["volume"]
 
-        return buy_ratio
+        buy_ratio = (
+            df.groupby(["code", "date"])
+              .agg({"active_buy_vol": "sum", "volume": "sum"})
+              .reset_index()
+        )
+        buy_ratio["F1"] = buy_ratio["active_buy_vol"] / (buy_ratio["volume"] + 1e-9)
+
+        return buy_ratio[["date", "code", "F1"]]
 
     def factor_F2_turnover_abnormal(self):
         df = self.daily.copy()
