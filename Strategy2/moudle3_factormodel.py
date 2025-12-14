@@ -1,3 +1,4 @@
+import os
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
@@ -87,6 +88,11 @@ class Backtester:
         self.positions = []   # list of dict
         self.trades = []      # list of dict
         self.nav_records = [] # 每日净值
+        
+        # 新增：每日持仓快照
+        self.daily_positions = []   # list of dict
+        # 新增：详细交易日志（比 self.trades 更全）
+        self.trade_logs = []
 
     # ----------------------------------------
     # 日频辅助特征
@@ -199,22 +205,30 @@ class Backtester:
                 pnl = exit_value - entry_value
                 daily_pnl += pnl
 
-                self.trades.append({
+                self.trade_logs.append({
                     "code": code,
                     "signal_date": pos["signal_date"],
                     "entry_date": pos["entry_date"],
                     "exit_date": current_date,
+
                     "entry_price": pos["entry_price"],
                     "exit_price": close_price,
                     "shares": pos["shares"],
+
+                    "holding_days": holding_days,
                     "pnl": pnl,
                     "ret": ret,
                     "exit_reason": exit_reason,
+
                     "buy_low": pos["buy_low"],
                     "buy_high": pos["buy_high"],
                     "stop_loss": pos["stop_loss"],
                     "take_profit": pos["take_profit"],
+
+                    # 因子快照全部展开
+                    **pos["factor_snapshot"],
                 })
+
             else:
                 new_positions.append(pos)
 
@@ -247,6 +261,61 @@ class Backtester:
         })
 
         return nav
+    
+    # ----------------------------------------
+    # 记录每日持仓快照
+    # ----------------------------------------
+    def _record_daily_positions(self, current_date: pd.Timestamp, nav: float):
+        df_d = self.daily[self.daily[self.date_col] == current_date]
+        price_map = df_d.set_index("code")[["open", "high", "low", "close"]].to_dict("index")
+
+        for pos in self.positions:
+            code = pos["code"]
+            if code not in price_map:
+                continue
+
+            prices = price_map[code]
+            close_price = prices["close"]
+
+            holding_days = (current_date - pos["entry_date"]).days + 1
+            cost = pos["entry_price"]
+            pnl = (close_price - cost) * pos["shares"]
+            ret = (close_price - cost) / cost
+            position_value = close_price * pos["shares"]
+            weight = position_value / nav if nav > 0 else 0
+
+            self.daily_positions.append({
+                "date": current_date,
+                "code": code,
+
+                # 价格
+                "open": prices["open"],
+                "high": prices["high"],
+                "low": prices["low"],
+                "close": close_price,
+
+                # 持仓信息
+                "entry_date": pos["entry_date"],
+                "entry_price": cost,
+                "shares": pos["shares"],
+                "holding_days": holding_days,
+
+                # 盈亏
+                "position_value": position_value,
+                "pnl": pnl,
+                "ret": ret,
+                "weight": weight,
+
+                # 风控状态
+                "stop_loss": pos["stop_loss"],
+                "take_profit": pos["take_profit"],
+                "hit_stop_loss": close_price <= pos["stop_loss"],
+                "hit_take_profit": close_price >= pos["take_profit"],
+
+                # 因子（用于事后分析）
+                **pos["factor_snapshot"],
+            })
+
 
     # ----------------------------------------
     # 主回测函数
@@ -304,25 +373,53 @@ class Backtester:
                         take_profit = open_price * (1 + self.cfg.take_profit_pct)
 
                         pos = {
+                            # 基础信息
                             "code": code,
+                            "signal_date": d,
                             "entry_date": next_d,
                             "entry_price": open_price,
                             "shares": shares,
-                            "signal_date": d,
+
+                            # 风控参数
                             "buy_low": buy_low,
                             "buy_high": buy_high,
                             "stop_loss": stop_loss,
                             "take_profit": take_profit,
+
+                            # 状态字段
+                            "holding_days": 0,
+                            "exit_date": None,
+                            "exit_price": None,
+                            "exit_reason": None,
+
+                            # 买入时的因子快照（非常重要）
+                            "factor_snapshot": {
+                                "L1": row["L1"],
+                                "L2": row["L2"],
+                                "S1": row["S1"],
+                                "S2": row["S2"],
+                                "S3": row["S3"],
+                                "S4": row["S4"],
+                                "F1": row["F1"],
+                                "F2": row["F2"],
+                                "R1": row["R1"],
+                                "alpha_score": row["alpha_score"],
+                            }
                         }
                         self.positions.append(pos)
 
             # 3) 记录净值
             nav = self._record_nav(d, daily_pnl, nav)
+            
+            # 4) 每日持仓
+            self._record_daily_positions(d, nav)
 
         nav_df = pd.DataFrame(self.nav_records).sort_values("date")
         trades_df = pd.DataFrame(self.trades)
+        trade_logs_df = pd.DataFrame(self.trade_logs)
+        daily_positions_df = pd.DataFrame(self.daily_positions)
 
-        return nav_df, trades_df
+        return nav_df, trades_df, trade_logs_df, daily_positions_df
 
 def evaluate_future_window(trades_df: pd.DataFrame, daily_df: pd.DataFrame,
                            horizon: int = 15) -> pd.DataFrame:
@@ -381,9 +478,9 @@ if __name__ == "__main__":
         base_dir="./data_baostock",
     )
     period_cfg = PeriodConfig(
-        factor_start="2025-10-01",
+        factor_start="2025-09-01",
         factor_end="2025-12-01",
-        backtest_start="2025-11-15",
+        backtest_start="2025-10-01",
         backtest_end="2025-11-30",
     )
     # bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300", "zz500"))
@@ -391,6 +488,8 @@ if __name__ == "__main__":
     daily = bundle["daily"]
     minute5 = bundle["minute5"]
     trade_dates = bundle["trade_dates"]
+    
+    print(trade_dates)
 
     # 2) 因子计算（模块 2）
     fe = FactorEngine(daily, minute5, trade_dates)
@@ -409,13 +508,27 @@ if __name__ == "__main__":
 
     # 4) 回测（模块 3.2）
     bt = Backtester(daily, factor_scored, trade_dates, period_cfg, strat_cfg)
-    nav_df, trades_df = bt.run_backtest()
+    nav_df, trades_df, trade_logs_df, daily_positions_df = bt.run_backtest()
+    
+    # 保存
+    output_dir = "./Strategy2/backtest_output"
+    os.makedirs(output_dir, exist_ok=True)
+
+    nav_df.to_csv(f"{output_dir}/nav.csv", index=False)
+    trades_df.to_csv(f"{output_dir}/trades_simple.csv", index=False)
+    trade_logs_df.to_csv(f"{output_dir}/trades_detailed.csv", index=False)
+    daily_positions_df.to_csv(f"{output_dir}/daily_positions.csv", index=False)
+
+    print("✅ 回测结果已保存到 backtest_output/")
 
     # 5) 评估未来 15 天是否曾走强（模块 3.3）
     trades_eval = evaluate_future_window(trades_df, daily, horizon=15)
 
-    print(nav_df.tail())
-    print(trades_eval.head())
+    # print(nav_df.tail()) # nav(net asset value) 净资产
+    # print(trades_eval.head())
+    
+    print(nav_df) # nav(net asset value) 净资产
+    print(trades_eval)
 
     # 回测分析
     an = Analyzer(nav_df, trades_df)
