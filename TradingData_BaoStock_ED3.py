@@ -287,7 +287,17 @@ def get_stock_hist_bs(code, pool, start_date, end_date, freq, adjustflag):
     df = pd.DataFrame(data_list, columns=rs.fields)
 
     if old_df is not None:
-        df = pd.concat([old_df, df]).drop_duplicates(subset="date").sort_values("date")
+        df = pd.concat([old_df, df], ignore_index=True)
+
+    # ========= 关键修复：按是否有 time 列来决定去重逻辑 =========
+    if "time" in df.columns:
+        # 分钟线：同一天有多条，必须用 (date, time) 去重
+        df = df.drop_duplicates(subset=["date", "time"], keep="last")
+        df = df.sort_values(["date", "time"])
+    else:
+        # 日 / 周 / 月线：同一天只应有一条，用 date 去重即可
+        df = df.drop_duplicates(subset=["date"], keep="last")
+        df = df.sort_values("date")
 
     df = clean_baostock_df(df)
     df.to_csv(csv_path, index=False)
@@ -341,5 +351,10 @@ def run_history_download(pool="hs300", freq="d"):
 #             MAIN
 # ===========================
 if __name__ == "__main__":
-    run_history_download(pool="all", freq="5")
+    # run_history_download(pool="hs300", freq="d")
+    # run_history_download(pool="hs300", freq="5")
+    # run_history_download(pool="zz500", freq="d")
+    run_history_download(pool="zz500", freq="5")
+    # run_history_download(pool="all", freq="d")
+    # run_history_download(pool="all", freq="5")
     bs_logout()
