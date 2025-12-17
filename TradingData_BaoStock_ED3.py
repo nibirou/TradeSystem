@@ -305,6 +305,34 @@ def get_stock_hist_bs(code, pool, start_date, end_date, freq, adjustflag):
 
 
 # ===========================
+#  更新：解决股票列表动态更新问题
+#  需要更新的股票 = 本次股票池 ∪ 历史下载目录中已存在的股票 ∪ 上一次快照中存在但本次消失的股票
+# ===========================
+def get_codes_from_hist_dir(pool, freq):
+    hist_dir = os.path.join(HIST_DIR, pool, freq)
+    if not os.path.exists(hist_dir):
+        return set()
+
+    codes = set()
+    for fn in os.listdir(hist_dir):
+        if not fn.endswith(".csv"):
+            continue
+        # 例如：sh_600519_5.csv
+        code = fn.replace(".csv", "").rsplit("_", 1)[0]
+        code = code.replace("_", ".")
+        codes.add(code)
+    return codes
+
+# 读取旧快照
+def load_last_snapshot(pool):
+    path = os.path.join(META_DIR, f"stock_list_{pool}.csv")
+    if not os.path.exists(path):
+        return set()
+    df = pd.read_csv(path)
+    return set(df["code"].tolist())
+
+
+# ===========================
 #           主流程
 # ===========================
 def run_history_download(pool="hs300", freq="d"):
@@ -324,9 +352,17 @@ def run_history_download(pool="hs300", freq="d"):
     stocks.to_csv(os.path.join(META_DIR, f"stock_list_{pool}.csv"),
                   index=False, encoding="utf-8")
 
-    codes = stocks["code"].tolist()
-    print(f"[股票池] {pool} 共 {len(codes)} 只股票")
-    print(f"[开始顺序下载] 频率: {freq}")
+    current_codes = set(stocks["code"].tolist())
+    hist_codes = get_codes_from_hist_dir(pool, freq)
+    last_snapshot_codes = load_last_snapshot(pool)
+
+    final_codes = current_codes | hist_codes | last_snapshot_codes
+
+    codes = sorted(final_codes)
+
+    print(f"[股票池] 本次 {len(current_codes)} 只")
+    print(f"[历史文件] {len(hist_codes)} 只")
+    print(f"[最终更新] 共 {len(codes)} 只")
 
     # 顺序逐只下载
     for code in tqdm(codes):
@@ -352,9 +388,9 @@ def run_history_download(pool="hs300", freq="d"):
 # ===========================
 if __name__ == "__main__":
     # run_history_download(pool="hs300", freq="d")
-    # run_history_download(pool="hs300", freq="5")
+    run_history_download(pool="hs300", freq="5")
     # run_history_download(pool="zz500", freq="d")
-    run_history_download(pool="zz500", freq="5")
+    # run_history_download(pool="zz500", freq="5")
     # run_history_download(pool="all", freq="d")
     # run_history_download(pool="all", freq="5")
     bs_logout()

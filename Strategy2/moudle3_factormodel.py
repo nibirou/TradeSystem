@@ -73,6 +73,12 @@ class Backtester:
                  period_cfg, strat_cfg: StrategyConfig):
 
         self.daily = daily_df.copy()
+        self.daily = (
+            self.daily
+                .sort_values(["code", "date"])
+                .drop_duplicates(subset=["code", "date"], keep="last")
+                .reset_index(drop=True)
+        )
         self.factor = factor_df.copy()
         self.trade_dates = trade_dates
         self.period = period_cfg
@@ -266,7 +272,13 @@ class Backtester:
     # 记录每日持仓快照
     # ----------------------------------------
     def _record_daily_positions(self, current_date: pd.Timestamp, nav: float):
+        # 由于hs300 zz500可能存在股票重合，因此df_d可能存在同一只股票有两条相同记录的情况，这时需要删去一条
+        # hs300 / zz500 股票池交叉
         df_d = self.daily[self.daily[self.date_col] == current_date]
+        
+        # dup = df_d["code"].value_counts()
+        # print(dup[dup > 1].head(10))
+        
         price_map = df_d.set_index("code")[["open", "high", "low", "close"]].to_dict("index")
 
         for pos in self.positions:
