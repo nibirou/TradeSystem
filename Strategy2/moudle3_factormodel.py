@@ -73,12 +73,12 @@ class Backtester:
                  period_cfg, strat_cfg: StrategyConfig):
 
         self.daily = daily_df.copy()
-        self.daily = (
-            self.daily
-                .sort_values(["code", "date"])
-                .drop_duplicates(subset=["code", "date"], keep="last")
-                .reset_index(drop=True)
-        )
+        # self.daily = (
+        #     self.daily
+        #         .sort_values(["code", "date"])
+        #         .drop_duplicates(subset=["code", "date"], keep="last")
+        #         .reset_index(drop=True)
+        # )
         self.factor = factor_df.copy()
         self.trade_dates = trade_dates
         self.period = period_cfg
@@ -92,7 +92,7 @@ class Backtester:
 
         # 当前持仓 + 交易记录
         self.positions = []   # list of dict
-        self.trades = []      # list of dict
+        # self.trades = []      # list of dict
         self.nav_records = [] # 每日净值
         
         # 新增：每日持仓快照
@@ -335,7 +335,7 @@ class Backtester:
     def run_backtest(self):
         nav = self.cfg.capital
         self.positions = []
-        self.trades = []
+        # self.trades = []
         self.nav_records = []
 
         # 只在回测区间内循环
@@ -427,11 +427,12 @@ class Backtester:
             self._record_daily_positions(d, nav)
 
         nav_df = pd.DataFrame(self.nav_records).sort_values("date")
-        trades_df = pd.DataFrame(self.trades)
+        # trades_df = pd.DataFrame(self.trades)
         trade_logs_df = pd.DataFrame(self.trade_logs)
         daily_positions_df = pd.DataFrame(self.daily_positions)
 
-        return nav_df, trades_df, trade_logs_df, daily_positions_df
+        # return nav_df, trades_df, trade_logs_df, daily_positions_df
+        return nav_df, trade_logs_df, daily_positions_df
 
 def evaluate_future_window(trades_df: pd.DataFrame, daily_df: pd.DataFrame,
                            horizon: int = 15) -> pd.DataFrame:
@@ -520,21 +521,21 @@ if __name__ == "__main__":
 
     # 4) 回测（模块 3.2）
     bt = Backtester(daily, factor_scored, trade_dates, period_cfg, strat_cfg)
-    nav_df, trades_df, trade_logs_df, daily_positions_df = bt.run_backtest()
+    nav_df, trade_logs_df, daily_positions_df = bt.run_backtest()
     
     # 保存
     output_dir = "./Strategy2/backtest_output"
     os.makedirs(output_dir, exist_ok=True)
 
     nav_df.to_csv(f"{output_dir}/nav.csv", index=False)
-    trades_df.to_csv(f"{output_dir}/trades_simple.csv", index=False)
+    # trades_df.to_csv(f"{output_dir}/trades_simple.csv", index=False)
     trade_logs_df.to_csv(f"{output_dir}/trades_detailed.csv", index=False)
     daily_positions_df.to_csv(f"{output_dir}/daily_positions.csv", index=False)
 
     print("✅ 回测结果已保存到 backtest_output/")
 
     # 5) 评估未来 15 天是否曾走强（模块 3.3）
-    trades_eval = evaluate_future_window(trades_df, daily, horizon=15)
+    trades_eval = evaluate_future_window(trade_logs_df, daily, horizon=15)
 
     # print(nav_df.tail()) # nav(net asset value) 净资产
     # print(trades_eval.head())
@@ -543,5 +544,5 @@ if __name__ == "__main__":
     print(trades_eval)
 
     # 回测分析
-    an = Analyzer(nav_df, trades_df)
+    an = Analyzer(nav_df, trade_logs_df)
     an.run_all()

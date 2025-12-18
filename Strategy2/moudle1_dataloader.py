@@ -209,14 +209,45 @@ def load_data_bundle(cfg: DataConfig, period: PeriodConfig, pools=("hs300", "zz5
 
         print(f">>> 加载 {p} 日频数据")
         daily_p = load_daily_data(cfg, p)
+        daily_p["source_pool"] = p
         daily_list.append(daily_p)
 
         print(f">>> 加载 {p} 5 分钟数据")
         minute_p = load_5min_data(cfg, p)
+        minute_p["source_pool"] = p
         minute_list.append(minute_p)
 
     daily_all = pd.concat(daily_list, ignore_index=True)
     minute_all = pd.concat(minute_list, ignore_index=True)
+
+    # 清洗去重
+    # ===============================
+    # 日频事实表清洗（核心）
+    # ===============================
+    before = len(daily_all)
+
+    daily_all = (
+        daily_all
+        .sort_values(["code", "date"])
+        .drop_duplicates(subset=["code", "date"], keep="last")
+        .reset_index(drop=True)
+    )
+    after = len(daily_all)
+    print(f">>> 日频去重完成: {before} -> {after} (removed {before - after})")
+
+    # ===============================
+    # 5 分钟事实表清洗
+    # ===============================
+    before = len(minute_all)
+
+    minute_all = (
+        minute_all
+        .sort_values(["code", "datetime"])
+        .drop_duplicates(subset=["code", "datetime"], keep="last")
+        .reset_index(drop=True)
+    )
+    after = len(minute_all)
+    print(f">>> 5min 去重完成: {before} -> {after} (removed {before - after})")
 
     print(">>> 时间切片（因子区间）")
     daily_slice = slice_period_daily(daily_all, period, cfg)
