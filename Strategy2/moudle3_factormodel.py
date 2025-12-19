@@ -519,6 +519,8 @@ if __name__ == "__main__":
     )
     factor_scored = add_composite_score(factor_df, strat_cfg)
 
+    print(factor_scored)
+
     # 4) 回测（模块 3.2）
     bt = Backtester(daily, factor_scored, trade_dates, period_cfg, strat_cfg)
     nav_df, trade_logs_df, daily_positions_df = bt.run_backtest()

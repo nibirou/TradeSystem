@@ -23,6 +23,9 @@ class DataConfig:
     daily_freq: str = "d"
     minute5_freq: str = "5"
 
+    # 交易日历路径
+    trade_calendar_dir = "./data_baostock/metadata/trade_datas.csv"
+
     # 字段标准化
     date_col: str = "date"
     time_col: str = "time"
@@ -45,6 +48,8 @@ class PeriodConfig:
     backtest_start: str = "2020-01-01"
     backtest_end: str = "2024-12-31"
 
+    factor_buffer_n: int = 100
+
     def validate(self):
         fs = pd.to_datetime(self.factor_start)
         fe = pd.to_datetime(self.factor_end)
@@ -64,6 +69,52 @@ factor_start < backtest_start < backtest_end <= factor_end
 """
             )
 
+def get_all_trade_dates_from_csv(csv_path: str) -> pd.DatetimeIndex:
+    """
+    从 CSV 交易日历中读取所有交易日，自动兼容：
+    1) 有表头：calendar_date,is_trading_day
+    2) 无表头：2025-11-10,1
+    """
+    # 先正常按“有表头”尝试
+    df = pd.read_csv(csv_path)
+
+    # ---------- 情况 1：有标准表头 ----------
+    if set(["calendar_date", "is_trading_day"]).issubset(df.columns):
+        pass
+
+    # ---------- 情况 2：无表头 ----------
+    else:
+        df = pd.read_csv(
+            csv_path,
+            header=None,
+            names=["calendar_date", "is_trading_day"]
+        )
+
+    # 类型清洗
+    df["calendar_date"] = pd.to_datetime(
+        df["calendar_date"],
+        errors="coerce"
+    )
+    df["is_trading_day"] = pd.to_numeric(
+        df["is_trading_day"],
+        errors="coerce"
+    ).fillna(0).astype(int)
+
+    # 丢掉非法行（比如表头被误读的情况）
+    df = df.dropna(subset=["calendar_date"])
+
+    trade_days = (
+        df[df["is_trading_day"] == 1]
+        .sort_values("calendar_date")["calendar_date"]
+        .unique()
+    )
+
+    trade_dates = pd.DatetimeIndex(trade_days)
+
+    if trade_dates.empty:
+        raise ValueError(f"交易日历为空，请检查文件: {csv_path}")
+
+    return trade_dates
 
 
 # ===============================
@@ -85,13 +136,18 @@ def load_stock_pool(cfg: DataConfig, pool: str) -> pd.DataFrame:
     return df
 
 
-
 # ===============================
-# 4. 加载日频数据
+# 4. 加载日频数据（支持时间裁剪）
 # ===============================
-def load_daily_data(cfg: DataConfig, pool: str) -> pd.DataFrame:
+def load_daily_data(
+    cfg: DataConfig,
+    pool: str,
+    start_date: pd.Timestamp | None = None,
+    end_date: pd.Timestamp | None = None
+) -> pd.DataFrame:
     """
     加载 data_baostock/stock_hist/{pool}/d/*.csv
+    支持按时间窗口裁剪（start_date ~ end_date）
     """
     root = Path(cfg.base_dir) / cfg.hist_dir / pool / cfg.daily_freq
     if not root.exists():
@@ -100,21 +156,40 @@ def load_daily_data(cfg: DataConfig, pool: str) -> pd.DataFrame:
     all_files = sorted(root.glob("*.csv"))
     dfs = []
 
+    # 预处理时间
+    if start_date is not None:
+        start_date = pd.to_datetime(start_date)
+    if end_date is not None:
+        end_date = pd.to_datetime(end_date)
+
     for f in all_files:
         df = pd.read_csv(f)
         if df.empty:
             continue
 
+        # 基础清洗
         df[cfg.date_col] = pd.to_datetime(df[cfg.date_col])
         df[cfg.code_col] = df[cfg.code_col].astype(str)
+
+        # ===============================
+        # ★ 时间裁剪（关键优化点）
+        # ===============================
+        if start_date is not None:
+            df = df[df[cfg.date_col] >= start_date]
+        if end_date is not None:
+            df = df[df[cfg.date_col] <= end_date]
+
+        if df.empty:
+            continue
+
         dfs.append(df)
 
     if len(dfs) == 0:
-        raise RuntimeError(f"未加载到任何日频数据: {root}")
+        raise RuntimeError(f"未加载到任何日频数据（时间区间内无数据）: {root}")
 
     daily = pd.concat(dfs, ignore_index=True)
 
-    # 排序、去重
+    # 排序、去重（事实表）
     daily = daily.sort_values([cfg.code_col, cfg.date_col])
     daily = daily.drop_duplicates(subset=[cfg.code_col, cfg.date_col], keep="last")
     daily = daily.reset_index(drop=True)
@@ -122,11 +197,15 @@ def load_daily_data(cfg: DataConfig, pool: str) -> pd.DataFrame:
     return daily
 
 
-
 # ===============================
-# 5. 加载 5 分钟频率数据
+# 5. 加载 5 分钟频率数据（支持时间裁剪）
 # ===============================
-def load_5min_data(cfg: DataConfig, pool: str) -> pd.DataFrame:
+def load_5min_data(
+    cfg: DataConfig,
+    pool: str,
+    start_date: pd.Timestamp | None = None,
+    end_date: pd.Timestamp | None = None
+) -> pd.DataFrame:
     root = Path(cfg.base_dir) / cfg.hist_dir / pool / cfg.minute5_freq
     if not root.exists():
         raise FileNotFoundError(f"5分钟目录不存在: {root}")
@@ -134,30 +213,51 @@ def load_5min_data(cfg: DataConfig, pool: str) -> pd.DataFrame:
     all_files = sorted(root.glob("*.csv"))
     dfs = []
 
+    # 预处理时间
+    if start_date is not None:
+        start_date = pd.to_datetime(start_date)
+    if end_date is not None:
+        end_date = pd.to_datetime(end_date)
+
     for f in all_files:
         df = pd.read_csv(f)
         if df.empty:
             continue
 
-        # date + time → datetime
+        # 基础字段处理
         df[cfg.date_col] = pd.to_datetime(df[cfg.date_col])
         df[cfg.time_col] = df[cfg.time_col].astype(str)
+        df[cfg.code_col] = df[cfg.code_col].astype(str)
+
+        # ===============================
+        # ★ 先按 date 做“粗裁剪”（非常重要，能省大量行）
+        # ===============================
+        if start_date is not None:
+            df = df[df[cfg.date_col] >= start_date]
+        if end_date is not None:
+            df = df[df[cfg.date_col] <= end_date]
+
+        if df.empty:
+            continue
+
+        # date + time → datetime
         df[cfg.unified_datetime_col] = pd.to_datetime(
             df[cfg.date_col].dt.strftime("%Y-%m-%d") + " " + df[cfg.time_col],
             format="%Y-%m-%d %H:%M:%S",
             errors="coerce"
         )
 
-        df[cfg.code_col] = df[cfg.code_col].astype(str)
+        df = df.dropna(subset=[cfg.unified_datetime_col])
+
         dfs.append(df)
 
     if len(dfs) == 0:
-        raise RuntimeError(f"未加载到任何 5 分钟数据: {root}")
+        raise RuntimeError(f"未加载到任何 5 分钟数据（时间区间内无数据）: {root}")
 
     minute = pd.concat(dfs, ignore_index=True)
 
+    # 排序 & 事实表整理
     minute = minute.sort_values([cfg.code_col, cfg.unified_datetime_col])
-    minute = minute.dropna(subset=[cfg.unified_datetime_col])
     minute = minute.reset_index(drop=True)
 
     return minute
@@ -197,7 +297,7 @@ def get_backtest_trade_dates(daily: pd.DataFrame, period: PeriodConfig, cfg: Dat
 # 8. 统一入口
 # ===============================
 def load_data_bundle(cfg: DataConfig, period: PeriodConfig, pools=("hs300", "zz500")):
-    period.validate()
+    # period.validate()
 
     daily_list = []
     minute_list = []
@@ -262,4 +362,128 @@ def load_data_bundle(cfg: DataConfig, period: PeriodConfig, pools=("hs300", "zz5
         "trade_dates": trade_dates,
         "cfg": cfg,
         "period": period
+    }
+
+
+
+
+
+def shift_trade_date(trade_dates: pd.DatetimeIndex,
+                     anchor: pd.Timestamp,
+                     n_back: int) -> pd.Timestamp:
+    """
+    从 anchor 向前回退 n_back 个交易日
+    """
+    anchor = pd.to_datetime(anchor)
+    idx = trade_dates.get_loc(anchor)
+    start_idx = max(0, idx - n_back)
+    return trade_dates[start_idx]
+
+def compute_load_window(period: PeriodConfig,
+                        trade_dates: pd.DatetimeIndex,
+                        buffer_n: int):
+    """
+    返回 (load_start, load_end)
+    """
+    factor_start = pd.to_datetime(period.factor_start)
+    factor_end = pd.to_datetime(period.factor_end)
+
+    load_start = shift_trade_date(trade_dates, factor_start, buffer_n)
+    load_end = factor_end
+
+    return load_start, load_end
+
+
+def load_data_bundle_update(cfg: DataConfig,
+                     period: PeriodConfig,
+                     pools=("hs300", "zz500")):
+    daily_list = []
+    minute_list = []
+
+    # 准备完整交易日序列（用于 buffer 回退）
+    full_trade_dates = get_all_trade_dates_from_csv(cfg.trade_calendar_dir)
+
+    # ===============================
+    # 1. 计算加载窗口（buffer）
+    # ===============================
+    buffer_n = period.factor_buffer_n
+    load_start, load_end = compute_load_window(
+        period,
+        full_trade_dates,
+        buffer_n
+    )
+
+    print(f">>> 因子区间: {period.factor_start} ~ {period.factor_end}")
+    print(f">>> 实际加载数据区间: {load_start.date()} ~ {load_end.date()}")
+
+    for p in pools:
+        print(f">>> 加载股票池: {p}")
+        stock_pool = load_stock_pool(cfg, p)
+        print(f"股票池数量：{len(stock_pool)}")
+
+        print(f">>> 加载 {p} 日频数据（裁剪后）")
+        daily_p = load_daily_data(
+            cfg, p,
+            start_date=load_start,
+            end_date=load_end
+        )
+        daily_p["source_pool"] = p
+        daily_list.append(daily_p)
+
+        print(f">>> 加载 {p} 5 分钟数据（裁剪后）")
+        minute_p = load_5min_data(
+            cfg, p,
+            start_date=load_start,
+            end_date=load_end
+        )
+        minute_p["source_pool"] = p
+        minute_list.append(minute_p)
+    
+    # ===============================
+    # 2. 合并
+    # ===============================
+    daily_all = pd.concat(daily_list, ignore_index=True)
+    minute_all = pd.concat(minute_list, ignore_index=True)
+
+    # ===============================
+    # 3. 日频事实表清洗
+    # ===============================
+    before = len(daily_all)
+    daily_all = (
+        daily_all
+        .sort_values(["code", "date"])
+        .drop_duplicates(subset=["code", "date"], keep="last")
+        .reset_index(drop=True)
+    )
+    after = len(daily_all)
+    print(f">>> 日频去重完成: {before} -> {after} (removed {before - after})")
+
+    # ===============================
+    # 4. 5 分钟事实表清洗
+    # ===============================
+    before = len(minute_all)
+    minute_all = (
+        minute_all
+        .sort_values(["code", "datetime"])
+        .drop_duplicates(subset=["code", "datetime"], keep="last")
+        .reset_index(drop=True)
+    )
+    after = len(minute_all)
+    print(f">>> 5min 去重完成: {before} -> {after} (removed {before - after})")
+
+
+    print(">>> 获取回测交易日序列")
+    trade_dates = trade_dates = full_trade_dates[
+                    (full_trade_dates >= period.backtest_start) &
+                    (full_trade_dates <= period.backtest_end)
+                ]
+
+    return {
+        "daily": daily_all,
+        "minute5": minute_all,
+        "trade_dates": trade_dates,
+        "cfg": cfg,
+        "period": period,
+        "load_start": load_start,
+        "load_end": load_end
     }
