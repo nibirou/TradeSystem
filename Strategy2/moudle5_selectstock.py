@@ -110,7 +110,7 @@ if __name__ == "__main__":
     )
     period_cfg = PeriodConfig(
         factor_start="2025-09-01",
-        factor_end="2025-12-17",
+        factor_end="2025-12-19",
         backtest_start="2025-12-15",
         backtest_end="2025-12-16",
     )
@@ -137,5 +137,14 @@ if __name__ == "__main__":
     )
     factor_scored = add_composite_score(factor_df, strat_cfg)
 
-    print(factor_scored)
-
+    factor_today = factor_scored.loc[factor_scored[data_cfg.date_col] == period_cfg.factor_end]
+    
+    factor_today = factor_today.sort_values("alpha_score", ascending=False)
+    
+    print(factor_today)
+    
+    all_stock = pd.read_csv("./data_baostock/metadata/stock_list_all.csv")
+    
+    selected_stock = all_stock.loc[all_stock["code"].isin(factor_today.head(10)["code"])]
+    
+    print(f"{period_cfg.factor_end}日因子得分策略选股（前10名）：", selected_stock)

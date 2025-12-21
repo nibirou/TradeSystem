@@ -48,7 +48,7 @@ class PeriodConfig:
     backtest_start: str = "2020-01-01"
     backtest_end: str = "2024-12-31"
 
-    factor_buffer_n: int = 100
+    factor_buffer_n: int = 1
 
     def validate(self):
         fs = pd.to_datetime(self.factor_start)
@@ -200,12 +200,16 @@ def load_daily_data(
 # ===============================
 # 5. 加载 5 分钟频率数据（支持时间裁剪）
 # ===============================
+# ===============================
+# 5. 加载 5 分钟频率数据（支持时间裁剪，修正 time 解析）
+# ===============================
 def load_5min_data(
     cfg: DataConfig,
     pool: str,
     start_date: pd.Timestamp | None = None,
     end_date: pd.Timestamp | None = None
 ) -> pd.DataFrame:
+
     root = Path(cfg.base_dir) / cfg.hist_dir / pool / cfg.minute5_freq
     if not root.exists():
         raise FileNotFoundError(f"5分钟目录不存在: {root}")
@@ -224,13 +228,13 @@ def load_5min_data(
         if df.empty:
             continue
 
-        # 基础字段处理
-        df[cfg.date_col] = pd.to_datetime(df[cfg.date_col])
+        # 基础字段
+        df[cfg.date_col] = pd.to_datetime(df[cfg.date_col], errors="coerce")
         df[cfg.time_col] = df[cfg.time_col].astype(str)
         df[cfg.code_col] = df[cfg.code_col].astype(str)
 
         # ===============================
-        # ★ 先按 date 做“粗裁剪”（非常重要，能省大量行）
+        # ★ 先按 date 做“粗裁剪”（性能关键）
         # ===============================
         if start_date is not None:
             df = df[df[cfg.date_col] >= start_date]
@@ -240,14 +244,20 @@ def load_5min_data(
         if df.empty:
             continue
 
-        # date + time → datetime
+        # ===============================
+        # ★ 正确解析 Baostock 5min time
+        # time 格式: YYYYMMDDHHMMSSmmm
+        # ===============================
         df[cfg.unified_datetime_col] = pd.to_datetime(
-            df[cfg.date_col].dt.strftime("%Y-%m-%d") + " " + df[cfg.time_col],
-            format="%Y-%m-%d %H:%M:%S",
+            df[cfg.time_col].str.slice(0, 14),   # 取 YYYYMMDDHHMMSS
+            format="%Y%m%d%H%M%S",
             errors="coerce"
         )
 
         df = df.dropna(subset=[cfg.unified_datetime_col])
+
+        if df.empty:
+            continue
 
         dfs.append(df)
 
@@ -261,6 +271,7 @@ def load_5min_data(
     minute = minute.reset_index(drop=True)
 
     return minute
+
 
 
 

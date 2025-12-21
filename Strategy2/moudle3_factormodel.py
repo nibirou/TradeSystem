@@ -2,7 +2,7 @@ import os
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
-from moudle1_dataloader import DataConfig, PeriodConfig, load_data_bundle
+from moudle1_dataloader import DataConfig, PeriodConfig, load_data_bundle, load_data_bundle_update
 from moudle2_factorengine import FactorEngine
 from moudle4_backtest import Analyzer
 
@@ -497,12 +497,13 @@ if __name__ == "__main__":
         backtest_end="2025-11-30",
     )
     # bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300", "zz500"))
-    bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300", "zz500"))
+    bundle = load_data_bundle_update(data_cfg, period_cfg, pools=("hs300", "zz500"))
     daily = bundle["daily"]
     minute5 = bundle["minute5"]
     trade_dates = bundle["trade_dates"]
     
-    print(trade_dates)
+    # print(trade_dates)
+    # print(minute5)
 
     # 2) 因子计算（模块 2）
     fe = FactorEngine(daily, minute5, trade_dates)
@@ -518,9 +519,13 @@ if __name__ == "__main__":
         take_profit_pct=0.10,
     )
     factor_scored = add_composite_score(factor_df, strat_cfg)
-
-    print(factor_scored)
-
+    # 根据factor_start 和 factor_end 取出对应时段的factor_scored
+    factor_scored = factor_scored.loc[(factor_scored[data_cfg.date_col] >= period_cfg.factor_start) & (factor_scored[data_cfg.date_col] <= period_cfg.factor_end)]
+    
+    # 保存
+    print(factor_scored.head(20))
+    factor_scored.to_csv("./Strategy2/backtest_output/factor_scored.csv", index=False)
+    
     # 4) 回测（模块 3.2）
     bt = Backtester(daily, factor_scored, trade_dates, period_cfg, strat_cfg)
     nav_df, trade_logs_df, daily_positions_df = bt.run_backtest()
