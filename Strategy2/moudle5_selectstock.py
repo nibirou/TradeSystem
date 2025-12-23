@@ -85,23 +85,6 @@ def add_composite_score(factor_df: pd.DataFrame, cfg: StrategyConfig) -> pd.Data
 
         return cross
 
-# ----------------------------------------
-# 单日选股：返回当日信号 stock list（按 alpha_score 排序）
-# ----------------------------------------
-# def _select_stocks(trade_date: pd.Timestamp, held_codes):
-#     cross = _get_cross_section(trade_date)
-
-#     if cross.empty:
-#         return []
-
-#     # 排除已经持仓的股票
-#     cross = cross[~cross["code"].isin(held_codes)]
-
-#     cross = cross.sort_values("alpha_score", ascending=False)
-#     selected = cross.head(self.cfg.max_new_positions_per_day)
-
-#     return selected
-
 
 if __name__ == "__main__":
     # 1) 数据加载（模块 1）
