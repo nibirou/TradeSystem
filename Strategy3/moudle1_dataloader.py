@@ -44,6 +44,9 @@ class DataConfig:
 class PeriodConfig:
     factor_start: str = "2019-01-01"
     factor_end: str = "2024-12-31"
+    
+    train_start: str = "2019-01-01"
+    train_end: str = "2024-12-31"
 
     backtest_start: str = "2020-01-01"
     backtest_end: str = "2024-12-31"
@@ -485,8 +488,8 @@ def load_data_bundle_update(cfg: DataConfig,
 
     print(">>> 获取回测交易日序列")
     trade_dates = trade_dates = full_trade_dates[
-                    (full_trade_dates >= period.backtest_start) &
-                    (full_trade_dates <= period.backtest_end)
+                    (full_trade_dates >= period.factor_start) &
+                    (full_trade_dates <= period.factor_end)
                 ]
 
     return {

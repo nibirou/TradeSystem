@@ -10,11 +10,7 @@
 
 # 模型回测：1、策略历史胜率统计（选股统计胜率，第一步）   2、策略实盘仿真回测（构建投资组合/投资组合动态调整，第二步）（未来要把这两部分回测完善封装）
 
-import os
-from dataclasses import dataclass
-import pandas as pd
-import numpy as np
-from moudle1_dataloader import DataConfig, PeriodConfig, load_data_bundle, load_data_bundle_update
+from moudle1_dataloader import DataConfig, PeriodConfig, load_data_bundle_update
 from moudle2_factorengine import FactorEngine
 from module3_labelbuilder import LabelBuilder
 from module5_stat_backtest import StatBacktester
@@ -25,16 +21,18 @@ if __name__ == "__main__":
         base_dir="./data_baostock",
     )
     period_cfg = PeriodConfig(
-        factor_start="2025-09-01",   # 计算某些因子需要过去一段时间窗口的行情数据，设置了一个自定义提前量；进行截面回归，需要确定两次截面回归之间的时间间隔，设置了一个自定义提前量
-        factor_end="2025-12-01",
+        factor_start="2025-04-01",   # 计算某些因子需要过去一段时间窗口的行情数据，设置了一个自定义提前量；进行截面回归，需要确定两次截面回归之间的时间间隔，设置了一个自定义提前量
+        factor_end="2025-12-01",     # 计算因子的时间段拆分成训练 和 回测两部分
+        train_start="2025-04-01", 
+        train_end="2025-09-30",
         backtest_start="2025-10-01", 
-        backtest_end="2025-10-30",
+        backtest_end="2025-12-01",
     )
     # bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300", "zz500"))
     bundle = load_data_bundle_update(data_cfg, period_cfg, pools=("hs300", "zz500"))
     daily = bundle["daily"]
     minute5 = bundle["minute5"]
-    trade_dates = bundle["trade_dates"]
+    trade_dates = bundle["trade_dates"] # factor_start至factor_end之间的交易日列表
     
     # print(trade_dates)
     # print(minute5)
@@ -58,15 +56,22 @@ if __name__ == "__main__":
         topk=30
     )
 
-    panel = bt.build_dataset(
+    train_panel = bt.build_dataset(
+        start_date=period_cfg.train_start,
+        end_date=period_cfg.train_end,
+        horizon_n=10,
+        stop_loss=-0.10
+    )
+    
+    test_panel = bt.build_dataset(
         start_date=period_cfg.backtest_start,
         end_date=period_cfg.backtest_end,
         horizon_n=10,
         stop_loss=-0.10
     )
-
-    beta_global = bt.fit_global_beta(panel)
-    stat_df = bt.evaluate_in_sample(panel, beta_global)
+    
+    beta_global = bt.fit_global_beta(train_panel)
+    stat_df = bt.evaluate_in_sample(test_panel, beta_global)
 
     print(beta_global)
     print(stat_df.describe())

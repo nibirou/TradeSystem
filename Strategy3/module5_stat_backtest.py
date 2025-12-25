@@ -145,6 +145,7 @@ class StatBacktester:
 
         for code, g in panel_df.groupby("code"):
             g = g.dropna(subset=["y"] + factor_cols).sort_values("date")
+            # 对参加回归的数据条数添加最小限制要求
             # if len(g) < max(min_obs, len(factor_cols) + 5):
             #     continue
 
@@ -178,7 +179,7 @@ class StatBacktester:
         beta_global = beta_df.mean(axis=1)
 
         return beta_global, beta_by_stock, residuals_by_stock
-    def evaluate_in_sample(self, panel_df: pd.DataFrame, beta_global: pd.Series):
+    def evaluate_in_sample(self, panel_df: pd.DataFrame, beta_global: pd.Series, start_date, end_date):
         """
         第一类回测：给定 beta_global，对每个取样日做预测、排名、统计（仍然是 in-sample 评估）
         """
