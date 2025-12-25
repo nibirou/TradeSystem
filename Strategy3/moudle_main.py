@@ -1,6 +1,6 @@
 # 建仓后5个交易日内卖出，每只股票取这期间的最大收益，不设止盈，期间止损设10%，统计一段时间内，股票池中每只股票的收益率
 
-# 每隔N日，整合所有股票的收益率和因子值，进行一次截面回归，得到每个因子的因子收益率，然后取平均作为最终的因子收益率
+# 每隔N日，整合所有股票的收益率和因子值，把因子值作为因子暴露，进行一次截面回归，得到每个因子的因子收益率，然后取平均作为最终的因子收益率
 
 # 当日的建仓价格依据5分钟行情的数据情况来决定
 
@@ -25,10 +25,10 @@ if __name__ == "__main__":
         base_dir="./data_baostock",
     )
     period_cfg = PeriodConfig(
-        factor_start="2025-09-01",
+        factor_start="2025-09-01",   # 计算某些因子需要过去一段时间窗口的行情数据，设置了一个自定义提前量；进行截面回归，需要确定两次截面回归之间的时间间隔，设置了一个自定义提前量
         factor_end="2025-12-01",
-        backtest_start="2025-10-01",
-        backtest_end="2025-11-30",
+        backtest_start="2025-10-01", 
+        backtest_end="2025-10-30",
     )
     # bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300", "zz500"))
     bundle = load_data_bundle_update(data_cfg, period_cfg, pools=("hs300", "zz500"))
@@ -54,7 +54,7 @@ if __name__ == "__main__":
         trade_dates=trade_dates,
         factor_cols=factor_cols,
         date_stride=10,          # <<< 每隔N日取样
-        fit_mode="fmb_mean",     # 推荐：先每日回归再均值
+        fit_mode="per_stock_ts",     # 推荐：先每日回归再均值
         topk=30
     )
 

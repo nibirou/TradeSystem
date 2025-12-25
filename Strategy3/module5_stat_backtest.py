@@ -4,13 +4,16 @@ import numpy as np
 from module4_factor_regression import CrossSectionRegression
 
 class StatBacktester:
+    # pooled 直接把一段时间内所有股票的所有因子和收益率数据拿来回归
+    # fmb_mean 在一段时间内，设置一个时间间隔N，把每个时间间隔内所有股票的所有因子和收益率数据拿来回归，之后对回归得到的收益率、残差取均值
+    # per_stock_ts 按股票时间序列回归，在一段时间内，设置一个时间间隔N，把每个时间间隔内对每只股票分别做回归，之后对回归得到的收益率取均值，每只股票的残差各自保留
     def __init__(
         self,
         factor_df: pd.DataFrame,
         label_builder,
         trade_dates: pd.DatetimeIndex,
         factor_cols,
-        date_stride: int = 10,         # <<< 新增：每隔N天取样一次
+        date_stride: int = 10,         # <<< 新增：每隔N天取样一次，对于fmb_mean 和 per_stock_ts 
         fit_mode: str = "fmb_mean",    # "pooled" 或 "fmb_mean"
         topk: int = 30,
     ):
@@ -63,6 +66,8 @@ class StatBacktester:
             if df.empty:
                 continue
 
+            print(df[["date", "code", "y"] + self.factor_cols])
+
             all_rows.append(df[["date", "code", "y"] + self.factor_cols])
 
         if not all_rows:
@@ -99,9 +104,80 @@ class StatBacktester:
                 return None
             beta_global = pd.concat(betas, axis=1).mean(axis=1)
             return beta_global
+        
+        if self.fit_mode == "per_stock_ts":
+            beta_global, beta_by_stock, residuals_by_stock = self.fit_per_stock_ts(
+                panel_df,
+                min_obs=20
+            )
+            # print(beta_global)
+            # print(beta_by_stock)
+            # print(residuals_by_stock)
+            # print(f"per_stock_ts: valid stocks = {len(beta_by_stock)}")
+            self.beta_by_stock = beta_by_stock
+            self.residuals_by_stock = residuals_by_stock
+            return beta_global
 
         raise ValueError(f"Unknown fit_mode={self.fit_mode}")
 
+    def fit_per_stock_ts(
+        self,
+        panel_df: pd.DataFrame,
+        min_obs: int = 20 # 最小样本量
+    ):
+        """
+        panel_df:
+            columns = [date, code, y] + factor_cols
+            已经是 stride = timegap 采样后的数据
+
+        返回：
+            beta_global: Series(index=factor_cols)
+            beta_by_stock: dict[code] = Series(beta_i)
+            residuals_by_stock: dict[code] = DataFrame(date, resid)
+        """
+        from module4_factor_regression import CrossSectionRegression
+
+        factor_cols = self.factor_cols
+        reg = CrossSectionRegression(factor_cols)
+
+        beta_by_stock = {}
+        residuals_by_stock = {}
+
+        for code, g in panel_df.groupby("code"):
+            g = g.dropna(subset=["y"] + factor_cols).sort_values("date")
+            # if len(g) < max(min_obs, len(factor_cols) + 5):
+            #     continue
+
+            # === 时间序列回归（对单只股票）===
+            y = g["y"].values
+            X = g[factor_cols].values
+            X = np.c_[np.ones(len(X)), X]
+
+            try:
+                coef = np.linalg.lstsq(X, y, rcond=None)[0]
+            except np.linalg.LinAlgError:
+                continue
+
+            alpha_i = coef[0]
+            beta_i = pd.Series(coef[1:], index=factor_cols)
+            beta_by_stock[code] = beta_i
+
+            # === 残差保留 ===
+            y_hat = X @ coef
+            resid = y - y_hat
+
+            residuals_by_stock[code] = pd.DataFrame({
+                "date": g["date"].values,
+                "resid": resid
+            })
+
+        if not beta_by_stock:
+            return None, None, None
+
+        beta_df = pd.concat(beta_by_stock.values(), axis=1)
+        beta_global = beta_df.mean(axis=1)
+
+        return beta_global, beta_by_stock, residuals_by_stock
     def evaluate_in_sample(self, panel_df: pd.DataFrame, beta_global: pd.Series):
         """
         第一类回测：给定 beta_global，对每个取样日做预测、排名、统计（仍然是 in-sample 评估）
