@@ -179,7 +179,7 @@ class StatBacktester:
         beta_global = beta_df.mean(axis=1)
 
         return beta_global, beta_by_stock, residuals_by_stock
-    def evaluate_in_sample(self, panel_df: pd.DataFrame, beta_global: pd.Series, start_date, end_date):
+    def evaluate_in_sample(self, panel_df: pd.DataFrame, beta_global: pd.Series):
         """
         第一类回测：给定 beta_global，对每个取样日做预测、排名、统计（仍然是 in-sample 评估）
         """

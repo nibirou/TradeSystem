@@ -51,7 +51,7 @@ class PeriodConfig:
     backtest_start: str = "2020-01-01"
     backtest_end: str = "2024-12-31"
 
-    factor_buffer_n: int = 1
+    factor_buffer_n: int = 60
 
     def validate(self):
         fs = pd.to_datetime(self.factor_start)
