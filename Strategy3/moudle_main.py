@@ -21,11 +21,11 @@ if __name__ == "__main__":
         base_dir="./data_baostock",
     )
     period_cfg = PeriodConfig(
-        factor_start="2025-07-01",   # 计算某些因子需要过去一段时间窗口的行情数据，设置了一个自定义提前量；进行截面回归，需要确定两次截面回归之间的时间间隔，设置了一个自定义提前量
+        factor_start="2025-10-15",   # 计算某些因子需要过去一段时间窗口的行情数据，设置了一个自定义提前量；进行截面回归，需要确定两次截面回归之间的时间间隔，设置了一个自定义提前量
         factor_end="2025-12-01",     # 计算因子的时间段拆分成训练 和 回测两部分
-        train_start="2025-07-01", 
-        train_end="2025-09-30",
-        backtest_start="2025-10-01", 
+        train_start="2025-10-15", 
+        train_end="2025-11-15",
+        backtest_start="2025-11-16", 
         backtest_end="2025-12-01",
     )
     # bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300", "zz500"))
@@ -71,7 +71,10 @@ if __name__ == "__main__":
     )
     
     beta_global = bt.fit_global_beta(train_panel)
-    stat_df = bt.evaluate_in_sample(test_panel, beta_global)
-
+    
+    # print("beta_global:", beta_global)
+    
+    daily_df = bt.evaluate_in_sample(test_panel, beta_global)
+    
+    print(daily_df.describe())
     print(beta_global)
-    print(stat_df.describe())

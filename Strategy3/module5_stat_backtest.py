@@ -116,7 +116,7 @@ class StatBacktester:
             # print(f"per_stock_ts: valid stocks = {len(beta_by_stock)}")
             self.beta_by_stock = beta_by_stock
             self.residuals_by_stock = residuals_by_stock
-            return beta_global
+            return beta_global, beta_by_stock, residuals_by_stock
 
         raise ValueError(f"Unknown fit_mode={self.fit_mode}")
 
@@ -179,31 +179,101 @@ class StatBacktester:
         beta_global = beta_df.mean(axis=1)
 
         return beta_global, beta_by_stock, residuals_by_stock
+    
     def evaluate_in_sample(self, panel_df: pd.DataFrame, beta_global: pd.Series):
         """
-        第一类回测：给定 beta_global，对每个取样日做预测、排名、统计（仍然是 in-sample 评估）
+        第一类回测（in-sample）：
+        - pooled / fmb_mean:
+            y_hat = X · beta_global
+        - per_stock_ts:
+            y_hat = X · beta_global + residual_{i,t}
         """
+        print(beta_global)
+        if beta_global is None or len(beta_global) == 0:
+            return pd.DataFrame()
+
+        # === 对齐因子 ===
+        beta = pd.Series(beta_global).reindex(self.factor_cols)
+        valid_factors = beta.dropna().index.tolist()
+        if not valid_factors:
+            return pd.DataFrame()
+
+        beta = beta.loc[valid_factors]
+
+        # === 残差表（仅 per_stock_ts 使用） ===
+        resid_long = None
+        if self.fit_mode == "per_stock_ts":
+            if not hasattr(self, "residuals_by_stock"):
+                raise RuntimeError("per_stock_ts requires residuals_by_stock")
+
+            pieces = []
+            for code, rdf in self.residuals_by_stock.items():
+                if rdf is None or rdf.empty:
+                    continue
+                tmp = rdf.copy()
+                tmp["code"] = code
+                tmp["date"] = pd.to_datetime(tmp["date"])
+                pieces.append(tmp[["date", "code", "resid"]])
+
+            if pieces:
+                resid_long = pd.concat(pieces, ignore_index=True)
+
         res = []
+
         for d, g in panel_df.groupby("date"):
-            g = g.dropna(subset=["y"] + self.factor_cols).copy()
+            g = g.dropna(subset=["y"] + valid_factors).copy()
             if g.empty:
                 continue
-            g["y_hat"] = g[self.factor_cols].dot(beta_global)
 
+            g["code"] = g["code"].astype(str)
+            d_ts = pd.to_datetime(d)
+
+            # === 系统性预测：X · beta_global ===
+            X = g[valid_factors].astype(float).values
+            g["y_hat_sys"] = X @ beta.values
+
+            # === 个股残差项 ===
+            if self.fit_mode == "per_stock_ts":
+                if resid_long is None:
+                    continue
+
+                g = g.merge(
+                    resid_long[resid_long["date"] == d_ts],
+                    on=["date", "code"],
+                    how="left"
+                )
+                # 如果某股票该日没有残差，用 0（不引入额外 alpha）
+                g["resid"] = g["resid"].fillna(0.0)
+                g["y_hat"] = g["y_hat_sys"] + g["resid"]
+            else:
+                g["y_hat"] = g["y_hat_sys"]
+
+            g = g.dropna(subset=["y_hat"])
+            if g.empty:
+                continue
+
+            # === 排序 & 统计 ===
             g = g.sort_values("y_hat", ascending=False)
-            top = g.head(min(self.topk, len(g)))
-            bottom = g.tail(min(self.topk, len(g)))
+            k = min(self.topk, len(g))
+            top = g.head(k)
+            bottom = g.tail(k)
 
             ic = g["y_hat"].corr(g["y"])
             ric = g["y_hat"].rank().corr(g["y"].rank())
 
             res.append({
-                "date": d,
+                "date": d_ts,
                 "IC": ic,
                 "RankIC": ric,
-                "TopK_mean_y": top["y"].mean(),
-                "TopK_winrate": (top["y"] > 0).mean(),
-                "LongShort": top["y"].mean() - bottom["y"].mean()
+                "TopK_mean_y": float(top["y"].mean()),
+                "TopK_winrate": float((top["y"] > 0).mean()),
+                "LongShort": float(top["y"].mean() - bottom["y"].mean()),
+                "N": int(len(g)),
+                "N_resid_used": int((g["resid"] != 0).sum()) if self.fit_mode == "per_stock_ts" else 0
             })
+            print("res pre day:", res)
+
+        if not res:
+            return pd.DataFrame()
 
         return pd.DataFrame(res).set_index("date").sort_index()
