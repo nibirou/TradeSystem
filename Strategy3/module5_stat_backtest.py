@@ -32,6 +32,8 @@ class StatBacktester:
         ]
         if len(dates) == 0:
             return dates
+        if self.date_stride == 0:
+            return dates
         # stride采样：t0, t0+N, t0+2N...
         return dates[::self.date_stride]
 
@@ -43,36 +45,47 @@ class StatBacktester:
             out[c] = out[c] - out.groupby(date_col)[c].transform("mean")
         return out
 
-    def build_dataset(self, start_date, end_date, horizon_n=10, stop_loss=-0.10):
+    def build_dataset(self, start_date, end_date, horizon_n=10, stop_loss=-0.10, label="train"):
         """构造 stride 采样后的面板数据：columns=[date, code, y] + factor_cols"""
-        sample_dates = self._sample_dates(start_date, end_date)
-        all_rows = []
-
-        for t in sample_dates:
-            y_df = self.label_builder.build_labels(
-                t, horizon_n=horizon_n, stop_loss=stop_loss
-            )
-            if y_df.empty:
-                continue
-
-            fac_t = self.factor_df[self.factor_df["date"] == t]
+        if label == "inference":
+            fac_t = self.factor_df[self.factor_df["date"] == start_date]
             if fac_t.empty:
-                continue
+                return pd.DataFrame()
+            return fac_t
 
-            df = fac_t.merge(
-                y_df.reset_index().rename(columns={"index": "code"}),
-                on="code", how="inner"
-            )
-            if df.empty:
-                continue
+        if label == "backtest" or "train":
+            sample_dates = self._sample_dates(start_date, end_date)
+            print("sample_dates:", sample_dates)
+            all_rows = []
 
-            print(df[["date", "code", "y"] + self.factor_cols])
+            # 对每个采样日期（解释变量因子值纳入多因子截面回归模型的日期，选取sample_date+1到sample_date+horizon_n+1，计算预期收益率）
+            # date_stride 是选取解释变量因子值纳入多因子截面回归模型的日期，的采样间隔
+            # horizon_n 是对应每个采样日期，计算未来horizon_n个交易日内的预期收益率Y
+            for t in sample_dates:
+                y_df = self.label_builder.build_labels(
+                    t, horizon_n=horizon_n, stop_loss=stop_loss
+                )
+                if y_df.empty:
+                    continue
 
-            all_rows.append(df[["date", "code", "y"] + self.factor_cols])
+                fac_t = self.factor_df[self.factor_df["date"] == t]
+                if fac_t.empty:
+                    continue
 
-        if not all_rows:
-            return pd.DataFrame()
-        return pd.concat(all_rows, ignore_index=True)
+                df = fac_t.merge(
+                    y_df.reset_index().rename(columns={"index": "code"}),
+                    on="code", how="inner"
+                )
+                if df.empty:
+                    continue
+
+                # print(df[["date", "code", "y"] + self.factor_cols])
+
+                all_rows.append(df[["date", "code", "y"] + self.factor_cols])
+
+            if not all_rows:
+                return pd.DataFrame()
+            return pd.concat(all_rows, ignore_index=True)
 
     def fit_global_beta(self, panel_df: pd.DataFrame):
         """
@@ -188,7 +201,7 @@ class StatBacktester:
         - per_stock_ts:
             y_hat = X · beta_global + residual_{i,t}
         """
-        print(beta_global)
+        print("beta_global:", beta_global)
         if beta_global is None or len(beta_global) == 0:
             return pd.DataFrame()
 
@@ -252,10 +265,13 @@ class StatBacktester:
             if g.empty:
                 continue
 
-            # === 排序 & 统计 ===
+            # === 排序 排名 & 统计 ===
             g = g.sort_values("y_hat", ascending=False)
             k = min(self.topk, len(g))
             top = g.head(k)
+
+            print(f"{d_ts}日多因子截面回归策略选股（前{k}名）：", top)
+
             bottom = g.tail(k)
 
             ic = g["y_hat"].corr(g["y"])
@@ -277,3 +293,81 @@ class StatBacktester:
             return pd.DataFrame()
 
         return pd.DataFrame(res).set_index("date").sort_index()
+
+
+    def inference_in_sample(self, panel_df: pd.DataFrame, beta_global: pd.Series):
+        """
+        In-sample 预测模块：
+        - 输入：某一日（或多日）的 panel_df，只需要因子值
+        - 输出：code + 预测收益率 y_hat（按 y_hat 降序）
+        """
+
+        if beta_global is None or len(beta_global) == 0:
+            return pd.DataFrame(columns=["code", "y_hat"])
+
+        # ===== 因子对齐 =====
+        beta = pd.Series(beta_global).reindex(self.factor_cols)
+        valid_factors = beta.dropna().index.tolist()
+        if not valid_factors:
+            return pd.DataFrame(columns=["code", "y_hat"])
+
+        beta = beta.loc[valid_factors]
+
+        df = panel_df.copy()
+        if df.empty:
+            return pd.DataFrame(columns=["code", "y_hat"])
+
+        # 基础清洗
+        df = df.dropna(subset=["code"] + valid_factors)
+        if df.empty:
+            return pd.DataFrame(columns=["code", "y_hat"])
+
+        df["code"] = df["code"].astype(str)
+
+        # ===== 系统性预测部分 =====
+        X = df[valid_factors].astype(float).values
+        df["y_hat_sys"] = X @ beta.values
+
+        # ===== per_stock_ts：叠加个股残差 =====
+        if self.fit_mode == "per_stock_ts":
+            if not hasattr(self, "residuals_by_stock"):
+                raise RuntimeError("per_stock_ts requires residuals_by_stock")
+
+            # 构造 residuals long 表
+            pieces = []
+            for code, rdf in self.residuals_by_stock.items():
+                if rdf is None or rdf.empty:
+                    continue
+                tmp = rdf.copy()
+                tmp["code"] = code
+                tmp["date"] = pd.to_datetime(tmp["date"])
+                pieces.append(tmp[["date", "code", "resid"]])
+
+            if pieces and "date" in df.columns:
+                resid_long = pd.concat(pieces, ignore_index=True)
+                df["date"] = pd.to_datetime(df["date"])
+
+                df = df.merge(
+                    resid_long,
+                    on=["date", "code"],
+                    how="left"
+                )
+                df["resid"] = df["resid"].fillna(0.0)
+            else:
+                # 没有残差就等价于 0
+                df["resid"] = 0.0
+
+            df["y_hat"] = df["y_hat_sys"] + df["resid"]
+
+        else:
+            df["y_hat"] = df["y_hat_sys"]
+
+        # ===== 输出 =====
+        out = (
+            df[["code", "y_hat"]]
+            .dropna(subset=["y_hat"])
+            .sort_values("y_hat", ascending=False)
+            .reset_index(drop=True)
+        )
+
+        return out

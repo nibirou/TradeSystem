@@ -11,7 +11,8 @@ from tqdm import tqdm
 # ===========================
 #        路径配置
 # ===========================
-BASE_DIR = "data_baostock"
+# BASE_DIR = "data_baostock"
+BASE_DIR = "/workspace/Quant/data_baostock"
 HIST_DIR = os.path.join(BASE_DIR, "stock_hist")
 META_DIR = os.path.join(BASE_DIR, "metadata")
 SNAPSHOT_DIR = os.path.join(META_DIR, "stock_snapshots")
@@ -391,7 +392,7 @@ if __name__ == "__main__":
     # run_history_download(pool="hs300", freq="d")
     # run_history_download(pool="hs300", freq="5")
     # run_history_download(pool="zz500", freq="d")
-    # run_history_download(pool="zz500", freq="5")
+    run_history_download(pool="zz500", freq="5")
     # run_history_download(pool="all", freq="d")
-    run_history_download(pool="all", freq="5")
+    # run_history_download(pool="all", freq="5")
     bs_logout()

@@ -15,18 +15,23 @@ from moudle2_factorengine import FactorEngine
 from module3_labelbuilder import LabelBuilder
 from module5_stat_backtest import StatBacktester
 
+import pandas as pd
+
 if __name__ == "__main__":
     # 1) 数据加载（模块 1）
     data_cfg = DataConfig(
-        base_dir="./data_baostock",
+        # base_dir="./data_baostock",
+        base_dir="/workspace/Quant/data_baostock",
+        trade_calendar_dir="/workspace/Quant/data_baostock/metadata/trade_datas.csv"
     )
     period_cfg = PeriodConfig(
         factor_start="2025-10-15",   # 计算某些因子需要过去一段时间窗口的行情数据，设置了一个自定义提前量；进行截面回归，需要确定两次截面回归之间的时间间隔，设置了一个自定义提前量
-        factor_end="2025-12-01",     # 计算因子的时间段拆分成训练 和 回测两部分
-        train_start="2025-10-15", 
+        factor_end="2025-12-30",     # 计算因子的时间段拆分成训练 和 回测两部分
+        train_start="2025-10-15",    # 训练
         train_end="2025-11-15",
-        backtest_start="2025-11-16", 
-        backtest_end="2025-12-01",
+        backtest_start="2025-11-16", # 回测
+        backtest_end="2025-11-30",
+        inference_day="2025-12-30"   # 预测
     )
     # bundle = load_data_bundle(data_cfg, period_cfg, pools=("hs300", "zz500"))
     bundle = load_data_bundle_update(data_cfg, period_cfg, pools=("hs300", "zz500"))
@@ -52,29 +57,73 @@ if __name__ == "__main__":
         trade_dates=trade_dates,
         factor_cols=factor_cols,
         date_stride=10,          # <<< 每隔N日取样
-        fit_mode="per_stock_ts",     # 推荐：先每日回归再均值
+        fit_mode="fmb_mean",     # 推荐：先每日回归再均值  pooled/fmb_mean/per_stock_ts
         topk=30
     )
 
+    # 训练
     train_panel = bt.build_dataset(
         start_date=period_cfg.train_start,
         end_date=period_cfg.train_end,
         horizon_n=10,
-        stop_loss=-0.10
+        stop_loss=-0.10,
+        label="train"
     )
     
-    test_panel = bt.build_dataset(
-        start_date=period_cfg.backtest_start,
-        end_date=period_cfg.backtest_end,
-        horizon_n=10,
-        stop_loss=-0.10
-    )
+    # test_mode = "backtest"  
+    test_mode = "inference"  
+
+    if test_mode == "backtest":
+        # 一定时间段内回测
+        test_panel = bt.build_dataset(
+            start_date=period_cfg.backtest_start,
+            end_date=period_cfg.backtest_end,
+            horizon_n=10,
+            stop_loss=-0.10,
+            label="backtest" 
+        )
+        print("backtest_panel", test_panel)
+
+    if test_mode == "inference":
+        # 某日预测（比如最新交易日预测）
+        test_panel = bt.build_dataset(
+            start_date=period_cfg.inference_day,
+            end_date=period_cfg.inference_day,
+            label="inference" 
+        )
     
-    beta_global = bt.fit_global_beta(train_panel)
+    print("test_panel", test_panel, "\n", "test_mode", test_mode)
     
-    # print("beta_global:", beta_global)
+    if bt.fit_mode == "per_stock_ts": 
+        beta_global, beta_by_stock, residuals_by_stock = bt.fit_global_beta(train_panel)
+    else:
+        beta_global = bt.fit_global_beta(train_panel)
+
+    if test_mode == "backtest":
+        daily_df = bt.evaluate_in_sample(test_panel, beta_global)
+        print(daily_df.describe())
     
-    daily_df = bt.evaluate_in_sample(test_panel, beta_global)
-    
-    print(daily_df.describe())
-    print(beta_global)
+    if test_mode == "inference":
+        pred_df = bt.inference_in_sample(test_panel, beta_global)
+
+        # 剔除 300 30 688开头股票
+        # 提取小数点后的股票代码前缀
+        code_prefix = pred_df['code'].str.split('.').str[1]
+        # 创建过滤条件：保留不以 '30'、'300'、'688' 开头的行
+        mask = ~(
+            code_prefix.str.startswith('30') |
+            code_prefix.str.startswith('300') |
+            code_prefix.str.startswith('688')
+        )
+        # 应用过滤
+        df_filtered = pred_df[mask]
+        print(df_filtered)
+
+        all_stock = pd.read_csv("/workspace/Quant/data_baostock/metadata/stock_list_all.csv")
+        print(all_stock)
+        # selected_stock = all_stock.loc[all_stock["code"].isin(df_filtered["code"])]
+        selected_stock = pd.merge(df_filtered, all_stock, on='code', how='inner')
+        print(selected_stock)
+
+        print(f"{period_cfg.factor_end}日因子得分策略选股（前20名，剔除创业板和北证）：", selected_stock.head(20))
+

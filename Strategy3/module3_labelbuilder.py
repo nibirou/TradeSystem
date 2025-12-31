@@ -57,6 +57,7 @@ class LabelBuilder:
         """
         t = pd.to_datetime(trade_date)
         future_days = self._get_future_trade_dates(t, horizon_n)
+        print("future_days", future_days)
 
         results = []
 

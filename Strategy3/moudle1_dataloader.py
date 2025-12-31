@@ -1,3 +1,4 @@
+from email.mime import base
 import os
 from pathlib import Path
 from dataclasses import dataclass
@@ -24,7 +25,7 @@ class DataConfig:
     minute5_freq: str = "5"
 
     # 交易日历路径
-    trade_calendar_dir = "./data_baostock/metadata/trade_datas.csv"
+    trade_calendar_dir: str = base_dir + "/metadata/trade_datas.csv"
 
     # 字段标准化
     date_col: str = "date"
@@ -51,7 +52,9 @@ class PeriodConfig:
     backtest_start: str = "2020-01-01"
     backtest_end: str = "2024-12-31"
 
-    factor_buffer_n: int = 60
+    inference_day: str = "2024-12-31"
+
+    factor_buffer_n: int = 30
 
     def validate(self):
         fs = pd.to_datetime(self.factor_start)
