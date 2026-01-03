@@ -11,8 +11,8 @@ from tqdm import tqdm
 # ===========================
 #        路径配置
 # ===========================
-# BASE_DIR = "data_baostock"
-BASE_DIR = "/workspace/Quant/data_baostock"
+BASE_DIR = "E:/pythonProject/data_baostock"
+# BASE_DIR = "/workspace/Quant/data_baostock"
 HIST_DIR = os.path.join(BASE_DIR, "stock_hist")
 META_DIR = os.path.join(BASE_DIR, "metadata")
 SNAPSHOT_DIR = os.path.join(META_DIR, "stock_snapshots")
@@ -94,7 +94,13 @@ def get_latest_end_date():
 
     # 仅查询今年的交易日即可（快）
     year_start = f"{datetime.now().year}-01-01"
-
+    year_second= f"{datetime.now().year}-01-02"
+    year_third = f"{datetime.now().year}-01-03"
+    
+    # 如果当日是某年的1月1日，应该查询前一年的最后一个交易日为end_date，year_start需要相应调整
+    if today == year_start or today == year_second or today == year_third:
+        year_start = f"{datetime.now().year - 1}-01-01"
+        
     rs = bs.query_trade_dates(start_date=year_start, end_date=today)
 
     # ---- 解析交易日数据 ----
@@ -392,7 +398,7 @@ if __name__ == "__main__":
     # run_history_download(pool="hs300", freq="d")
     # run_history_download(pool="hs300", freq="5")
     # run_history_download(pool="zz500", freq="d")
-    run_history_download(pool="zz500", freq="5")
+    # run_history_download(pool="zz500", freq="5")
     # run_history_download(pool="all", freq="d")
-    # run_history_download(pool="all", freq="5")
+    run_history_download(pool="all", freq="5")
     bs_logout()

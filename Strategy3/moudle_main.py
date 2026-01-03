@@ -19,11 +19,17 @@ import pandas as pd
 
 if __name__ == "__main__":
     # 1) 数据加载（模块 1）
+    # data_cfg = DataConfig(
+    #     base_dir="/workspace/Quant/data_baostock",
+    #     trade_calendar_dir="/workspace/Quant/data_baostock/metadata/trade_datas.csv",
+    #     all_stock_list_dir="/workspace/Quant/data_baostock/metadata/stock_list_all.csv",
+    # )
     data_cfg = DataConfig(
-        # base_dir="./data_baostock",
-        base_dir="/workspace/Quant/data_baostock",
-        trade_calendar_dir="/workspace/Quant/data_baostock/metadata/trade_datas.csv"
+        base_dir="E:/pythonProject/data_baostock",
+        trade_calendar_dir="E:/pythonProject/data_baostock/metadata/trade_datas.csv",
+        all_stock_list_dir="E:/pythonProject/data_baostock/metadata/stock_list_all.csv",
     )
+    
     period_cfg = PeriodConfig(
         factor_start="2025-10-15",   # 计算某些因子需要过去一段时间窗口的行情数据，设置了一个自定义提前量；进行截面回归，需要确定两次截面回归之间的时间间隔，设置了一个自定义提前量
         factor_end="2025-12-30",     # 计算因子的时间段拆分成训练 和 回测两部分
@@ -119,7 +125,7 @@ if __name__ == "__main__":
         df_filtered = pred_df[mask]
         print(df_filtered)
 
-        all_stock = pd.read_csv("/workspace/Quant/data_baostock/metadata/stock_list_all.csv")
+        all_stock = pd.read_csv(period_cfg.all_stock_list_dir)
         print(all_stock)
         # selected_stock = all_stock.loc[all_stock["code"].isin(df_filtered["code"])]
         selected_stock = pd.merge(df_filtered, all_stock, on='code', how='inner')

@@ -26,6 +26,7 @@ class DataConfig:
 
     # 交易日历路径
     trade_calendar_dir: str = base_dir + "/metadata/trade_datas.csv"
+    all_stock_list_dir: str = base_dir + "/metadata/stock_list_all.csv"
 
     # 字段标准化
     date_col: str = "date"
