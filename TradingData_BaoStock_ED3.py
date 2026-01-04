@@ -11,8 +11,8 @@ from tqdm import tqdm
 # ===========================
 #        路径配置
 # ===========================
-BASE_DIR = "E:/pythonProject/data_baostock"
-# BASE_DIR = "/workspace/Quant/data_baostock"
+# BASE_DIR = "E:/pythonProject/data_baostock"
+BASE_DIR = "/workspace/Quant/data_baostock"
 HIST_DIR = os.path.join(BASE_DIR, "stock_hist")
 META_DIR = os.path.join(BASE_DIR, "metadata")
 SNAPSHOT_DIR = os.path.join(META_DIR, "stock_snapshots")
@@ -96,9 +96,10 @@ def get_latest_end_date():
     year_start = f"{datetime.now().year}-01-01"
     year_second= f"{datetime.now().year}-01-02"
     year_third = f"{datetime.now().year}-01-03"
+    year_fourth = f"{datetime.now().year}-01-04"
     
     # 如果当日是某年的1月1日，应该查询前一年的最后一个交易日为end_date，year_start需要相应调整
-    if today == year_start or today == year_second or today == year_third:
+    if today == year_start or today == year_second or today == year_third or today ==year_fourth:
         year_start = f"{datetime.now().year - 1}-01-01"
         
     rs = bs.query_trade_dates(start_date=year_start, end_date=today)
