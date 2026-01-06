@@ -1,117 +1,119 @@
 from dataclasses import dataclass
-import numpy as np
 import pandas as pd
-
-
-@dataclass
-class CostModel:
-    """
-    更贴近 A 股：
-    - 佣金：双边收取（买卖都有），通常万 1~万 3；这里默认万 2
-    - 印花税：仅卖出收取，当前 A 股为 0.05%（千分之 0.5）——注意如未来政策变化你可改参数
-    - 过户费：沪市有、深市没有；这里简化为 0（你可自行扩）
-    """
-    commission_rate: float = 0.0002       # 佣金
-    stamp_tax_rate: float = 0.0005        # 印花税（卖出）
-    min_commission: float = 5.0           # 最低 5 元（常见券商规则）
-
-    def buy_cost(self, trade_value: float) -> float:
-        comm = max(self.min_commission, trade_value * self.commission_rate)
-        return comm
-
-    def sell_cost(self, trade_value: float) -> float:
-        comm = max(self.min_commission, trade_value * self.commission_rate)
-        stamp = trade_value * self.stamp_tax_rate
-        return comm + stamp
-
+import numpy as np
 
 @dataclass
-class ExecutionModel:
-    """
-    用 5min K 线来模拟“更像真实人/程序的成交价”。
-    关键保证：成交价一定落在当日 high-low 之间。
+class PriceLimitModel:
+    main_limit: float = 0.10     # 主板
+    st_limit: float = 0.05       # ST
+    gem_limit: float = 0.20      # 创业板 300
+    star_limit: float = 0.20     # 科创板 688
 
-    规则（默认）：
-    - 买入：用开盘后前 N 根 5min 的 VWAP（更像挂单+成交均价）
-    - 卖出：用收盘前最后 N 根 5min 的 VWAP（更像择机退出）
-    - 止盈止损触发：用 5min high/low 顺序扫描，
-        * 止损触发：用 stop_price（可加滑点）
-        * 止盈触发：用 take_profit_price（可加滑点）
-    """
-    buy_vwap_bars: int = 6     # 开盘后 6 根 5min ≈ 30 分钟
-    sell_vwap_bars: int = 6    # 收盘前 6 根 5min ≈ 30 分钟
-    slippage_bps: float = 2.0  # 滑点（基点），2 bps = 0.02%
+    round_tick: float = 0.01     # A股价格最小变动单位通常为 0.01（绝大多数情况）
 
-    def _apply_slippage(self, price: float, side: str) -> float:
+    def _limit_rate(self, code: str, is_st: int) -> float:
+        if int(is_st) == 1:
+            return self.st_limit
+        if code.startswith("sz.300"):
+            return self.gem_limit
+        if code.startswith("sh.688"):
+            return self.star_limit
+        return self.main_limit
+
+    def _round_price(self, px: float) -> float:
+        # 四舍五入到分
+        return float(np.round(px / self.round_tick) * self.round_tick)
+
+    def limit_prices(self, code: str, preclose: float, is_st: int) -> tuple[float, float]:
+        r = self._limit_rate(code, is_st)
+        up = self._round_price(preclose * (1 + r))
+        dn = self._round_price(preclose * (1 - r))
+        return dn, up
+
+    def is_one_price_limit_up(self, high: float, low: float, limit_up: float, eps=1e-6) -> bool:
+        return abs(high - limit_up) < eps and abs(low - limit_up) < eps and abs(high - low) < eps
+
+    def is_one_price_limit_down(self, high: float, low: float, limit_down: float, eps=1e-6) -> bool:
+        return abs(high - limit_down) < eps and abs(low - limit_down) < eps and abs(high - low) < eps
+    
+@dataclass
+class RangeFillModel:
+    slippage_bps: float = 2.0  # 0.02%
+
+    def _apply_slippage(self, px: float, side: str) -> float:
         slip = self.slippage_bps / 10000.0
-        if side.lower() == "buy":
-            return price * (1 + slip)
-        else:
-            return price * (1 - slip)
+        return px * (1 + slip) if side == "buy" else px * (1 - slip)
 
     @staticmethod
-    def vwap(df_5m: pd.DataFrame) -> float:
-        # 用 close*volume 近似
-        pv = (df_5m["close"] * df_5m["volume"]).sum()
-        vv = df_5m["volume"].sum()
+    def bar_vwap(bar_df: pd.DataFrame) -> float:
+        pv = (bar_df["close"] * bar_df["volume"]).sum()
+        vv = bar_df["volume"].sum()
         if vv <= 0:
-            return float(df_5m["close"].iloc[0])
+            return float(bar_df["close"].iloc[0])
         return float(pv / vv)
 
-    def get_buy_price(self, day_5m: pd.DataFrame, fallback_open: float) -> float:
-        if day_5m is None or day_5m.empty:
-            return self._apply_slippage(float(fallback_open), "buy")
-        n = min(self.buy_vwap_bars, len(day_5m))
-        px = self.vwap(day_5m.iloc[:n])
-        # 保证在当日范围内
-        lo, hi = float(day_5m["low"].min()), float(day_5m["high"].max())
-        px = float(np.clip(px, lo, hi))
-        return self._apply_slippage(px, "buy")
+    def try_fill_range_order(self, day5m: pd.DataFrame, side: str,
+                             price_low: float, price_high: float):
+        """
+        返回: None（不成交）
+        或 dict(price=成交价, time=成交时间, bar_index=第几根bar)
+        """
+        if day5m is None or day5m.empty:
+            return None
 
-    def get_sell_price(self, day_5m: pd.DataFrame, fallback_close: float) -> float:
-        if day_5m is None or day_5m.empty:
-            return self._apply_slippage(float(fallback_close), "sell")
-        n = min(self.sell_vwap_bars, len(day_5m))
-        px = self.vwap(day_5m.iloc[-n:])
-        lo, hi = float(day_5m["low"].min()), float(day_5m["high"].max())
-        px = float(np.clip(px, lo, hi))
-        return self._apply_slippage(px, "sell")
+        lo_target = min(price_low, price_high)
+        hi_target = max(price_low, price_high)
 
+        # 顺序扫描 5min
+        for i, (_, bar) in enumerate(day5m.iterrows()):
+            bar_low = float(bar["low"])
+            bar_high = float(bar["high"])
+
+            # 是否触达区间：两个区间有交集
+            if bar_high < lo_target or bar_low > hi_target:
+                continue
+
+            # 成交价：用该bar的“近似 vwap”，再 clip 到目标区间
+            # 这里用单行bar，只能用 close 近似，想更精细可用 bar 内成交分布模型
+            px = float(bar["close"])
+            px = float(np.clip(px, lo_target, hi_target))
+
+            px = self._apply_slippage(px, side)
+            return {"price": px, "time": bar["datetime"], "bar_index": i}
+
+        return None
 
 @dataclass
-class StrategyConfigV2:
-    capital: float = 80000.0
-    max_positions: int = 6
-    max_new_positions_per_day: int = 3
+class Order:
+    code: str
+    side: str            # "buy" or "sell"
+    submit_date: pd.Timestamp
+    valid_date: pd.Timestamp  # 当日有效（也可扩展为多日）
+    qty: int
 
-    # 持有周期（交易日数量）
-    max_hold_days: int = 10
+    # 区间单
+    price_low: float
+    price_high: float
 
-    # 止盈止损（相对 entry_price）
-    stop_loss_pct: float = -0.05
-    take_profit_pct: float = 0.10
+    # 订单来源/原因
+    reason: str          # "entry", "stop_loss", "take_profit", "max_hold", "manual"
 
-    # 过滤（可继续扩充）
-    max_vol_20d: float = 0.06
-    min_turn_20d: float = 0.005
-    max_turn_20d: float = 0.30
-    low_position_quantile: float = 0.3
+    # 记录因子/关联pos等
+    signal_date: pd.Timestamp | None = None
+    ref_entry_price: float | None = None
 
-    # 下单资金分配
-    # - 等权：按可用现金和目标持仓数进行分配
-    lot_size: int = 100            # A 股 1 手=100 股
-    min_order_value: float = 2000  # 过小订单没意义，过滤
-    
-class BacktesterV2:
+class BacktesterV3:
     def __init__(self,
                  daily_df: pd.DataFrame,
                  minute5_df: pd.DataFrame,
                  factor_scored_df: pd.DataFrame,
                  trade_dates: pd.DatetimeIndex,
                  period_cfg,
-                 strat_cfg: StrategyConfigV2,
-                 cost_model: CostModel,
-                 exec_model: ExecutionModel):
+                 strat_cfg,
+                 cost_model,
+                 price_limit_model: PriceLimitModel,
+                 range_fill_model: RangeFillModel):
+
         self.daily = daily_df.copy()
         self.m5 = minute5_df.copy()
         self.factor = factor_scored_df.copy()
@@ -120,13 +122,14 @@ class BacktesterV2:
 
         self.cfg = strat_cfg
         self.cost = cost_model
-        self.exec = exec_model
+        self.lim = price_limit_model
+        self.fill = range_fill_model
 
         self.code_col = "code"
         self.date_col = "date"
         self.dt_col = "datetime"
 
-        # 基础清洗与排序
+        # 标准化
         self.daily[self.date_col] = pd.to_datetime(self.daily[self.date_col])
         self.m5[self.date_col] = pd.to_datetime(self.m5[self.date_col])
         self.factor["date"] = pd.to_datetime(self.factor["date"])
@@ -135,20 +138,27 @@ class BacktesterV2:
         self.m5 = self.m5.sort_values([self.code_col, self.dt_col])
         self.factor = self.factor.sort_values([self.code_col, "date"])
 
-        # 预计算日辅助（波动、换手）
+        # 日辅助特征
         self._prepare_daily_features()
 
-        # 建 5min 索引：按 (code,date) 快速取当日 5min
+        # 5min 索引
         self._build_m5_index()
 
         # 账户状态
         self.cash = float(self.cfg.capital)
-        self.positions = {}  # code -> position dict
+        self.reserved_cash = 0.0  # 下单占用资金（未成交）
+        self.positions = {}       # code -> pos dict
+        self.pending_orders: list[Order] = []
 
         # 记录
         self.nav_records = []
-        self.trades_detailed = []
         self.daily_positions = []
+        self.trades_detailed = []
+        self.order_logs = []
+
+        self.factor_map = {}
+        for _, r in self.factor.iterrows():
+            self.factor_map[(r["date"], r["code"])] = r.to_dict()
 
     def _prepare_daily_features(self):
         df = self.daily
@@ -161,126 +171,18 @@ class BacktesterV2:
         self.daily = df
 
     def _build_m5_index(self):
-        # groupby 对象缓存：后续 day_5m = self.m5_groups.get((code,date))
         self.m5_groups = {}
         for (code, d), g in self.m5.groupby([self.code_col, self.date_col]):
             self.m5_groups[(code, pd.to_datetime(d))] = g.sort_values(self.dt_col)
 
-    def _get_day5m(self, code: str, d: pd.Timestamp) -> pd.DataFrame:
+    def _get_day5m(self, code: str, d: pd.Timestamp):
         return self.m5_groups.get((code, pd.to_datetime(d)))
 
     def _get_daily_row(self, code: str, d: pd.Timestamp):
-        df = self.daily[(self.daily[self.code_col] == code) & (self.daily[self.date_col] == d)]
+        df = self.daily[(self.daily["code"] == code) & (self.daily["date"] == d)]
         if df.empty:
             return None
-        # 若异常重复，取最后一条
         return df.iloc[-1]
-
-    def _get_cross_section(self, d: pd.Timestamp) -> pd.DataFrame:
-        # 因子截面
-        f = self.factor[self.factor["date"] == d].copy()
-        # 日频截面（用于 tradestatus/isST/vol/turn）
-        dd = self.daily[self.daily[self.date_col] == d].copy()
-        cross = f.merge(dd, on=["date", "code"], how="inner")
-
-        # 过滤：停牌/ST
-        if "tradestatus" in cross.columns:
-            cross = cross[cross["tradestatus"] == 1]
-        if "isST" in cross.columns:
-            cross = cross[cross["isST"] == 0]
-
-        # 风控过滤：波动/换手
-        cross = cross[
-            (cross["vol_20d"].notna()) &
-            (cross["vol_20d"] <= self.cfg.max_vol_20d)
-        ]
-        if "turn_20d" in cross.columns:
-            cross = cross[
-                (cross["turn_20d"].notna()) &
-                (cross["turn_20d"] >= self.cfg.min_turn_20d) &
-                (cross["turn_20d"] <= self.cfg.max_turn_20d)
-            ]
-
-        # 低位过滤：L1 取前 x 分位（L1 越小越低位）
-        if len(cross) > 0 and "L1" in cross.columns:
-            thr = cross["L1"].quantile(self.cfg.low_position_quantile)
-            cross = cross[cross["L1"] <= thr]
-
-        # 排序：alpha_score 越大越好
-        cross = cross.sort_values("alpha_score", ascending=False)
-        return cross
-
-    def _next_trade_date(self, d: pd.Timestamp):
-        idx = self.trade_dates.get_loc(d)
-        if idx >= len(self.trade_dates) - 1:
-            return None
-        return self.trade_dates[idx + 1]
-
-    # ---------------------------
-    # 关键：A 股下单股数（100股一手）
-    # ---------------------------
-    def _calc_lot_shares(self, budget: float, price: float) -> int:
-        if price <= 0:
-            return 0
-        raw = int(budget / price)
-        lots = raw // self.cfg.lot_size
-        return lots * self.cfg.lot_size
-
-    # ---------------------------
-    # 按天扫描止盈止损（5min high/low 顺序）
-    # 返回：是否触发、触发价格、触发时间、原因
-    # ---------------------------
-    def _scan_intraday_exit(self, code: str, d: pd.Timestamp, pos: dict):
-        day5m = self._get_day5m(code, d)
-        if day5m is None or day5m.empty:
-            return None  # 无 5min，交给到期/收盘卖逻辑
-
-        stop_px = pos["stop_price"]
-        tp_px = pos["take_profit_price"]
-
-        # 顺序扫描，模拟盘中触发
-        for _, bar in day5m.iterrows():
-            lo = float(bar["low"])
-            hi = float(bar["high"])
-            t = bar[self.dt_col]
-
-            # 同一根K线内同时触发的处理：保守起见先止损（更贴近风控优先）
-            if lo <= stop_px:
-                px = self.exec._apply_slippage(float(stop_px), "sell")
-                return {"reason": "stop_loss", "price": px, "time": t}
-            if hi >= tp_px:
-                px = self.exec._apply_slippage(float(tp_px), "sell")
-                return {"reason": "take_profit", "price": px, "time": t}
-
-        return None
-
-    # ---------------------------
-    # 每日：先处理卖出（含止盈止损/到期），再处理买入（昨日信号）
-    # ---------------------------
-    def run_backtest(self):
-        bt_start = pd.to_datetime(self.period.backtest_start)
-        bt_end = pd.to_datetime(self.period.backtest_end)
-
-        # 交易日循环
-        for d in self.trade_dates:
-            if not (bt_start <= d <= bt_end):
-                continue
-
-            # 1) 先处理卖出（更符合现实：先腾现金再买）
-            self._process_exits(d)
-
-            # 2) 再处理买入：用 d-1 的信号，在 d 执行
-            prev_d = self._prev_trade_date(d)
-            if prev_d is not None and (bt_start <= prev_d <= bt_end):
-                self._process_entries(signal_date=prev_d, exec_date=d)
-
-            # 3) 记录每日持仓快照 + NAV
-            self._record_daily_snapshot(d)
-
-        nav_df = pd.DataFrame(self.nav_records).sort_values("date").reset_index(drop=True)
-        trades_df = pd.DataFrame(self.trades_detailed).sort_values(["entry_date", "code"]).reset_index(drop=True)
-        daily_pos_df = pd.DataFrame(self.daily_positions).sort_values(["date", "code"]).reset_index(drop=True)
-        return nav_df, trades_df, daily_pos_df
 
     def _prev_trade_date(self, d: pd.Timestamp):
         idx = self.trade_dates.get_loc(d)
@@ -288,48 +190,260 @@ class BacktesterV2:
             return None
         return self.trade_dates[idx - 1]
 
-    # ---------------------------
-    # 卖出逻辑
-    # ---------------------------
-    def _process_exits(self, d: pd.Timestamp):
-        to_close = []
+    def _calc_lot_shares(self, budget: float, price: float) -> int:
+        raw = int(budget / price)
+        lots = raw // self.cfg.lot_size
+        return lots * self.cfg.lot_size
 
-        for code, pos in self.positions.items():
-            # 计算持有天数（按交易日计数更合理）
-            pos["hold_days"] += 1
+    # ----------------------------
+    # 因子截面过滤 + 选股（同你之前逻辑）
+    # ----------------------------
+    def _get_cross_section(self, d: pd.Timestamp) -> pd.DataFrame:
+        f = self.factor[self.factor["date"] == d].copy()
+        dd = self.daily[self.daily["date"] == d].copy()
+        cross = f.merge(dd, on=["date", "code"], how="inner")
 
-            # 先扫描当日 5min 是否触发止盈止损
-            hit = self._scan_intraday_exit(code, d, pos)
-            if hit is not None:
-                to_close.append((code, hit["price"], hit["reason"], hit["time"]))
-                continue
+        if "tradestatus" in cross.columns:
+            cross = cross[cross["tradestatus"] == 1]
+        if "isST" in cross.columns:
+            cross = cross[cross["isST"] == 0]
 
-            # 若到期，则用当日“卖出 VWAP”（收盘前 N 根 5min）模拟退出
-            if pos["hold_days"] >= self.cfg.max_hold_days:
-                day5m = self._get_day5m(code, d)
-                daily_row = self._get_daily_row(code, d)
-                if daily_row is None:
-                    continue
-                fallback_close = float(daily_row["close"])
-                px = self.exec.get_sell_price(day5m, fallback_close)
-                to_close.append((code, px, "max_hold", None))
+        cross = cross[(cross["vol_20d"].notna()) & (cross["vol_20d"] <= self.cfg.max_vol_20d)]
+        if "turn_20d" in cross.columns:
+            cross = cross[
+                (cross["turn_20d"].notna()) &
+                (cross["turn_20d"] >= self.cfg.min_turn_20d) &
+                (cross["turn_20d"] <= self.cfg.max_turn_20d)
+            ]
 
-        for code, exit_price, reason, exit_time in to_close:
-            self._close_position(code, d, exit_price, reason, exit_time)
+        if len(cross) > 0 and "L1" in cross.columns:
+            thr = cross["L1"].quantile(self.cfg.low_position_quantile)
+            cross = cross[cross["L1"] <= thr]
 
-    def _close_position(self, code: str, d: pd.Timestamp, exit_price: float, reason: str, exit_time):
-        pos = self.positions.get(code)
-        if pos is None:
+        cross = cross.sort_values("alpha_score", ascending=False)
+        return cross
+
+    # ----------------------------
+    # 生成买入区间（可用你的 buy_low/buy_high 逻辑）
+    # 这里给更“交易员风格”的区间：
+    # - 用执行日开盘价为中心，设置一个小偏离区间（比如±0.3%）
+    # - 你也可以改为基于 5min vwap/波动率动态区间
+    # ----------------------------
+    def _build_buy_range(self, exec_open: float) -> tuple[float, float]:
+        return exec_open * (1 - 0.003), exec_open * (1 + 0.003)
+
+    def _build_sell_range(self, ref_price: float) -> tuple[float, float]:
+        # 默认给一个“接近市价”的区间，保证可成交但仍在高低内
+        return ref_price * (1 - 0.002), ref_price * (1 + 0.002)
+
+    # ----------------------------
+    # 核心：订单撮合（考虑涨跌停/一字板）
+    # ----------------------------
+    def _match_order(self, order: Order, d: pd.Timestamp):
+        dr = self._get_daily_row(order.code, d)
+        if dr is None:
+            return None, "no_daily"
+
+        preclose = float(dr.get("preclose", np.nan))
+        is_st = int(dr.get("isST", 0)) if "isST" in dr.index else 0
+        high = float(dr["high"]); low = float(dr["low"])
+        open_px = float(dr["open"]); close_px = float(dr["close"])
+
+        if np.isnan(preclose) or preclose <= 0:
+            # 没有 preclose 无法计算涨跌停，降级为不限制（你也可以选择拒绝成交）
+            limit_dn, limit_up = -np.inf, np.inf
+        else:
+            limit_dn, limit_up = self.lim.limit_prices(order.code, preclose, is_st)
+
+        # 一字板判断（流动性极差）：买单在一字涨停几乎不可成交；卖单在一字跌停几乎不可成交
+        if order.side == "buy" and self.lim.is_one_price_limit_up(high, low, limit_up):
+            return None, "one_price_limit_up_no_buy"
+        if order.side == "sell" and self.lim.is_one_price_limit_down(high, low, limit_dn):
+            return None, "one_price_limit_down_no_sell"
+
+        # 用 5min 做区间撮合
+        day5m = self._get_day5m(order.code, d)
+
+        fill = self.fill.try_fill_range_order(day5m, order.side, order.price_low, order.price_high)
+        if fill is None:
+            # 当天未触达区间，视为未成交（当日有效撤单）
+            return None, "range_not_touched"
+
+        # 成交价再 clip 到当日 high-low（理论上已经在区间内，但加一道保险）
+        px = float(np.clip(fill["price"], low, high))
+        return {"price": px, "time": fill["time"]}, "filled"
+
+    # ----------------------------
+    # 处理止盈止损：触发后生成“卖出区间单”
+    # 真实情况：触发后你也要下单，不一定成交（比如跌停卖不出去）
+    # ----------------------------
+    def _generate_exit_order_if_needed(self, code: str, d: pd.Timestamp):
+        pos = self.positions[code]
+        dr = self._get_daily_row(code, d)
+        if dr is None:
             return
 
+        # 用 5min 顺序扫描触发（用高低价）
+        day5m = self._get_day5m(code, d)
+        if day5m is None or day5m.empty:
+            return
+
+        stop_px = pos["stop_price"]
+        tp_px = pos["take_profit_price"]
+
+        # 扫描触发点（保守先止损）
+        hit_reason = None
+        hit_time = None
+        for _, bar in day5m.iterrows():
+            lo = float(bar["low"]); hi = float(bar["high"])
+            if lo <= stop_px:
+                hit_reason = "stop_loss"
+                hit_time = bar[self.dt_col]
+                ref = stop_px
+                break
+            if hi >= tp_px:
+                hit_reason = "take_profit"
+                hit_time = bar[self.dt_col]
+                ref = tp_px
+                break
+
+        if hit_reason is None:
+            return
+
+        # 触发后生成卖出区间单：围绕触发价给个小区间
+        sell_low, sell_high = self._build_sell_range(ref)
+        qty = pos["shares"]
+
+        self.pending_orders.append(Order(
+            code=code, side="sell",
+            submit_date=d, valid_date=d,
+            qty=qty,
+            price_low=sell_low, price_high=sell_high,
+            reason=hit_reason,
+            signal_date=pos["signal_date"],
+            ref_entry_price=pos["entry_price"]
+        ))
+
+        self.order_logs.append({
+            "date": d, "code": code, "side": "sell",
+            "reason": hit_reason, "submit_time": hit_time,
+            "price_low": sell_low, "price_high": sell_high,
+            "qty": qty
+        })
+
+    # ----------------------------
+    # 到期卖出：生成卖出区间单（收盘附近）
+    # ----------------------------
+    def _generate_max_hold_exit(self, code: str, d: pd.Timestamp):
+        pos = self.positions[code]
+        dr = self._get_daily_row(code, d)
+        if dr is None:
+            return
+        # 以当日 close 为参考给卖出区间
+        ref = float(dr["close"])
+        sell_low, sell_high = self._build_sell_range(ref)
+
+        self.pending_orders.append(Order(
+            code=code, side="sell",
+            submit_date=d, valid_date=d,
+            qty=pos["shares"],
+            price_low=sell_low, price_high=sell_high,
+            reason="max_hold",
+            signal_date=pos["signal_date"],
+            ref_entry_price=pos["entry_price"]
+        ))
+
+        self.order_logs.append({
+            "date": d, "code": code, "side": "sell",
+            "reason": "max_hold",
+            "price_low": sell_low, "price_high": sell_high,
+            "qty": pos["shares"]
+        })
+
+    # ----------------------------
+    # 每日流程：先生成卖出订单 → 撮合卖出 → 再生成买入订单 → 撮合买入 → 记账
+    # ----------------------------
+    def run_backtest(self):
+        bt_start = pd.to_datetime(self.period.backtest_start)
+        bt_end = pd.to_datetime(self.period.backtest_end)
+
+        for d in self.trade_dates:
+            if not (bt_start <= d <= bt_end):
+                continue
+
+            # 0) 清理当日有效订单容器（当天会重新生成）
+            self.pending_orders = []
+
+            # 1) 为已有持仓生成：止盈止损卖单 + 到期卖单
+            for code in list(self.positions.keys()):
+                pos = self.positions[code]
+                pos["hold_days"] += 1
+
+                # 先止盈止损触发（可能当天卖不出去）
+                self._generate_exit_order_if_needed(code, d)
+
+                # 再到期退出（如果当天已经触发止盈止损并卖掉，这里不会重复；卖不掉也可能叠加多张单——
+                # 为简化，下面撮合时我们对同code只执行一张“优先级最高”的卖单）
+                if pos["hold_days"] >= self.cfg.max_hold_days:
+                    self._generate_max_hold_exit(code, d)
+
+            # 2) 撮合卖出（先卖后买更真实）
+            self._execute_sell_orders(d)
+
+            # 3) 用前一交易日信号生成买单，并撮合买入
+            prev_d = self._prev_trade_date(d)
+            if prev_d is not None and (bt_start <= prev_d <= bt_end):
+                self._generate_entry_orders(signal_date=prev_d, exec_date=d)
+                self._execute_buy_orders(d)
+
+            # 4) 日终记账：NAV & 持仓快照（只含真实持仓）
+            self._record_daily_snapshot(d)
+
+        nav_df = pd.DataFrame(self.nav_records).sort_values("date").reset_index(drop=True)
+        trades_df = pd.DataFrame(self.trades_detailed).sort_values(["entry_date", "code"]).reset_index(drop=True)
+        daily_pos_df = pd.DataFrame(self.daily_positions).sort_values(["date", "code"]).reset_index(drop=True)
+        orders_df = pd.DataFrame(self.order_logs).sort_values(["date", "code"]).reset_index(drop=True)
+        return nav_df, trades_df, daily_pos_df, orders_df
+
+    # ----------------------------
+    # 卖单执行：同一股票可能产生多张卖单（止损/止盈/到期）
+    # 真实交易也会有冲突，这里定义优先级：止损 > 止盈 > 到期
+    # ----------------------------
+    def _execute_sell_orders(self, d: pd.Timestamp):
+        sell_orders = [o for o in self.pending_orders if o.side == "sell" and o.valid_date == d]
+        if not sell_orders:
+            return
+
+        priority = {"stop_loss": 0, "take_profit": 1, "max_hold": 2, "manual": 3}
+        sell_orders.sort(key=lambda o: (priority.get(o.reason, 9)))
+
+        executed_codes = set()
+        for o in sell_orders:
+            if o.code not in self.positions:
+                continue
+            if o.code in executed_codes:
+                continue  # 同code只执行一张卖单
+
+            fill, status = self._match_order(o, d)
+            if status != "filled":
+                # 卖不出去：真实世界会出现（尤其跌停），这里记录但不平仓
+                self.order_logs.append({"date": d, "code": o.code, "side": "sell",
+                                        "reason": o.reason, "status": status})
+                continue
+
+            exit_price = fill["price"]
+            self._close_position(o.code, d, exit_price, o.reason, fill.get("time"))
+            executed_codes.add(o.code)
+
+    def _close_position(self, code: str, d: pd.Timestamp, exit_price: float, reason: str, exit_time):
+        pos = self.positions[code]
         shares = int(pos["shares"])
         trade_value = float(exit_price) * shares
-        cost = self.cost.sell_cost(trade_value)
-        cash_in = trade_value - cost
-
+        exit_cost = self.cost.sell_cost(trade_value)
+        cash_in = trade_value - exit_cost
         self.cash += cash_in
 
-        pnl = (exit_price - pos["entry_price"]) * shares - pos["entry_cost"] - cost
+        pnl = (exit_price - pos["entry_price"]) * shares - pos["entry_cost"] - exit_cost
         ret = pnl / (pos["entry_price"] * shares + 1e-9)
 
         rec = {
@@ -343,28 +457,25 @@ class BacktesterV2:
             "entry_value": pos["entry_price"] * shares,
             "exit_value": trade_value,
             "entry_cost": pos["entry_cost"],
-            "exit_cost": cost,
+            "exit_cost": exit_cost,
             "pnl": pnl,
             "ret": ret,
             "hold_days": pos["hold_days"],
             "exit_reason": reason,
             "exit_time": exit_time,
-            # 风控线
             "stop_price": pos["stop_price"],
             "take_profit_price": pos["take_profit_price"],
         }
-        # 因子快照（可选：很多列）
         for k, v in pos["factor_snapshot"].items():
             rec[f"fac_{k}"] = v
-
         self.trades_detailed.append(rec)
         del self.positions[code]
 
-    # ---------------------------
-    # 买入逻辑：signal_date 出信号，exec_date 执行
-    # ---------------------------
-    def _process_entries(self, signal_date: pd.Timestamp, exec_date: pd.Timestamp):
-        # 持仓容量限制
+    # ----------------------------
+    # 生成买单：signal_date 选股，在 exec_date 挂区间买单
+    # 现金占用：下单时先预占预算，避免“理论现金够但实际重复下单”
+    # ----------------------------
+    def _generate_entry_orders(self, signal_date: pd.Timestamp, exec_date: pd.Timestamp):
         capacity = self.cfg.max_positions - len(self.positions)
         if capacity <= 0:
             return
@@ -373,106 +484,141 @@ class BacktesterV2:
         if cross.empty:
             return
 
-        # 排除已持仓
         cross = cross[~cross["code"].isin(self.positions.keys())]
         if cross.empty:
             return
 
-        # 最多当日新开仓
         n_new = min(self.cfg.max_new_positions_per_day, capacity, len(cross))
         candidates = cross.head(n_new).copy()
 
-        # 当日可用现金分配（等权分配到“目标仓位数”）
-        # 注意：只用 cash 分配，保证现金不为负
-        # 目标：尽量把资金均匀分到 max_positions
-        per_budget = max(0.0, self.cash / max(1, capacity))
+        # 可用于新开仓的资金：现金 - 预占
+        free_cash = max(0.0, self.cash - self.reserved_cash)
+        if free_cash <= 0:
+            return
+
+        # 等权分配到“剩余容量”
+        per_budget = free_cash / max(1, capacity)
 
         for _, row in candidates.iterrows():
             code = row["code"]
-
-            # 取执行日的日频、5min
-            daily_row = self._get_daily_row(code, exec_date)
-            if daily_row is None:
+            dr = self._get_daily_row(code, exec_date)
+            if dr is None:
                 continue
-            day5m = self._get_day5m(code, exec_date)
+            exec_open = float(dr["open"])
 
-            fallback_open = float(daily_row["open"])
-            buy_price = self.exec.get_buy_price(day5m, fallback_open)
+            buy_low, buy_high = self._build_buy_range(exec_open)
 
-            # 预算：取 per_budget，但不能超过现金
-            budget = min(per_budget, self.cash)
+            # 预算不能太小
+            budget = min(per_budget, free_cash)
             if budget < self.cfg.min_order_value:
                 continue
 
-            shares = self._calc_lot_shares(budget, buy_price)
+            # 先用区间中值估算股数（更保守：用 buy_high）
+            est_price = buy_high
+            shares = self._calc_lot_shares(budget, est_price)
             if shares <= 0:
                 continue
 
+            # 预估买入总成本（用 buy_high 保守估算）
+            est_value = shares * est_price
+            est_cost = self.cost.buy_cost(est_value)
+            reserve_need = est_value + est_cost
+
+            if reserve_need > free_cash:
+                continue
+
+            # 预占现金
+            self.reserved_cash += reserve_need
+            free_cash -= reserve_need
+
+            self.pending_orders.append(Order(
+                code=code, side="buy",
+                submit_date=exec_date, valid_date=exec_date,
+                qty=shares,
+                price_low=buy_low, price_high=buy_high,
+                reason="entry",
+                signal_date=signal_date
+            ))
+
+            self.order_logs.append({
+                "date": exec_date, "code": code, "side": "buy",
+                "reason": "entry",
+                "price_low": buy_low, "price_high": buy_high,
+                "qty": shares,
+                "reserved_cash": reserve_need
+            })
+
+    def _execute_buy_orders(self, d: pd.Timestamp):
+        buy_orders = [o for o in self.pending_orders if o.side == "buy" and o.valid_date == d]
+        if not buy_orders:
+            # 当天无买单，释放预占（理论上不该发生；这里防御）
+            self.reserved_cash = 0.0
+            return
+
+        actually_reserved_left = self.reserved_cash
+
+        for o in buy_orders:
+            # 撮合
+            fill, status = self._match_order(o, d)
+            if status != "filled":
+                self.order_logs.append({"date": d, "code": o.code, "side": "buy", "reason": o.reason, "status": status})
+                continue
+
+            buy_price = fill["price"]
+            shares = int(o.qty)
             trade_value = buy_price * shares
             entry_cost = self.cost.buy_cost(trade_value)
-            total_cost = trade_value + entry_cost
+            total = trade_value + entry_cost
 
-            # 现金检查：不允许 cash 负数
-            if total_cost > self.cash:
-                # 现金不足：尝试缩小一档（减一手）直到可买
-                while shares > 0:
-                    shares -= self.cfg.lot_size
-                    if shares <= 0:
-                        break
-                    trade_value = buy_price * shares
-                    entry_cost = self.cost.buy_cost(trade_value)
-                    total_cost = trade_value + entry_cost
-                    if total_cost <= self.cash:
-                        break
-                if shares <= 0 or total_cost > self.cash:
-                    continue
+            # 再次检查现金（理论上预占保证了足够，但价格可能略高于估计）
+            if total > self.cash:
+                self.order_logs.append({"date": d, "code": o.code, "side": "buy", "reason": o.reason, "status": "cash_insufficient_at_fill"})
+                continue
 
-            # 扣现金
-            self.cash -= total_cost
+            # 真正扣现金
+            self.cash -= total
+
+            fac = self.factor_map.get((o.signal_date, o.code), {})
 
             # 建仓
-            pos = {
-                "code": code,
-                "signal_date": signal_date,
-                "entry_date": exec_date,
+            self.positions[o.code] = {
+                "code": o.code,
+                "signal_date": o.signal_date,
+                "entry_date": d,
                 "entry_price": float(buy_price),
-                "shares": int(shares),
+                "shares": shares,
                 "entry_cost": float(entry_cost),
                 "hold_days": 0,
 
                 "stop_price": float(buy_price * (1 + self.cfg.stop_loss_pct)),
                 "take_profit_price": float(buy_price * (1 + self.cfg.take_profit_pct)),
 
-                # 因子快照（越全越好）
                 "factor_snapshot": {
-                    "L1": row.get("L1", np.nan),
-                    "L2": row.get("L2", np.nan),
-                    "S1": row.get("S1", np.nan),
-                    "S2": row.get("S2", np.nan),
-                    "S3": row.get("S3", np.nan),
-                    "S4": row.get("S4", np.nan),
-                    "F1": row.get("F1", np.nan),
-                    "F2": row.get("F2", np.nan),
-                    "R1": row.get("R1", np.nan),
-                    "alpha_score": row.get("alpha_score", np.nan),
+                    # "L1": float(o.signal_date is not None) and np.nan,  # 可在此处注入 row 因子（见下方说明）
+                    k: fac.get(k, np.nan) for k in ["L1","L2","S1","S2","S3","S4","F1","F2","R1","alpha_score"]
                 }
             }
-            self.positions[code] = pos
 
-    # ---------------------------
-    # 每日记账：NAV、持仓快照（不会把未成交仓位算进去）
-    # ---------------------------
+            # 记录买入成交
+            self.order_logs.append({"date": d, "code": o.code, "side": "buy",
+                                    "status": "filled", "price": buy_price, "qty": shares, "time": fill.get("time")})
+
+        # 日终释放所有预占（因为订单当日有效）
+        self.reserved_cash = 0.0
+
+    # ----------------------------
+    # 记账：NAV & 每日持仓快照（只含真实持仓）
+    # ----------------------------
     def _record_daily_snapshot(self, d: pd.Timestamp):
-        # 计算持仓市值：只统计 entry_date <= d 的真实持仓
         holdings_value = 0.0
         for code, pos in self.positions.items():
-            daily_row = self._get_daily_row(code, d)
-            if daily_row is None:
+            dr = self._get_daily_row(code, d)
+            if dr is None:
                 continue
-            close_px = float(daily_row["close"])
-            holdings_value += close_px * pos["shares"]
+            holdings_value += float(dr["close"]) * pos["shares"]
 
         nav = self.cash + holdings_value
+
         self.nav_records.append({
             "date": d,
             "nav": nav,
@@ -481,46 +627,31 @@ class BacktesterV2:
             "num_positions": len(self.positions)
         })
 
-        # 记录每日持仓明细（用于复盘）
         for code, pos in self.positions.items():
-            daily_row = self._get_daily_row(code, d)
-            if daily_row is None:
+            dr = self._get_daily_row(code, d)
+            if dr is None:
                 continue
-            open_px = float(daily_row["open"])
-            high_px = float(daily_row["high"])
-            low_px = float(daily_row["low"])
-            close_px = float(daily_row["close"])
+            open_px, high_px, low_px, close_px = map(float, [dr["open"], dr["high"], dr["low"], dr["close"]])
 
             mv = close_px * pos["shares"]
             pnl = (close_px - pos["entry_price"]) * pos["shares"] - pos["entry_cost"]
             ret = pnl / (pos["entry_price"] * pos["shares"] + 1e-9)
 
-            rec = {
-                "date": d,
-                "code": code,
-                "entry_date": pos["entry_date"],
+            self.daily_positions.append({
+                "date": d, "code": code,
                 "signal_date": pos["signal_date"],
+                "entry_date": pos["entry_date"],
                 "entry_price": pos["entry_price"],
                 "shares": pos["shares"],
                 "hold_days": pos["hold_days"],
 
-                "open": open_px,
-                "high": high_px,
-                "low": low_px,
-                "close": close_px,
+                "open": open_px, "high": high_px, "low": low_px, "close": close_px,
 
                 "market_value": mv,
                 "pnl": pnl,
                 "ret": ret,
-                "weight": (mv / nav) if nav > 0 else 0.0,
+                "weight": mv / nav if nav > 0 else 0.0,
 
                 "stop_price": pos["stop_price"],
                 "take_profit_price": pos["take_profit_price"],
-                "hit_stop_eod": close_px <= pos["stop_price"],
-                "hit_tp_eod": close_px >= pos["take_profit_price"],
-            }
-            for k, v in pos["factor_snapshot"].items():
-                rec[f"fac_{k}"] = v
-
-            self.daily_positions.append(rec)
-
+            })
