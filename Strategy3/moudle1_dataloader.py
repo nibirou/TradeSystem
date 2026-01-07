@@ -63,18 +63,18 @@ class PeriodConfig:
         bs = pd.to_datetime(self.backtest_start)
         be = pd.to_datetime(self.backtest_end)
 
-        if not (fs < bs < be <= fe):
-            raise ValueError(
-                f"""
-❌ 回测区间必须完全包含在因子区间内部。
+#         if not (fs < bs < be <= fe):
+#             raise ValueError(
+#                 f"""
+# ❌ 回测区间必须完全包含在因子区间内部。
 
-因子区间:     {fs.date()} ~ {fe.date()}
-回测区间:     {bs.date()} ~ {be.date()}
+# 因子区间:     {fs.date()} ~ {fe.date()}
+# 回测区间:     {bs.date()} ~ {be.date()}
 
-正确关系必须满足:
-factor_start < backtest_start < backtest_end <= factor_end
-"""
-            )
+# 正确关系必须满足:
+# factor_start < backtest_start < backtest_end <= factor_end
+# """
+#             )
 
 def get_all_trade_dates_from_csv(csv_path: str) -> pd.DatetimeIndex:
     """

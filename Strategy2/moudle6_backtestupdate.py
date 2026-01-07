@@ -1,6 +1,130 @@
+# 尽可能贴近 A 股真实交易”的回测执行/撮合升级版  回测引擎V3（T日信号、T+1日下单建仓）
+
+# V2版本加入：更贴近 A 股真实交易的回测模块（仍然是你现在的数据结构：日频 + 5min）
+# - 不会把“明天才买入”的股票算进今天 holding_value
+# - A 股最小成交单位：100 股（1 手）
+# - 买/卖成交价用 5 分钟线来模拟（保证在当日 high-low 内，并且更像人/程序交易）
+# - 现金 cash 永不为负；买入前检查现金是否够（含手续费），不够就不买
+# - 止盈止损用 5min high/low 顺序触发（比用收盘价判断真实得多）
+# - 加入 手续费/印花税/滑点，并输出 详细交易记录 + 每日持仓快照 + 每日资金曲线
+
+
+# V3版本（当前版本）：尽可能贴近 A 股真实交易”的回测执行/撮合升级版**，并且我会把上一个版本里仍然不符合现实交易的点做一次系统性排查，给出对应的改法
+# 新增：1、涨跌停限制（不同板块/ST 不同涨跌幅）；2、区间成交模拟（buy_low/buy_high 与 5min 价格路径匹配，可能“不成交”）
+# 升级目标与基本假设：
+# 1、T 日出信号，T+1 日挂单执行（现在的模型就是这样，继续保留）
+# 2、挂单不一定成交：如果当日价格路径没走到你挂的价格区间，则当天不成交（可以选择撤单 or 次日继续，默认当日有效）
+# 3、
+
 from dataclasses import dataclass
 import pandas as pd
 import numpy as np
+
+from dataclasses import dataclass
+
+@dataclass
+class StrategyConfigV2:
+    capital: float = 80000.0
+    max_positions: int = 6
+    max_new_positions_per_day: int = 3
+
+    # 持有周期（交易日数量）
+    max_hold_days: int = 10
+
+    # 止盈止损（相对 entry_price）
+    stop_loss_pct: float = -0.05
+    take_profit_pct: float = 0.10
+
+    # 过滤（可继续扩充）
+    max_vol_20d: float = 0.06
+    min_turn_20d: float = 0.005
+    max_turn_20d: float = 0.30
+    low_position_quantile: float = 0.3
+
+    # 下单资金分配
+    # - 等权：按可用现金和目标持仓数进行分配
+    lot_size: int = 100            # A 股 1 手=100 股
+    min_order_value: float = 2000  # 过小订单没意义，过滤
+
+    # 选股时各类因子权重（你以后可以调参或做 IC 加权）
+    w_L1: float = 0.4   # 低位重要
+    w_L2: float = 0.2   # MA5/MA20
+    w_S: float = 0.2    # 短期走强
+    w_F: float = 0.15   # 资金介入
+    w_R: float = 0.05   # 风险（负向）
+
+@dataclass
+class ExecutionModel:
+    """
+    用 5min K 线来模拟“更像真实人/程序的成交价”。
+    关键保证：成交价一定落在当日 high-low 之间。
+
+    规则（默认）：
+    - 买入：用开盘后前 N 根 5min 的 VWAP（更像挂单+成交均价）
+    - 卖出：用收盘前最后 N 根 5min 的 VWAP（更像择机退出）
+    - 止盈止损触发：用 5min high/low 顺序扫描，
+        * 止损触发：用 stop_price（可加滑点）
+        * 止盈触发：用 take_profit_price（可加滑点）
+    """
+    buy_vwap_bars: int = 6     # 开盘后 6 根 5min ≈ 30 分钟
+    sell_vwap_bars: int = 6    # 收盘前 6 根 5min ≈ 30 分钟
+    slippage_bps: float = 2.0  # 滑点（基点），2 bps = 0.02%
+
+    def _apply_slippage(self, price: float, side: str) -> float:
+        slip = self.slippage_bps / 10000.0
+        if side.lower() == "buy":
+            return price * (1 + slip)
+        else:
+            return price * (1 - slip)
+
+    @staticmethod
+    def vwap(df_5m: pd.DataFrame) -> float:
+        # 用 close*volume 近似
+        pv = (df_5m["close"] * df_5m["volume"]).sum()
+        vv = df_5m["volume"].sum()
+        if vv <= 0:
+            return float(df_5m["close"].iloc[0])
+        return float(pv / vv)
+
+    def get_buy_price(self, day_5m: pd.DataFrame, fallback_open: float) -> float:
+        if day_5m is None or day_5m.empty:
+            return self._apply_slippage(float(fallback_open), "buy")
+        n = min(self.buy_vwap_bars, len(day_5m))
+        px = self.vwap(day_5m.iloc[:n])
+        # 保证在当日范围内
+        lo, hi = float(day_5m["low"].min()), float(day_5m["high"].max())
+        px = float(np.clip(px, lo, hi))
+        return self._apply_slippage(px, "buy")
+
+    def get_sell_price(self, day_5m: pd.DataFrame, fallback_close: float) -> float:
+        if day_5m is None or day_5m.empty:
+            return self._apply_slippage(float(fallback_close), "sell")
+        n = min(self.sell_vwap_bars, len(day_5m))
+        px = self.vwap(day_5m.iloc[-n:])
+        lo, hi = float(day_5m["low"].min()), float(day_5m["high"].max())
+        px = float(np.clip(px, lo, hi))
+        return self._apply_slippage(px, "sell")
+
+@dataclass
+class CostModel:
+    """
+    更贴近 A 股：
+    - 佣金：双边收取（买卖都有），通常万 1~万 3；这里默认万 2
+    - 印花税：仅卖出收取，当前 A 股为 0.05%（千分之 0.5）——注意如未来政策变化你可改参数
+    - 过户费：沪市有、深市没有；这里简化为 0（你可自行扩）
+    """
+    commission_rate: float = 0.0002       # 佣金
+    stamp_tax_rate: float = 0.0005        # 印花税（卖出）
+    min_commission: float = 5.0           # 最低 5 元（常见券商规则）
+
+    def buy_cost(self, trade_value: float) -> float:
+        comm = max(self.min_commission, trade_value * self.commission_rate)
+        return comm
+
+    def sell_cost(self, trade_value: float) -> float:
+        comm = max(self.min_commission, trade_value * self.commission_rate)
+        stamp = trade_value * self.stamp_tax_rate
+        return comm + stamp
 
 @dataclass
 class PriceLimitModel:
@@ -111,6 +235,7 @@ class BacktesterV3:
                  period_cfg,
                  strat_cfg,
                  cost_model,
+                 exec_model,
                  price_limit_model: PriceLimitModel,
                  range_fill_model: RangeFillModel):
 
@@ -122,6 +247,7 @@ class BacktesterV3:
 
         self.cfg = strat_cfg
         self.cost = cost_model
+        self.exec = exec_model
         self.lim = price_limit_model
         self.fill = range_fill_model
 
@@ -400,6 +526,7 @@ class BacktesterV3:
             self._record_daily_snapshot(d)
 
         nav_df = pd.DataFrame(self.nav_records).sort_values("date").reset_index(drop=True)
+        print(self.trades_detailed)
         trades_df = pd.DataFrame(self.trades_detailed).sort_values(["entry_date", "code"]).reset_index(drop=True)
         daily_pos_df = pd.DataFrame(self.daily_positions).sort_values(["date", "code"]).reset_index(drop=True)
         orders_df = pd.DataFrame(self.order_logs).sort_values(["date", "code"]).reset_index(drop=True)

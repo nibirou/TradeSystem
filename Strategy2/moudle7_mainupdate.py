@@ -2,9 +2,9 @@ import pandas as pd
 import numpy as np
 from moudle1_dataloader import DataConfig, PeriodConfig, load_data_bundle, load_data_bundle_update
 from moudle2_factorengine import FactorEngine
-from moudle4_backtest import Analyzer
+# from moudle4_backtest import Analyzer
 
-from moudle6_backtestupdate import CostModel, ExecutionModel, StrategyConfigV2, BacktesterV2
+from moudle6_backtestupdate import CostModel, ExecutionModel, PriceLimitModel, RangeFillModel, StrategyConfigV2, BacktesterV3
 
 def add_composite_score(factor_df: pd.DataFrame, cfg: StrategyConfigV2) -> pd.DataFrame:
     df = factor_df.copy()
@@ -34,16 +34,20 @@ def add_composite_score(factor_df: pd.DataFrame, cfg: StrategyConfigV2) -> pd.Da
 if __name__ == "__main__":
     # 1) 数据加载（模块 1）
     data_cfg = DataConfig(
-        base_dir="./data_baostock",
+        base_dir="/workspace/Quant/data_baostock",
+        trade_calendar_dir="/workspace/Quant/data_baostock/metadata/trade_datas.csv",
+        all_stock_list_dir="/workspace/Quant/data_baostock/metadata/stock_list_all.csv",
     )
+
     period_cfg = PeriodConfig(
-        factor_start="2025-09-01",
-        factor_end="2025-12-19",
-        backtest_start="2025-12-15",
+        factor_start="2025-04-01",
+        factor_end="2025-12-16",
+        backtest_start="2025-04-15",
         backtest_end="2025-12-16",
     )
 
-    bundle = load_data_bundle_update(data_cfg, period_cfg, pools=("hs300", "zz500"))
+    # bundle = load_data_bundle_update(data_cfg, period_cfg, pools=("hs300", "zz500"))
+    bundle = load_data_bundle_update(data_cfg, period_cfg, pools=("all",))
     daily = bundle["daily"]
     minute5 = bundle["minute5"]
     trade_dates = bundle["trade_dates"]
@@ -57,11 +61,15 @@ if __name__ == "__main__":
         stamp_tax_rate=0.0005,
         min_commission=5.0
     )
+
     exec_model = ExecutionModel(
         buy_vwap_bars=6,
         sell_vwap_bars=6,
         slippage_bps=2.0
     )
+
+    price_limit_model = PriceLimitModel()
+    range_fill_model = RangeFillModel()
 
     strat_cfg_v2 = StrategyConfigV2(
         capital=80000,
@@ -73,8 +81,9 @@ if __name__ == "__main__":
     )
 
     factor_scored = add_composite_score(factor_df, strat_cfg_v2)
+    print(factor_scored)
 
-    bt2 = BacktesterV2(
+    bt2 = BacktesterV3(
         daily_df=daily,
         minute5_df=minute5,
         factor_scored_df=factor_scored,
@@ -82,10 +91,12 @@ if __name__ == "__main__":
         period_cfg=period_cfg,
         strat_cfg=strat_cfg_v2,
         cost_model=cost_model,
-        exec_model=exec_model
+        exec_model=exec_model,
+        price_limit_model=price_limit_model,
+        range_fill_model=range_fill_model
     )
 
-    nav_df, trades_df, daily_positions_df = bt2.run_backtest()
+    nav_df, trades_df, daily_pos_df, orders_df = bt2.run_backtest()
 
     # 保存
     import os
@@ -93,6 +104,6 @@ if __name__ == "__main__":
     os.makedirs(out_dir, exist_ok=True)
     nav_df.to_csv(os.path.join(out_dir, "nav.csv"), index=False)
     trades_df.to_csv(os.path.join(out_dir, "trades_detailed.csv"), index=False)
-    daily_positions_df.to_csv(os.path.join(out_dir, "daily_positions.csv"), index=False)
+    daily_pos_df.to_csv(os.path.join(out_dir, "daily_positions.csv"), index=False)
 
     print("✅ 已输出：nav.csv / trades_detailed.csv / daily_positions.csv")

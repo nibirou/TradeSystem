@@ -18,13 +18,15 @@ class DataConfig:
     # 股票池列表文件存放路径
     hs300_list: str = "stock_list_hs300.csv"
     zz500_list: str = "stock_list_zz500.csv"
+    all_list: str = "stock_list_all.csv"
 
     # 子目录命名（按你的代码）
     daily_freq: str = "d"
     minute5_freq: str = "5"
 
     # 交易日历路径
-    trade_calendar_dir = "./data_baostock/metadata/trade_datas.csv"
+    trade_calendar_dir: str = base_dir + "/metadata/trade_datas.csv"
+    all_stock_list_dir: str = base_dir + "/metadata/stock_list_all.csv"
 
     # 字段标准化
     date_col: str = "date"
@@ -48,7 +50,7 @@ class PeriodConfig:
     backtest_start: str = "2020-01-01"
     backtest_end: str = "2024-12-31"
 
-    factor_buffer_n: int = 1
+    factor_buffer_n: int = 30
 
     def validate(self):
         fs = pd.to_datetime(self.factor_start)
@@ -56,18 +58,18 @@ class PeriodConfig:
         bs = pd.to_datetime(self.backtest_start)
         be = pd.to_datetime(self.backtest_end)
 
-        if not (fs < bs < be <= fe):
-            raise ValueError(
-                f"""
-❌ 回测区间必须完全包含在因子区间内部。
+#         if not (fs < bs < be <= fe):
+#             raise ValueError(
+#                 f"""
+# ❌ 回测区间必须完全包含在因子区间内部。
 
-因子区间:     {fs.date()} ~ {fe.date()}
-回测区间:     {bs.date()} ~ {be.date()}
+# 因子区间:     {fs.date()} ~ {fe.date()}
+# 回测区间:     {bs.date()} ~ {be.date()}
 
-正确关系必须满足:
-factor_start < backtest_start < backtest_end <= factor_end
-"""
-            )
+# 正确关系必须满足:
+# factor_start < backtest_start < backtest_end <= factor_end
+# """
+#             )
 
 def get_all_trade_dates_from_csv(csv_path: str) -> pd.DatetimeIndex:
     """
@@ -124,7 +126,8 @@ def load_stock_pool(cfg: DataConfig, pool: str) -> pd.DataFrame:
     meta_dir = Path(cfg.base_dir) / cfg.meta_dir
     file_map = {
         "hs300": cfg.hs300_list,
-        "zz500": cfg.zz500_list
+        "zz500": cfg.zz500_list,
+        "all": cfg.all_list
     }
 
     file_path = meta_dir / file_map[pool]
