@@ -1,4 +1,4 @@
-# 使用pywencai
+# 使用pywencai  分析某日涨停股数据
 import pywencai
 import pandas as pd
 
@@ -13,8 +13,8 @@ pd.set_option('display.expand_frame_repr', False) #设置不折叠数据
 pd.set_option('display.max_colwidth', 100)
 
 
-date ="20260108"
-param = "{date}涨停，非涉嫌信息披露违规且非立案调查且非ST，非科创板，非北交所"
+date ="20260109"
+param = f"{date}涨停，非涉嫌信息披露违规且非立案调查且非ST，非科创板，非北交所"
 df = pywencai.get(query= param ,sort_key='成交金额', sort_order='desc')
 print(df)
 

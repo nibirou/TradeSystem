@@ -798,7 +798,8 @@ def extract_AKSHARE_STOCK_NEWS_EM_fund_features(code_list, max_workers: int = MA
 # =================== 主程序 ===================
 if __name__ == '__main__':
     # 示例：跑一遍股票列表（需包含“代码”列；建议字符串类型保留前导0）
-    stock_list_path = os.path.join(META_DIR, "stock_list.csv")
+    # stock_list_path = os.path.join(META_DIR, "stock_list.csv")
+    stock_list_path = "/workspace/Quant/TradeSystem/Data/News/stock_list.csv"
     if not os.path.exists(stock_list_path):
         raise FileNotFoundError(f"未找到股票列表：{stock_list_path}，请先准备包含‘代码’列的CSV。")
 
