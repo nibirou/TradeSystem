@@ -12,6 +12,7 @@ class IwencaiReportClient:
     """
 
     URL = "https://www.iwencai.com/unifiedwap/unified-wap/v1/information/report"
+    DETAIL_URL = "https://www.iwencai.com/unifiedwap/unified-wap/v1/information/notice-detail"
 
     def __init__(self):
         self.headers = {
@@ -194,63 +195,63 @@ class IwencaiReportClient:
 
         return all_results
 
-def fetch_report_detail(
-    self,
-    uid: str,
-    code: str,
-) -> Dict:
-    """
-    根据研报 uid 获取研报全文（content）
-    """
-    payload = {
-        "type": "report",
-        "duid": uid,
-        "query_source": "guide",
-        "query": code,
-    }
+    def fetch_report_detail(
+        self,
+        uid: str,
+        code: str,
+    ) -> Dict:
+        """
+        根据研报 uid 获取研报全文（content）
+        """
+        payload = {
+            "type": "report",
+            "duid": uid,
+            "query_source": "guide",
+            "query": code,
+        }
 
-    resp = self.session.post(
-        self.DETAIL_URL,
-        data=payload,
-        timeout=10,
-    )
-    resp.raise_for_status()
-    data = resp.json()
+        resp = self.session.post(
+            self.DETAIL_URL,
+            data=payload,
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
 
-    if data.get("status_code") != 0:
-        msg = data.get("status_msg", "")
+        if data.get("status_code") != 0:
+            msg = data.get("status_msg", "")
 
-        # iwencai 典型风控：返回空 / 校验失败
-        if "查询结果为空" in msg or "权限" in msg:
-            print("⚠️ 研报详情接口触发校验，尝试更换 userid")
+            # iwencai 典型风控：返回空 / 校验失败
+            if "查询结果为空" in msg or "权限" in msg:
+                print("⚠️ 研报详情接口触发校验，尝试更换 userid")
 
-            old_userid = None
-            for p in self.cookie_str.split(";"):
-                p = p.strip()
-                if p.startswith("userid="):
-                    old_userid = p.split("=", 1)[1]
-                    break
+                old_userid = None
+                for p in self.cookie_str.split(";"):
+                    p = p.strip()
+                    if p.startswith("userid="):
+                        old_userid = p.split("=", 1)[1]
+                        break
 
-            if old_userid:
-                new_userid = self._gen_random_userid_like(old_userid)
-                print(f"   userid: {old_userid} -> {new_userid}")
-                self._replace_userid_in_cookie(new_userid)
+                if old_userid:
+                    new_userid = self._gen_random_userid_like(old_userid)
+                    print(f"   userid: {old_userid} -> {new_userid}")
+                    self._replace_userid_in_cookie(new_userid)
 
-                # 🔁 retry 一次
-                resp2 = self.session.post(
-                    self.DETAIL_URL,
-                    data=payload,
-                    timeout=10,
-                )
-                resp2.raise_for_status()
-                data2 = resp2.json()
+                    # 🔁 retry 一次
+                    resp2 = self.session.post(
+                        self.DETAIL_URL,
+                        data=payload,
+                        timeout=10,
+                    )
+                    resp2.raise_for_status()
+                    data2 = resp2.json()
 
-                if data2.get("status_code") == 0:
-                    return data2["data"]
+                    if data2.get("status_code") == 0:
+                        return data2["data"]
 
-            raise RuntimeError(f"研报详情接口异常（retry 后仍失败）：{msg}")
+                raise RuntimeError(f"研报详情接口异常（retry 后仍失败）：{msg}")
 
-    return data["data"]
+        return data["data"]
 
 if __name__ == "__main__":
     client = IwencaiReportClient()
@@ -271,12 +272,14 @@ if __name__ == "__main__":
 
         detail = client.fetch_report_detail(uid, stock_code)
         word = detail["wordData"]
+        print(r)
 
-        print("标题:", word["title"])
-        print("机构:", word["organize"])
-        print("作者:", word["researcher"])
-        print("发布日期:", word["pubtime"])
-        print("正文前200字:\n", word["content"][:200]())
+        print("标题:", r["title"])
+        print("机构:", r["organization"])
+        print("作者:", r["author"])
+        print("发布日期:", r["publish_time"])
+        print("正文:\n", word["content"])
+        # print("正文前200字:\n", word["content"][:200])
     
     df = pd.DataFrame(r)
     df.to_csv(f"reports_{stock_code}.csv", index=False, encoding="utf-8-sig")
