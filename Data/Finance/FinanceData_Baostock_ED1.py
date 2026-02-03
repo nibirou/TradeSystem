@@ -1,4 +1,5 @@
 # 获取baostock 个股基本面财务数据
+
 import os
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -13,11 +14,12 @@ from tqdm import tqdm
 # ===========================
 #        路径配置
 # ===========================
-BASE_DIR = "/workspace/Quant/data_baostock"
+# BASE_DIR = "/workspace/Quant/data_baostock"
+BASE_DIR = "D:/PythonProject/Quant/data_baostock"
 META_DIR = os.path.join(BASE_DIR, "metadata")
 SNAPSHOT_DIR = os.path.join(META_DIR, "stock_snapshots")
 
-FUND_DIR = os.path.join(BASE_DIR, "fundamental_q")  # <- 新增：季频基本面目录
+FUND_DIR = os.path.join(BASE_DIR, "baostock_fundamental_q")  # <- 新增：季频基本面目录
 
 os.makedirs(BASE_DIR, exist_ok=True)
 os.makedirs(META_DIR, exist_ok=True)
