@@ -1,4 +1,4 @@
-# 获取baostock 个股基本面财务数据
+# 获取baostock 个股基本面财务数据（主要关键指标）
 
 import os
 from dataclasses import dataclass
