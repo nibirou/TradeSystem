@@ -19,16 +19,16 @@ import pandas as pd
 
 if __name__ == "__main__":
     # 1) 数据加载（模块 1）
-    # data_cfg = DataConfig(
-    #     base_dir="/workspace/Quant/data_baostock",
-    #     trade_calendar_dir="/workspace/Quant/data_baostock/metadata/trade_datas.csv",
-    #     all_stock_list_dir="/workspace/Quant/data_baostock/metadata/stock_list_all.csv",
-    # )
     data_cfg = DataConfig(
-        base_dir="E:/pythonProject/data_baostock",
-        trade_calendar_dir="E:/pythonProject/data_baostock/metadata/trade_datas.csv",
-        all_stock_list_dir="E:/pythonProject/data_baostock/metadata/stock_list_all.csv",
+        base_dir="/workspace/Quant/data_baostock",
+        trade_calendar_dir="/workspace/Quant/data_baostock/metadata/trade_datas.csv",
+        all_stock_list_dir="/workspace/Quant/data_baostock/metadata/stock_list_all.csv",
     )
+    # data_cfg = DataConfig(
+    #     base_dir="E:/pythonProject/data_baostock",
+    #     trade_calendar_dir="E:/pythonProject/data_baostock/metadata/trade_datas.csv",
+    #     all_stock_list_dir="E:/pythonProject/data_baostock/metadata/stock_list_all.csv",
+    # )
     
     period_cfg = PeriodConfig(
         factor_start="2025-10-15",   # 计算某些因子需要过去一段时间窗口的行情数据，设置了一个自定义提前量；进行截面回归，需要确定两次截面回归之间的时间间隔，设置了一个自定义提前量

@@ -459,5 +459,6 @@ def run_fundamental_download(
 
 if __name__ == "__main__":
     # 示例：中证500全量更新
-    run_fundamental_download(pool="zz500")
+    # run_fundamental_download(pool="zz500")
+    run_fundamental_download(pool="hs300")
     bs_logout()

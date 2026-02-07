@@ -17,8 +17,8 @@ from tqdm import tqdm
 # ===========================
 #        路径配置
 # ===========================
-# BASE_DIR = "/workspace/Quant/data_baostock"
-BASE_DIR = "D:/PythonProject/Quant/data_baostock"
+BASE_DIR = "/workspace/Quant/data_baostock"
+# BASE_DIR = "D:/PythonProject/Quant/data_baostock"
 META_DIR = os.path.join(BASE_DIR, "metadata")
 SNAPSHOT_DIR = os.path.join(META_DIR, "stock_snapshots")
 
@@ -408,5 +408,6 @@ def run_ak_fundamental_download(
 
 if __name__ == "__main__":
     # 示例：中证500
-    run_ak_fundamental_download(pool="zz500", indicator_em_mode="按报告期", min_year_sina_indicator=2000)
+    # run_ak_fundamental_download(pool="zz500", indicator_em_mode="按报告期", min_year_sina_indicator=2000)
+    run_ak_fundamental_download(pool="hs300", indicator_em_mode="按报告期", min_year_sina_indicator=2000)
     bs_logout()
