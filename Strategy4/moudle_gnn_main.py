@@ -6,6 +6,7 @@ from module2_gnn_factorengine import GNNFactorEngine
 from module4_gnn_dataset import GNNDataConfig, make_gnn_samples
 from module5_gnn_trainer import train_gnn, predict_gnn
 from module6_gnn_backtest import backtest_score_long_only, stat_winrate_with_labelbuilder
+from module6_gnn_backtest_v2 import gnn_score_backtest
 
 import pandas as pd
 
@@ -27,19 +28,21 @@ if __name__ == "__main__":
         factor_end="2025-12-30",     # 因子统计时间
         train_start="2025-01-02",    # 训练
         train_end="2025-11-15",
-        backtest_start="2025-11-16", # 回测
+        backtest_start="2025-09-01", # 回测
         backtest_end="2025-11-30",
         inference_day="2025-12-30",   # 预测
         factor_buffer_n=60
     )
 
-    bundle = load_data_bundle_update(data_cfg, period_cfg, pools=("hs300",))  # 先单池跑通
+    bundle = load_data_bundle_update(data_cfg, period_cfg, pools=("zz500",))  # 先单池跑通
     daily = bundle["daily"]
     minute5 = bundle["minute5"]
     trade_dates = bundle["trade_dates"]
 
+    print("trade_dates", trade_dates)
+
     # 1) 因子（保持一致：date/code + 因子列）
-    fe = GNNFactorEngine(daily, minute5, trade_dates, base_dir=data_cfg.base_dir, pool="hs300")
+    fe = GNNFactorEngine(daily, minute5, trade_dates, base_dir=data_cfg.base_dir, pool="zz500")
     factor_df = fe.compute_all_factors_with_fundamental(use_akshare=False, use_baostock_q=True)
 
     # 2) 构建图样本
@@ -47,14 +50,14 @@ if __name__ == "__main__":
     samples = make_gnn_samples(trade_dates, factor_df, daily, gcfg)
     print("samples:", len(samples), "feat_dim:", samples[0]["X"].shape[1])
 
-    print(samples)
+    # print(samples)
 
     # 3) 训练（按你 PeriodConfig）
     model, scaler = train_gnn(
         samples=samples,
         train_start=period_cfg.train_start,
         train_end=period_cfg.train_end,
-        val_end=period_cfg.backtest_start,   # 简单用 backtest_start 作为 val_end，你也可另设
+        # val_end=period_cfg.backtest_start,   # 简单用 backtest_start 作为 val_end，你也可另设
         hidden=128, layers=2, dropout=0.1,
         lr=1e-3, weight_decay=1e-4, epochs=30,
         device="cuda"
@@ -63,42 +66,68 @@ if __name__ == "__main__":
     # 4) 推理：得到 pred_ret/pred_vol
     pred = predict_gnn(model, samples, scaler, device="cuda")
     print(pred.head())
+    print("!!!!!!!!!!!!!!!!!!")
 
-    # 5) 回测A：标准持有期收益回测（用 close）
-    bt = backtest_score_long_only(
+    # # 5) 回测A：标准持有期收益回测（用 close，暂时是按月统计）
+    # bt = backtest_score_long_only(
+    #     daily=daily,
+    #     pred=pred,
+    #     trade_dates=trade_dates,
+    #     start_date=period_cfg.backtest_start,
+    #     end_date=period_cfg.backtest_end,
+    #     rebalance="M",
+    #     topN=50,
+    #     lam_vol=0.3,
+    #     vol_filter_q=0.9
+    # )
+    # # print(bt.tail())
+    # print("---------------------------")
+
+    # # 6) 回测B：复用你 LabelBuilder 的“胜率统计”（可选）
+    label_builder = LabelBuilder(minute5, trade_dates)
+    # stat = stat_winrate_with_labelbuilder(
+    #     pred=pred,
+    #     label_builder=label_builder,
+    #     trade_dates=trade_dates,
+    #     start_date=period_cfg.backtest_start,
+    #     end_date=period_cfg.backtest_end,
+    #     topk=30,
+    #     horizon_n=10,
+    #     stop_loss=-0.10,
+    #     lam_vol=0.3
+    # )
+    # print(stat.describe())
+
+    # # 保存
+    # # out_dir = f"{data_cfg.base_dir}/gnn_outputs"
+    # out_dir = "./Strategy4/gnn_outputs"
+    # import os, torch
+    # os.makedirs(out_dir, exist_ok=True)
+    # pred.to_parquet(f"{out_dir}/pred_hs300.parquet", index=False)
+    # bt.to_csv(f"{out_dir}/bt_hs300.csv", index=False, encoding="utf-8")
+    # stat.to_csv(f"{out_dir}/stat_hs300.csv", encoding="utf-8")
+    # torch.save({"state_dict": model.state_dict(), "scaler": scaler}, f"{out_dir}/model_hs300.pt")
+    # print("saved:", out_dir)
+
+    bt, summ = gnn_score_backtest(
         daily=daily,
         pred=pred,
         trade_dates=trade_dates,
         start_date=period_cfg.backtest_start,
         end_date=period_cfg.backtest_end,
-        rebalance="M",
+        freq="D",
         topN=50,
         lam_vol=0.3,
-        vol_filter_q=0.9
-    )
-    print(bt.tail())
-
-    # 6) 回测B：复用你 LabelBuilder 的“胜率统计”（可选）
-    label_builder = LabelBuilder(minute5, trade_dates)
-    stat = stat_winrate_with_labelbuilder(
-        pred=pred,
+        vol_filter_q=0.9,
+        ak_index_paths={
+            "HS300": "/workspace/Quant/data_baostock/ak_index/hs300_price.csv",
+            "ZZ500": "/workspace/Quant/data_baostock/ak_index/zz500_price.csv",
+            "ZZ1000": "/workspace/Quant/data_baostock/ak_index/zz1000_price.csv",
+        },
         label_builder=label_builder,
-        trade_dates=trade_dates,
-        start_date=period_cfg.backtest_start,
-        end_date=period_cfg.backtest_end,
-        topk=30,
-        horizon_n=10,
-        stop_loss=-0.10,
-        lam_vol=0.3
+        plot=True,
+        plot_dir="./Strategy4/gnn_outputs",
+        plot_show=False,   # 服务器/无GUI就关掉
     )
-    print(stat.describe())
-
-    # 保存
-    out_dir = f"{data_cfg.base_dir}/gnn_outputs"
-    import os, torch
-    os.makedirs(out_dir, exist_ok=True)
-    pred.to_parquet(f"{out_dir}/pred_hs300.parquet", index=False)
-    bt.to_csv(f"{out_dir}/bt_hs300.csv", index=False, encoding="utf-8")
-    stat.to_csv(f"{out_dir}/stat_hs300.csv", encoding="utf-8")
-    torch.save({"state_dict": model.state_dict(), "scaler": scaler}, f"{out_dir}/model_hs300.pt")
-    print("saved:", out_dir)
+    print(bt)
+    print(summ)

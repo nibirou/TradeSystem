@@ -14,8 +14,8 @@ from tqdm import tqdm
 # ===========================
 #        路径配置
 # ===========================
-# BASE_DIR = "/workspace/Quant/data_baostock"
-BASE_DIR = "D:/PythonProject/Quant/data_baostock"
+BASE_DIR = "/workspace/Quant/data_baostock"
+# BASE_DIR = "D:/PythonProject/Quant/data_baostock"
 META_DIR = os.path.join(BASE_DIR, "metadata")
 SNAPSHOT_DIR = os.path.join(META_DIR, "stock_snapshots")
 

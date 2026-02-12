@@ -17,7 +17,6 @@ from moudle5_evaluator import FactorEvaluator
 from moudle6_gp_engine import GPEngine
 
 
-
 def seed_everything(seed=42):
     random.seed(seed)
     np.random.seed(seed)

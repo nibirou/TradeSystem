@@ -150,6 +150,87 @@ class FundamentalLoaderBaoStockQ:
       profit/operation/growth/balance/cash_flow/dupont/perf_express/forecast
     输出：日频对齐 [date, code, BQ_xxx...]
     """
+    # ============================
+    # Baostock 季频字段白名单（可随时调整）
+    # ============================
+    BAOSTOCK_FIELD_CONFIG = {
+        "profit": {
+            "roeAvg": "BQ_profit_roe",
+            "npMargin": "BQ_profit_npm",
+            "gpMargin": "BQ_profit_gpm",
+            "epsTTM": "BQ_profit_eps_ttm",
+            # --- 可选扩展（需要可比性处理/对数化时再启用）---
+            # "netProfit": "BQ_profit_netprofit",
+            # "MBRevenue": "BQ_profit_mbrevenue",
+        },
+        "operation": {
+            "AssetTurnRatio": "BQ_op_asset_turn",
+            "NRTurnDays": "BQ_op_ar_turn_days",
+            "INVTurnDays": "BQ_op_inv_turn_days",
+            # 可选
+            # "NRTurnRatio": "BQ_op_ar_turn",
+            # "INVTurnRatio": "BQ_op_inv_turn",
+            # "CATurnRatio": "BQ_op_ca_turn",
+        },
+        "growth": {
+            "YOYEquity": "BQ_grow_yoy_equity",
+            "YOYAsset": "BQ_grow_yoy_asset",
+            "YOYNI": "BQ_grow_yoy_ni",
+            "YOYPNI": "BQ_grow_yoy_pni",
+            # 可选
+            # "YOYEPSBasic": "BQ_grow_yoy_eps_basic",
+        },
+        "balance": {
+            "liabilityToAsset": "BQ_bal_debt_asset",
+            "assetToEquity": "BQ_bal_equity_mult",
+            "currentRatio": "BQ_bal_current",
+            "quickRatio": "BQ_bal_quick",
+            # 可选
+            # "cashRatio": "BQ_bal_cash_ratio",
+            # "YOYLiability": "BQ_bal_yoy_liab",
+        },
+        "cash_flow": {
+            "CFOToNP": "BQ_cf_cfo_np",
+            "CFOToOR": "BQ_cf_cfo_or",
+            "ebitToInterest": "BQ_cf_int_cover",
+            # 可选
+            # "CFOToGr": "BQ_cf_cfo_gr",
+            # "CAToAsset": "BQ_cf_ca_asset",
+            # "NCAToAsset": "BQ_cf_nca_asset",
+            # "tangibleAssetToAsset": "BQ_cf_tangible_asset",
+        },
+        "dupont": {
+            "dupontROE": "BQ_dup_roe",
+            "dupontAssetTurn": "BQ_dup_asset_turn",
+            "dupontAssetStoEquity": "BQ_dup_equity_mult",
+            "dupontNitogr": "BQ_dup_net_margin",
+            # 可选
+            # "dupontTaxBurden": "BQ_dup_tax_burden",
+            # "dupontIntburden": "BQ_dup_int_burden",
+            # "dupontEbittogr": "BQ_dup_ebit_margin",
+            # "dupontPnitoni": "BQ_dup_pni_to_ni",
+        },
+        # ============================
+        # B 类：可选（缺失多，默认不开）
+        # ============================
+        "perf_express": {
+            "performanceExpressROEWa": "BQ_pe_roe_wa",
+            "performanceExpressEPSChgPct": "BQ_pe_eps_chg",
+            "performanceExpressGRYOY": "BQ_pe_rev_yoy",
+            "performanceExpressOPYOY": "BQ_pe_op_yoy",
+            # 可选规模项
+            # "performanceExpressTotalAsset": "BQ_pe_total_asset",
+            # "performanceExpressNetAsset": "BQ_pe_net_asset",
+        },
+        "forecast": {
+            "profitForcastChgPctUp": "BQ_fc_np_yoy_up",
+            "profitForcastChgPctDwn": "BQ_fc_np_yoy_down",
+            # 文本字段默认不入（要 NLP/类别处理）
+            # "profitForcastType": "BQ_fc_type",
+            # "profitForcastAbstract": "BQ_fc_abstract",
+        }
+    }
+
     def __init__(self, base_dir: str, pool: str):
         self.base_dir = base_dir
         self.pool = pool
@@ -172,92 +253,97 @@ class FundamentalLoaderBaoStockQ:
         return df
 
     def _load_one_code_yq(self, code: str) -> pd.DataFrame:
-        """
-        汇总一只股票在 yq_categories 下的所有表，按 statDate 聚合成一张季频宽表：
-          index = statDate
-          columns = 多表字段（加前缀避免冲突）
-        """
         pieces = []
         for cat in self.yq_categories:
+            if cat not in self.BAOSTOCK_FIELD_CONFIG:
+                continue
+
             fp = self.root / cat / f"{code.replace('.', '_')}.csv"
             if not fp.exists():
                 continue
+
             df = pd.read_csv(fp)
             if df.empty or "statDate" not in df.columns:
                 continue
 
-            # statDate 作为季频锚点（财报期末）
-            df["statDate"] = pd.to_datetime(df["statDate"], errors="coerce")
-            df = df.dropna(subset=["statDate"])
-            if df.empty:
-                continue
-
-            exclude = {"code", "pubDate", "statDate"}
-            df = self._coerce_numeric_cols(df, exclude=exclude)
-
-            # 加前缀避免不同表字段同名
-            rename = {}
-            for c in df.columns:
-                if c in exclude:
-                    continue
-                rename[c] = f"BQ_{cat}_{c}"
-            df = df.rename(columns=rename)
-
-            keep_cols = ["statDate"] + list(rename.values())
-            df = df[keep_cols].sort_values("statDate").drop_duplicates(subset=["statDate"], keep="last")
-            pieces.append(df.set_index("statDate"))
-
-        if not pieces:
-            return pd.DataFrame()
-
-        q = pd.concat(pieces, axis=1).sort_index()
-        q["code"] = code
-        q = q.reset_index().rename(columns={"statDate": "report_date"})
-        return q
-
-    def _load_one_code_date_tables(self, code: str) -> pd.DataFrame:
-        """
-        perf_express/forecast：没有严格季报每季都有，且字段变化大。
-        我们把它们也对齐到 report_date（优先用 statDate 类字段）
-        - perf_express: performanceExpStatDate（统计日期）
-        - forecast: profitForcastExpStatDate（统计日期）
-        """
-        pieces = []
-        for cat in self.date_categories:
-            fp = self.root / cat / f"{code.replace('.', '_')}.csv"
-            if not fp.exists():
-                continue
-            df = pd.read_csv(fp)
-            if df.empty:
-                continue
-
-            if cat == "perf_express":
-                key = "performanceExpStatDate" if "performanceExpStatDate" in df.columns else None
-            else:
-                key = "profitForcastExpStatDate" if "profitForcastExpStatDate" in df.columns else None
-
-            if key is None:
-                continue
-
-            df["report_date"] = pd.to_datetime(df[key], errors="coerce")
+            df["report_date"] = pd.to_datetime(df["statDate"], errors="coerce")
             df = df.dropna(subset=["report_date"])
             if df.empty:
                 continue
 
-            exclude = {"code", "report_date"}
-            df = self._coerce_numeric_cols(df, exclude=exclude)
+            pick = self.BAOSTOCK_FIELD_CONFIG[cat]
+            cols = ["report_date"]
+            out = df[cols].copy()
 
-            rename = {}
-            for c in df.columns:
-                if c in exclude or c in (key,):
+            for raw_col, new_col in pick.items():
+                if raw_col in df.columns:
+                    out[new_col] = pd.to_numeric(df[raw_col], errors="coerce")
+
+            # 同一 report_date 取最后
+            out["code"] = code
+            out = out.sort_values("report_date").drop_duplicates(subset=["code", "report_date"], keep="last")
+            pieces.append(out)
+
+        if not pieces:
+            return pd.DataFrame()
+
+        q = pd.concat(pieces, ignore_index=True)
+        q = q.sort_values(["code", "report_date"]).groupby(["code", "report_date"], as_index=False).last()
+        return q
+
+
+    def _load_one_code_date_tables(self, code: str) -> pd.DataFrame:
+        pieces = []
+
+        for cat in self.date_categories:
+            if cat not in self.BAOSTOCK_FIELD_CONFIG:
+                continue
+
+            fp = self.root / cat / f"{code.replace('.', '_')}.csv"
+            if not fp.exists():
+                continue
+
+            df = pd.read_csv(fp)
+            if df.empty:
+                continue
+
+            # 选“统计日期”对齐到 report_date
+            if cat == "perf_express":
+                stat_key = "performanceExpStatDate"
+                if stat_key not in df.columns:
                     continue
-                rename[c] = f"BQ_{cat}_{c}"
-            df = df.rename(columns=rename)
+                df["report_date"] = pd.to_datetime(df[stat_key], errors="coerce")
 
-            keep_cols = ["report_date"] + list(rename.values())
-            df = df[keep_cols].sort_values("report_date").drop_duplicates(subset=["report_date"], keep="last")
-            df["code"] = code
-            pieces.append(df)
+            elif cat == "forecast":
+                stat_key = "profitForcastExpStatDate"
+                if stat_key not in df.columns:
+                    continue
+                df["report_date"] = pd.to_datetime(df[stat_key], errors="coerce")
+
+            df = df.dropna(subset=["report_date"])
+            if df.empty:
+                continue
+
+            pick = self.BAOSTOCK_FIELD_CONFIG[cat]
+            out = df[["report_date"]].copy()
+
+            for raw_col, new_col in pick.items():
+                if raw_col in df.columns:
+                    # forecast 的 type/abstract 先不处理（若你打开了它们，这里会变成 object，需要你自己后续编码）
+                    if df[raw_col].dtype == object:
+                        continue
+                    out[new_col] = pd.to_numeric(df[raw_col], errors="coerce")
+
+            # 额外：forecast 上下限合成一个“中心值”（可选但很实用）
+            if cat == "forecast":
+                up = "BQ_fc_np_yoy_up"
+                dn = "BQ_fc_np_yoy_down"
+                if up in out.columns and dn in out.columns:
+                    out["BQ_fc_np_yoy_mid"] = 0.5 * (out[up] + out[dn])
+
+            out["code"] = code
+            out = out.sort_values("report_date").drop_duplicates(subset=["code", "report_date"], keep="last")
+            pieces.append(out)
 
         if not pieces:
             return pd.DataFrame()
@@ -348,6 +434,7 @@ class GNNFactorEngine(FactorEngine):
     def compute_all_factors_with_fundamental(self, use_akshare: bool = True, use_baostock_q: bool = True):
         # 1) 原技术/量价因子（L1..R1）
         factor_df = super().compute_all_factors()
+        print(factor_df)
 
         # 代码宇宙（只加载出现过的 code，避免扫全目录）
         code_universe = sorted(factor_df["code"].astype(str).unique().tolist())
@@ -360,7 +447,7 @@ class GNNFactorEngine(FactorEngine):
                 factor_df = factor_df.merge(ak_daily, on=["date", "code"], how="left")
                 factor_df = self._post_process_new_cols(factor_df, new_cols)
 
-        # 3) Baostock 季频基本面（你最新的落盘：强烈建议开）
+        # 3) Baostock 季频基本面（最新的落盘：强烈建议开）
         if use_baostock_q:
             bs_daily = self.bs_q_loader.load_daily_fundamental(self.trade_dates, code_universe=code_universe)
             if not bs_daily.empty:

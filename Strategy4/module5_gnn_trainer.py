@@ -5,12 +5,16 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from typing import List, Dict, Tuple
+import datetime
 
 from module5_gnn_model import GNNRetVol
 
-def _date_range(start: str, end: str) -> set:
+# def _date_range(start: str, end: str) -> set:
+#     dr = pd.date_range(pd.to_datetime(start), pd.to_datetime(end), freq="D")
+#     return set(pd.DatetimeIndex(dr).normalize().tolist())
+def _date_range(start: str, end: str) -> pd.DatetimeIndex:
     dr = pd.date_range(pd.to_datetime(start), pd.to_datetime(end), freq="D")
-    return set(pd.DatetimeIndex(dr).normalize().tolist())
+    return pd.DatetimeIndex(dr).normalize().sort_values()
 
 def fit_scaler(samples: List[Dict], date_set: set) -> Tuple[np.ndarray, np.ndarray]:
     Xs = [s["X"] for s in samples if s["date"] in date_set]
@@ -19,11 +23,28 @@ def fit_scaler(samples: List[Dict], date_set: set) -> Tuple[np.ndarray, np.ndarr
     std = X.std(axis=0) + 1e-6
     return mu, std
 
+def split_train_val_dates(dates, val_ratio=0.3, seed=42):
+    dates = pd.DatetimeIndex(pd.to_datetime(list(dates))).sort_values()
+
+    rng = np.random.default_rng(seed)
+    idx = np.arange(len(dates))
+    rng.shuffle(idx)
+
+    n_val = max(1, int(len(dates) * val_ratio))
+    n_val = min(n_val, len(dates) - 1)
+
+    val_idx = idx[:n_val]
+    train_idx = idx[n_val:]
+
+    train_set = set(dates[train_idx].tolist())
+    val_set = set(dates[val_idx].tolist())
+    return train_set, val_set
+
 def train_gnn(
     samples: List[Dict],
     train_start: str,
     train_end: str,
-    val_end: str,
+    # val_end: str,
     hidden: int = 128,
     layers: int = 2,
     dropout: float = 0.1,
@@ -33,8 +54,14 @@ def train_gnn(
     device: str = "cpu",
 ) -> Tuple[GNNRetVol, Dict]:
 
-    train_set = _date_range(train_start, train_end)
-    val_set = _date_range(pd.to_datetime(train_end) + pd.Timedelta(days=1), val_end)
+    # train_set = _date_range(train_start, train_end)
+    # val_set = _date_range(pd.to_datetime(train_end) + pd.Timedelta(days=1), val_end)
+    all_dates = _date_range(train_start, train_end)
+    train_set, val_set = split_train_val_dates(
+        all_dates,
+        val_ratio=0.3,
+        seed=42,   # 固定 seed，保证实验可复现
+    )
 
     mu, std = fit_scaler(samples, train_set)
 
@@ -47,6 +74,16 @@ def train_gnn(
 
     best_val = float("inf")
     best_state = None
+
+    def check_tensor(name, t):
+        if t is None: 
+            print(name, "is None"); return
+        bad = ~torch.isfinite(t)
+        if bad.any():
+            idx = bad.nonzero(as_tuple=False)[:10]
+            print(f"[BAD] {name}: shape={tuple(t.shape)} bad_cnt={bad.sum().item()} first_idx={idx.tolist()}")
+            print("sample values:", t.flatten()[bad.flatten()][:10].detach().cpu())
+            raise RuntimeError(f"{name} contains NaN/Inf")
 
     for ep in range(epochs):
         model.train()
@@ -62,6 +99,16 @@ def train_gnn(
             y_ret = torch.from_numpy(s["y_ret"]).to(device)
             y_vol = torch.from_numpy(s["y_vol"]).to(device)
             mask = torch.from_numpy(s["mask"]).to(device)
+
+            check_tensor("A:", A)
+            check_tensor("Xt:", Xt)
+            check_tensor("y_ret:", y_ret)
+            check_tensor("y_vol:", y_vol)
+
+            # print("A:", A)
+            # print("Xt:", Xt)
+            # print("y_ret:", y_ret)
+            # print("y_vol:", y_vol)
 
             pred_ret, pred_vol = model(A, Xt)
 

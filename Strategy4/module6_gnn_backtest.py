@@ -57,6 +57,7 @@ def backtest_score_long_only(
         sig = sig.sort_values("score", ascending=False).head(topN)
 
         picks = sig["code"].tolist()
+        print("picks", picks)
         if not picks:
             continue
 
@@ -70,6 +71,7 @@ def backtest_score_long_only(
         rows.append({"date": t2, "ret": float(ret), "n": int(valid.sum())})
 
     bt = pd.DataFrame(rows)
+    print(bt)
     if bt.empty:
         return bt
     bt["cum"] = (1 + bt["ret"]).cumprod()

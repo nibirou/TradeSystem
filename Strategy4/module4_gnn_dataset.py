@@ -20,28 +20,87 @@ class GNNDataConfig:
 def _logret(close: pd.Series) -> pd.Series:
     return np.log(close).diff()
 
-def build_ret_vol_labels(daily: pd.DataFrame, horizon: int) -> pd.DataFrame:
+import math
+import numpy as np
+import pandas as pd
+
+def build_ret_vol_labels(
+    daily: pd.DataFrame,
+    trade_dates: pd.DatetimeIndex,
+    horizon: int,
+    min_valid_ratio: float = 0.8,
+    ffill_limit: int | None = None,   # 连续停牌天数很长时可限制 ffill
+) -> pd.DataFrame:
     """
-    daily: [date, code, close] 至少要有
-    输出：新增 ret_fwd, vol_fwd（按 code 计算）
+    输入:
+      daily: 至少含 [date, code, close]
+      trade_dates: 交易日序列（DatetimeIndex）
+    输出:
+      [date, code, ret1, ret_fwd, vol_fwd]
+
+    核心处理:
+      1) 交易日网格补齐 (date x code)
+      2) close<=0 或缺失 -> NaN -> 按 code ffill（停牌期间价格保持不变）
+      3) ret1/ret_fwd/vol_fwd 用 log close 与未来窗口 t+1..t+H 对齐
+      4) min_periods 控制未来窗口的有效占比
     """
-    df = daily[["date","code","close"]].copy()
+    df = daily[["date", "code", "close"]].copy()
     df["date"] = pd.to_datetime(df["date"])
-    df = df.sort_values(["code","date"])
+    trade_dates = pd.DatetimeIndex(pd.to_datetime(trade_dates)).sort_values()
+
+    # 只保留 trade_dates 范围内的数据（避免网格爆炸）
+    df = df[df["date"].isin(trade_dates)]
+
+    # close 清洗：非法值先置 NaN（包括 <=0, inf）
+    df["close"] = pd.to_numeric(df["close"], errors="coerce")
+    df.loc[df["close"] <= 0, "close"] = np.nan
+    df["close"] = df["close"].replace([np.inf, -np.inf], np.nan)
+
+    # --- 1) 交易日网格补齐 ---
+    codes = df["code"].astype(str).unique()
+    full_index = pd.MultiIndex.from_product([trade_dates, codes], names=["date", "code"])
+    df = df.set_index(["date", "code"]).reindex(full_index).reset_index()
+
+    # --- 2) 对每只股票 forward-fill close ---
+    # 语义：停牌/缺数 -> 价格保持不变 -> 当天收益=0
+    df["close"] = df.groupby("code")["close"].ffill(limit=ffill_limit)
+
+    # 注意：如果某股票最开始若干天都缺失，ffill 仍是 NaN，这种股票会自然在 mask 中被过滤
+    # 你也可以选择 bfill 一次，但会引入“未来信息”，不建议用于训练标签
+    # df["close"] = df.groupby("code")["close"].apply(lambda s: s.ffill().bfill())  # ❌ 不建议
+
+    # --- 3) 计算 ret1 / ret_fwd / vol_fwd ---
+    df = df.sort_values(["code", "date"])
+
     df["log_close"] = np.log(df["close"])
     df["ret1"] = df.groupby("code")["log_close"].diff()
+    df["ret1"] = df["ret1"].replace([np.inf, -np.inf], np.nan)
 
-    H = horizon
-    df["ret_fwd"] = df.groupby("code")["log_close"].shift(-H) - df["log_close"]
-    df["vol_fwd"] = (
-        df.groupby("code")["ret1"]
-          .rolling(H)
-          .std()
-          .shift(-(H-1))
-          .reset_index(level=0, drop=True)
-          * math.sqrt(252)
+    H = int(horizon)
+    min_periods = max(2, int(math.ceil(H * min_valid_ratio)))
+
+    # 未来窗口：t+1..t+H
+    fut = df.groupby("code")["ret1"].shift(-1)
+
+    df["ret_fwd"] = (
+        fut.groupby(df["code"])
+           .rolling(H, min_periods=min_periods)
+           .sum()
+           .shift(-(H - 1))
+           .reset_index(level=0, drop=True)
     )
-    return df[["date","code","ret1","ret_fwd","vol_fwd"]]
+
+    df["vol_fwd"] = (
+        fut.groupby(df["code"])
+           .rolling(H, min_periods=min_periods)
+           .std(ddof=0)
+           .shift(-(H - 1))
+           .reset_index(level=0, drop=True)
+           * math.sqrt(252)
+    )
+
+    return df[["date", "code", "ret1", "ret_fwd", "vol_fwd"]]
+
 
 def make_gnn_samples(
     trade_dates: pd.DatetimeIndex,
@@ -55,7 +114,13 @@ def make_gnn_samples(
     trade_dates = pd.DatetimeIndex(pd.to_datetime(trade_dates)).sort_values()
 
     # labels（收益/波动）
-    labels = build_ret_vol_labels(daily, cfg.horizon)
+    labels = build_ret_vol_labels(
+        daily=daily,
+        trade_dates=trade_dates,
+        horizon=cfg.horizon,
+        min_valid_ratio=0.8,
+        ffill_limit=None,   # 或者 30/60，限制超长停牌的“价格不变”天数
+    )
 
     # 合并到因子面板（保持你习惯的 [date, code, factors...]）
     panel = factor_df.merge(labels, on=["date","code"], how="left")
