@@ -6,9 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional, Sequence, Literal
 
-
-Freq = Literal["D", "W", "M", "CUSTOM"]
-
+Freq = Literal["1min", "5min", "15min", "30min", "60min", "120min", "D", "W", "M", "CUSTOM"]
 
 @dataclass
 class PathsConfig:
@@ -61,6 +59,9 @@ class PeriodConfig:
     factor_start: str = "2019-01-01"
     factor_end: str = "2024-12-31"
 
+    train_start: str = "2019-01-01"
+    train_end: str = "2024-12-31"
+
     backtest_start: str = "2020-01-01"
     backtest_end: str = "2024-12-31"
 
@@ -68,6 +69,9 @@ class PeriodConfig:
 
     # 用于 rolling 因子前置 buffer（你已有）
     factor_buffer_n: int = 30
+
+    # 用于 计算 收益率y 的后置buffer
+    label_buffer_n: int = 30
 
     def __post_init__(self):
         # 这里不强制校验关系，保留你原来的灵活性
@@ -84,15 +88,21 @@ class LoadRequest:
     start: Optional[str] = None
     end: Optional[str] = None
 
+    # 历史行情采样频率
+    trade_freq: Freq = "D"
+
     # 因子计算/标签用的“采样频率”
     # D/W/M 或 CUSTOM（CUSTOM 你可以传自定义窗口生成器）
     factor_freq: Freq = "D"
 
+    # 标签行情采样频率
+    label_freq: Freq = "D"
+
     # 5min 标签需要的“未来窗口内最优价”规则
-    minute5_best_price: Literal["best_close", "best_vwap", "best_high"] = "best_close"
+    # minute5_best_price: Literal["best_close", "best_vwap", "best_high"] = "best_close"
 
     # 是否加载基本面（可插拔）
-    use_akshare_fundamental: bool = True
+    use_akshare_fundamental: bool = False
     use_baostock_q_fundamental: bool = True
 
     # 额外数据源：你后续的“算法挖掘新因子/文本因子”等

@@ -361,9 +361,9 @@ def run_history_download(pool="hs300", freq="d"):
     stocks.to_csv(os.path.join(META_DIR, f"stock_list_{pool}.csv"),
                   index=False, encoding="utf-8")
 
-    current_codes = set(stocks["code"].tolist())
-    hist_codes = get_codes_from_hist_dir(pool, freq)
-    last_snapshot_codes = load_last_snapshot(pool)
+    current_codes = set(stocks["code"].tolist()) # 本次股票池
+    hist_codes = get_codes_from_hist_dir(pool, freq) # 历史股票池（有数据存储记录的股票）
+    last_snapshot_codes = load_last_snapshot(pool) # 上一次快照股票池
 
     final_codes = current_codes | hist_codes | last_snapshot_codes
 
@@ -396,10 +396,10 @@ def run_history_download(pool="hs300", freq="d"):
 #             MAIN
 # ===========================
 if __name__ == "__main__":
-    # run_history_download(pool="hs300", freq="d")
+    run_history_download(pool="hs300", freq="d")
     # run_history_download(pool="hs300", freq="5")
     # run_history_download(pool="zz500", freq="d")
     # run_history_download(pool="zz500", freq="5")
     # run_history_download(pool="all", freq="d")
-    run_history_download(pool="all", freq="5")
+    # run_history_download(pool="all", freq="5")
     bs_logout()

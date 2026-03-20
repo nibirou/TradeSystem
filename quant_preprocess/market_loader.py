@@ -1,5 +1,5 @@
 # quant_preprocess/market_loader.py
-# 模块 1：交易日历 + 股票池 + 量价数据加载 quant_preprocess/market_loader.py
+# 
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -11,6 +11,7 @@ import pandas as pd
 
 from .config import PathsConfig, SchemaConfig, PeriodConfig, LoadRequest
 
+from .preprocess import ensure_daily_complete, ensure_minute_complete
 
 def read_trade_dates(csv_path: str) -> pd.DatetimeIndex:
     """
@@ -37,34 +38,63 @@ def read_trade_dates(csv_path: str) -> pd.DatetimeIndex:
     return trade_dates
 
 
-def _shift_trade_date(trade_dates: pd.DatetimeIndex, anchor: pd.Timestamp, n_back: int) -> pd.Timestamp:
+def shift_trade_date(trade_dates: pd.DatetimeIndex,
+                     anchor: pd.Timestamp,
+                     n: int) -> pd.Timestamp:
+    """
+    n>0 向后推进 n 个交易日
+    n<0 向前回退 |n| 个交易日
+    """
+    td = pd.DatetimeIndex(pd.to_datetime(trade_dates)).sort_values()
     anchor = pd.to_datetime(anchor)
-    idx = trade_dates.get_loc(anchor)
-    return trade_dates[max(0, idx - int(n_back))]
+
+    idx = td.get_loc(anchor)
+    j = idx + int(n)
+    j = max(0, min(len(td) - 1, j))
+    return td[j]
 
 
-def compute_load_window(period: PeriodConfig, full_trade_dates: pd.DatetimeIndex, buffer_n: int) -> Tuple[pd.Timestamp, pd.Timestamp]:
-    fs = pd.to_datetime(period.factor_start)
-    fe = pd.to_datetime(period.factor_end)
-    load_start = _shift_trade_date(full_trade_dates, fs, buffer_n)
-    load_end = fe
+
+def compute_load_window(period: PeriodConfig,
+                        trade_dates: pd.DatetimeIndex,
+                        factor_buffer_n: int,
+                        label_horizon_n: int) -> tuple[pd.Timestamp, pd.Timestamp]:
+    factor_start = pd.to_datetime(period.factor_start)
+    factor_end = pd.to_datetime(period.factor_end)
+
+    # 因子：向前补 buffer
+    load_start = shift_trade_date(trade_dates, factor_start, -factor_buffer_n)
+
+    # 标签：向后补 horizon（关键！）
+    load_end = shift_trade_date(trade_dates, factor_end, +label_horizon_n)
+
     return load_start, load_end
 
 
-def load_stock_pool(paths: PathsConfig, schema: SchemaConfig, pool: str) -> pd.DataFrame:
+def load_stock_pool(paths: PathsConfig, schema: SchemaConfig, pool: str) -> tuple[pd.DataFrame, set[str]]:
     meta_dir = Path(paths.base_dir) / paths.meta_dir
     file_map = {"hs300": paths.hs300_list, "zz500": paths.zz500_list}
     fp = meta_dir / file_map[pool]
     if not fp.exists():
         raise FileNotFoundError(f"股票池文件不存在: {fp}")
+
     df = pd.read_csv(fp)
     df[schema.code_col] = df[schema.code_col].astype(str)
-    return df
+
+    codes = set(df[schema.code_col].dropna().unique())
+
+    return df, codes
 
 
-def load_daily_bars(paths: PathsConfig, schema: SchemaConfig, pool: str,
-                    start: Optional[pd.Timestamp] = None,
-                    end: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+def load_daily_bars(
+    paths: PathsConfig,
+    schema: SchemaConfig,
+    pool: str,
+    start: Optional[pd.Timestamp] = None,
+    end: Optional[pd.Timestamp] = None,
+    codes: Optional[set[str]] = None,
+) -> pd.DataFrame:
+    
     root = Path(paths.base_dir) / paths.hist_dir / pool / paths.daily_freq_dir
     if not root.exists():
         raise FileNotFoundError(f"日频目录不存在: {root}")
@@ -73,8 +103,18 @@ def load_daily_bars(paths: PathsConfig, schema: SchemaConfig, pool: str,
     end = pd.to_datetime(end) if end is not None else None
 
     dfs = []
-    for fp in sorted(root.glob("*.csv")):
+    if codes is None:
+        raise ValueError("必须传入股票池 codes")
+    
+    for code in sorted(codes):
+        prefix = str(code).strip().lower().replace(".", "_")  # sh_600000
+        fp = root / f"{prefix}_d.csv"
+        if not fp.exists():
+            continue
+        if not fp.exists():
+            continue  # 股票池中可能有退市或无数据股票
         df = pd.read_csv(fp)
+
         if df.empty:
             continue
 
@@ -102,9 +142,15 @@ def load_daily_bars(paths: PathsConfig, schema: SchemaConfig, pool: str,
     return out
 
 
-def load_minute5_bars(paths: PathsConfig, schema: SchemaConfig, pool: str,
-                      start: Optional[pd.Timestamp] = None,
-                      end: Optional[pd.Timestamp] = None) -> pd.DataFrame:
+def load_minute5_bars(
+    paths: PathsConfig,
+    schema: SchemaConfig,
+    pool: str,
+    start: Optional[pd.Timestamp] = None,
+    end: Optional[pd.Timestamp] = None,
+    codes: Optional[set[str]] = None,
+) -> pd.DataFrame:
+    
     root = Path(paths.base_dir) / paths.hist_dir / pool / paths.minute5_freq_dir
     if not root.exists():
         raise FileNotFoundError(f"5分钟目录不存在: {root}")
@@ -113,7 +159,16 @@ def load_minute5_bars(paths: PathsConfig, schema: SchemaConfig, pool: str,
     end = pd.to_datetime(end) if end is not None else None
 
     dfs = []
-    for fp in sorted(root.glob("*.csv")):
+
+    if codes is None:
+        raise ValueError("必须传入股票池 codes")
+
+    for code in sorted(codes):
+        prefix = str(code).strip().lower().replace(".", "_")  # sh_600000
+        fp = root / f"{prefix}_5.csv"
+        if not fp.exists():
+            continue
+
         df = pd.read_csv(fp)
         if df.empty:
             continue
@@ -161,9 +216,10 @@ def load_minute5_bars(paths: PathsConfig, schema: SchemaConfig, pool: str,
 class MarketBundle:
     daily: pd.DataFrame
     minute5: Optional[pd.DataFrame]
-    trade_dates: pd.DatetimeIndex
+    trade_dates: pd.DatetimeIndex   # 因子区间 trade dates（factor_start..factor_end）
     load_start: pd.Timestamp
     load_end: pd.Timestamp
+    label_buffer_dates: pd.DatetimeIndex # 标签用 trade dates（factor_start..load_end）
 
 
 class MarketDataLoader:
@@ -179,28 +235,62 @@ class MarketDataLoader:
             load_start = pd.to_datetime(req.start)
             load_end = pd.to_datetime(req.end)
         else:
-            load_start, load_end = compute_load_window(period, full_trade_dates, period.factor_buffer_n)
+            load_start, load_end = compute_load_window(period, full_trade_dates, period.factor_buffer_n, period.label_buffer_n)
 
         daily_list = []
         min_list = []
 
         for p in req.pools:
-            _ = load_stock_pool(self.paths, self.schema, p)  # 保留“存在性校验”，你也可以返回代码宇宙
+            pool_df, codes_set = load_stock_pool(self.paths, self.schema, p)
             if req.load_daily:
-                daily_list.append(load_daily_bars(self.paths, self.schema, p, load_start, load_end))
+                daily_list.append(
+                    load_daily_bars(self.paths, self.schema, p, load_start, load_end, codes=codes_set)
+                )
             if req.load_minute5:
-                min_list.append(load_minute5_bars(self.paths, self.schema, p, load_start, load_end))
+                min_list.append(
+                    load_minute5_bars(self.paths, self.schema, p, load_start, load_end, codes=codes_set)
+                )
 
         daily = pd.concat(daily_list, ignore_index=True) if daily_list else pd.DataFrame()
         minute5 = pd.concat(min_list, ignore_index=True) if min_list else None
 
         # trade_dates 用因子区间（而不是 load_start）——你后续计算因子/label更清晰
+        # 完整日期[period.factor_start-factor_buffer_n:period.factor_start:period.factor_end:period.factor_end+period.label_buffer_n]
         td = full_trade_dates[(full_trade_dates >= period.factor_start) & (full_trade_dates <= period.factor_end)]
+        td = pd.DatetimeIndex(td).sort_values()
+
+        # label_buffer_dates（包含y label的后置buffer区间）
+        label_buffer_dates = full_trade_dates[(full_trade_dates >= period.factor_start) & (full_trade_dates <= load_end)]
+        label_buffer_dates = pd.DatetimeIndex(label_buffer_dates).sort_values()
+
+        # 完整load_dates
+        load_dates = full_trade_dates[(full_trade_dates >= load_start) & (full_trade_dates <= load_end)]
+        load_dates = pd.DatetimeIndex(load_dates).sort_values()
+        
+        # ✅关键：在 loader 里补齐（让后续 factor/label 不再遇到空洞）
+        if not daily.empty and req.load_daily:
+            daily = ensure_daily_complete(
+                daily=daily,
+                trade_dates=load_dates,  # 用更宽的日期段补齐
+                code_col=self.schema.code_col,
+                date_col=self.schema.date_col,
+            )
+
+        if minute5 is not None and not minute5.empty and req.load_minute5:
+            minute5 = ensure_minute_complete(
+                minute5=minute5,
+                trade_dates=load_dates,
+                code_col=self.schema.code_col,
+                date_col=self.schema.date_col,
+                dt_col=self.schema.datetime_col,
+            )
+        
 
         return MarketBundle(
             daily=daily,
             minute5=minute5,
-            trade_dates=pd.DatetimeIndex(td).sort_values(),
+            trade_dates=td,
             load_start=load_start,
             load_end=load_end,
+            label_buffer_dates=label_buffer_dates,
         )
