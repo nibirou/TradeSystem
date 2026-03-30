@@ -133,6 +133,152 @@ DEFAULT_FACTOR_SET: List[str] = [
 ]
 
 
+@dataclass
+class PortfolioOptimizationConfig:
+    """组合优化参数。"""
+    mode: str
+    max_weight: float
+    max_turnover: float
+    liquidity_scale: float
+    expected_return_weight: float
+    risk_aversion: float
+    style_penalty: float
+    industry_penalty: float
+    crowding_penalty: float
+    transaction_cost_penalty: float
+    max_iter: int
+    step_size: float
+    tolerance: float
+
+
+def _split_exchange_code(code_or_key: str) -> Tuple[str, str]:
+    """解析代码并返回(交易所, 6位证券代码)。"""
+    s = str(code_or_key).strip().lower()
+    if "_" in s:
+        ex, code = s.split("_", 1)
+    elif "." in s:
+        code, ex = s.split(".", 1)
+    else:
+        code, ex = s, ""
+
+    code = re.sub(r"[^0-9]", "", code)
+    code = code[-6:].zfill(6) if code else ""
+
+    ex = ex.strip().lower()
+    if ex not in {"sh", "sz"}:
+        if code.startswith(("6", "9")):
+            ex = "sh"
+        elif code.startswith(("0", "1", "2", "3")):
+            ex = "sz"
+    return ex, code
+
+
+def is_main_board_symbol_key(symbol_key: str) -> bool:
+    """判断是否属于沪深主板。"""
+    ex, code = _split_exchange_code(symbol_key)
+    if ex == "sh":
+        return code.startswith(("600", "601", "603", "605"))
+    if ex == "sz":
+        return code.startswith(("000", "001", "002", "003"))
+    return False
+
+
+def infer_board_type(code_or_key: str) -> str:
+    """根据证券代码推断板块类型。"""
+    ex, code = _split_exchange_code(code_or_key)
+    if ex == "sh":
+        if code.startswith(("600", "601", "603", "605")):
+            return "main_board"
+        if code.startswith("688"):
+            return "star_board"
+    if ex == "sz":
+        if code.startswith(("000", "001", "002", "003")):
+            return "main_board"
+        if code.startswith("300"):
+            return "chi_next"
+    return "other_board"
+
+
+def infer_industry_bucket(code_or_key: str) -> str:
+    """构建行业代理分组（优先保证稳定分组，不依赖外部行业表）。"""
+    ex, code = _split_exchange_code(code_or_key)
+    if not code:
+        return "unknown"
+    return f"{ex}_{code[:2]}"
+
+
+def cross_section_zscore(s: pd.Series) -> pd.Series:
+    """横截面标准化，自动处理常数列与缺失。"""
+    x = pd.to_numeric(s, errors="coerce")
+    mean_v = float(x.mean()) if x.notna().any() else 0.0
+    std_v = float(x.std(ddof=0)) if x.notna().sum() > 1 else 0.0
+    if std_v <= EPS:
+        return pd.Series(np.zeros(len(x), dtype=float), index=x.index)
+    return (x - mean_v) / (std_v + EPS)
+
+
+def robust_history_zscore(value: float, history: List[float]) -> float:
+    """基于历史样本计算稳健z-score。"""
+    hist = pd.Series(history, dtype=float).replace([np.inf, -np.inf], np.nan).dropna()
+    if len(hist) < 5 or not np.isfinite(value):
+        return 0.0
+
+    med = float(hist.median())
+    mad = float((hist - med).abs().median())
+    scale = 1.4826 * mad if mad > EPS else float(hist.std(ddof=0))
+    if not np.isfinite(scale) or scale <= EPS:
+        return 0.0
+    return float(np.clip((value - med) / (scale + EPS), -4.0, 4.0))
+
+
+def ensure_feasible_caps(caps: np.ndarray, target_sum: float = 1.0, hard_cap: float = 1.0) -> np.ndarray:
+    """保证上限向量可行（上限和至少覆盖target_sum）。"""
+    u = np.clip(np.asarray(caps, dtype=float), 0.0, hard_cap)
+    if u.sum() >= target_sum - 1e-10:
+        return u
+
+    slack = np.clip(hard_cap - u, 0.0, None)
+    deficit = target_sum - float(u.sum())
+    if slack.sum() > EPS:
+        u = u + slack * min(1.0, deficit / (float(slack.sum()) + EPS))
+
+    if u.sum() < target_sum - 1e-10:
+        n = len(u)
+        uniform_cap = min(hard_cap, max(target_sum / max(n, 1), np.max(u) if n > 0 else 1.0))
+        u = np.full(n, uniform_cap, dtype=float)
+    return u
+
+
+def project_to_capped_simplex(v: np.ndarray, caps: np.ndarray, target_sum: float = 1.0) -> np.ndarray:
+    """投影到带上限的概率单纯形：w>=0, w<=caps, sum(w)=target_sum。"""
+    if len(v) == 0:
+        return np.array([], dtype=float)
+
+    u = ensure_feasible_caps(caps, target_sum=target_sum, hard_cap=1.0)
+    x = np.asarray(v, dtype=float)
+
+    lo = float(np.min(x - u))
+    hi = float(np.max(x))
+    for _ in range(80):
+        mid = 0.5 * (lo + hi)
+        w_mid = np.clip(x - mid, 0.0, u)
+        if w_mid.sum() > target_sum:
+            lo = mid
+        else:
+            hi = mid
+
+    w = np.clip(x - hi, 0.0, u)
+    residual = target_sum - float(w.sum())
+    if abs(residual) > 1e-9:
+        room = np.where(residual > 0.0, u - w, w)
+        total_room = float(room[room > 0].sum())
+        if total_room > EPS:
+            adjust = room / (total_room + EPS) * residual
+            w = np.clip(w + adjust, 0.0, u)
+    total = float(w.sum())
+    return w / (total + EPS) if total > EPS else np.full(len(w), 1.0 / len(w))
+
+
 def parse_args() -> argparse.Namespace:
     """解析命令行参数。
 
@@ -162,6 +308,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--min-samples-leaf", type=int, default=200, help="叶子最小样本数。")
     parser.add_argument("--lookback-days", type=int, default=160, help="因子计算额外回看天数。")
     parser.add_argument("--max-files", type=int, default=None, help="仅加载前N只股票（调试用）。")
+    parser.add_argument("--main-board-only", action="store_true", help="仅使用沪深主板股票（训练与回测保持一致）。")
     parser.add_argument("--file-format", type=str, choices=["auto", "parquet", "csv"], default="auto", help="Data file format preference.")
     parser.add_argument(
         "--hs300-list-path",
@@ -192,12 +339,31 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--custom-factor-py", type=str, default=None, help="自定义因子模块路径，需暴露 register_factors(library) 函数。")
     parser.add_argument("--list-factors", action="store_true", help="仅打印可用因子并退出。")
     parser.add_argument("--min-ic-cross-section", type=int, default=30, help="IC计算单日最小截面样本数。")
+    parser.add_argument(
+        "--portfolio-weighting",
+        type=str,
+        choices=["equal_weight", "dynamic_opt"],
+        default="equal_weight",
+        help="回测持仓权重构建方式：等权或状态感知动态优化。",
+    )
+    parser.add_argument("--opt-max-weight", type=float, default=0.25, help="动态优化时单票最大权重上限。")
+    parser.add_argument("--opt-max-turnover", type=float, default=1.20, help="动态优化时单期最大换手约束（L1）。")
+    parser.add_argument("--opt-liquidity-scale", type=float, default=3.0, help="基于成交额份额的流动性上限放大倍数。")
+    parser.add_argument("--opt-expected-return-weight", type=float, default=1.0, help="优化目标中预期收益项权重。")
+    parser.add_argument("--opt-risk-aversion", type=float, default=1.2, help="优化目标中波动风险惩罚系数。")
+    parser.add_argument("--opt-style-penalty", type=float, default=0.8, help="Barra风格暴露偏离惩罚系数。")
+    parser.add_argument("--opt-industry-penalty", type=float, default=0.7, help="行业偏离惩罚系数。")
+    parser.add_argument("--opt-crowding-penalty", type=float, default=0.5, help="拥挤度惩罚系数。")
+    parser.add_argument("--opt-transaction-cost-penalty", type=float, default=0.6, help="交易成本惩罚系数。")
+    parser.add_argument("--opt-max-iter", type=int, default=220, help="动态优化最大迭代次数。")
+    parser.add_argument("--opt-step-size", type=float, default=0.08, help="动态优化梯度步长。")
+    parser.add_argument("--opt-tolerance", type=float, default=1e-6, help="动态优化收敛阈值。")
 
     parser.add_argument(
         "--output-dir",
         type=str,
-        default=str(Path(__file__).resolve().parent / "outputs"),
-        help="结果输出目录。",
+        default="auto",
+        help="结果输出目录；auto 表示自动生成包含时间戳和关键信息的目录名。",
     )
     return parser.parse_args()
 
@@ -205,6 +371,48 @@ def parse_args() -> argparse.Namespace:
 def _parse_date(date_str: str) -> pd.Timestamp:
     """统一日期解析并归一化到自然日。"""
     return pd.to_datetime(date_str).normalize()
+
+
+def resolve_output_dir(
+    args: argparse.Namespace,
+    train_start: pd.Timestamp,
+    train_end: pd.Timestamp,
+    test_start: pd.Timestamp,
+    test_end: pd.Timestamp,
+) -> Path:
+    """生成输出目录。output-dir=auto 时自动拼接时间戳与核心参数。"""
+    if str(args.output_dir).strip().lower() not in {"", "auto"}:
+        return Path(args.output_dir)
+
+    ts = pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y%m%d_%H%M%S")
+    board_tag = "mainboard" if bool(args.main_board_only) else "allboards"
+    mode_tag = "opt" if args.portfolio_weighting == "dynamic_opt" else "equal"
+    run_name = (
+        f"outputs_{ts}"
+        f"_tr{train_start.strftime('%Y%m%d')}-{train_end.strftime('%Y%m%d')}"
+        f"_te{test_start.strftime('%Y%m%d')}-{test_end.strftime('%Y%m%d')}"
+        f"_h{int(args.horizon)}_k{int(args.top_k)}_{args.execution_scheme}_{board_tag}_{mode_tag}"
+    )
+    return Path(__file__).resolve().parent / run_name
+
+
+def build_portfolio_opt_config(args: argparse.Namespace) -> PortfolioOptimizationConfig:
+    """从命令行参数构建组合优化配置。"""
+    return PortfolioOptimizationConfig(
+        mode=args.portfolio_weighting,
+        max_weight=float(args.opt_max_weight),
+        max_turnover=float(args.opt_max_turnover),
+        liquidity_scale=float(args.opt_liquidity_scale),
+        expected_return_weight=float(args.opt_expected_return_weight),
+        risk_aversion=float(args.opt_risk_aversion),
+        style_penalty=float(args.opt_style_penalty),
+        industry_penalty=float(args.opt_industry_penalty),
+        crowding_penalty=float(args.opt_crowding_penalty),
+        transaction_cost_penalty=float(args.opt_transaction_cost_penalty),
+        max_iter=int(args.opt_max_iter),
+        step_size=float(args.opt_step_size),
+        tolerance=float(args.opt_tolerance),
+    )
 
 
 def _symbol_key_from_filename(filename: str) -> Optional[str]:
@@ -301,10 +509,12 @@ def load_hs300_data(
     file_format: str = "auto",
     max_files: Optional[int] = None,
     hs300_list_path: Optional[Path] = None,
+    main_board_only: bool = False,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """批量加载 HS300 日频与 5 分钟行情。
 
     股票池优先按 stock_list_hs300.csv 过滤，确保与指数成分一致。
+    可选进一步筛选至沪深主板股票。
     """
     daily_dir = data_root / "d"
     minute_dir = data_root / "5"
@@ -316,6 +526,8 @@ def load_hs300_data(
     if hs300_list_path is not None:
         hs300_keys = set(load_hs300_constituent_keys(hs300_list_path))
         keys = [k for k in keys_all if k in hs300_keys]
+    if main_board_only:
+        keys = [k for k in keys if is_main_board_symbol_key(k)]
 
     if max_files is not None:
         keys = keys[:max_files]
@@ -576,6 +788,20 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
     df["close_to_vwap_day"] = df["close"] / (df["vwap_day"] + EPS) - 1.0
     df["overnight_gap"] = df["open"] / (df["preclose"] + EPS) - 1.0
     df["px_daily_close"] = df["close"]
+
+    # 组合优化用的 Barra 风格代理与状态变量（均为当日可观测量）。
+    df["barra_size_proxy"] = np.log(df["amount_ma20"].clip(lower=0.0) + 1.0)
+    df["barra_momentum_proxy"] = df["ret_20d"]
+    df["barra_volatility_proxy"] = df["realized_vol_20"]
+    df["barra_liquidity_proxy"] = -df["amihud_20"]
+    df["barra_beta_proxy"] = df["ret_vol_corr_20"]
+    df["crowding_proxy_raw"] = (
+        0.45 * df["vol_ratio_20"].abs()
+        + 0.35 * df["turn_ratio_5"].abs()
+        + 0.20 * df["ret_vol_corr_20"].abs()
+    )
+    df["board_type"] = df["code"].astype(str).map(infer_board_type)
+    df["industry_bucket"] = df["code"].astype(str).map(infer_industry_bucket)
 
     return df
 
@@ -1087,6 +1313,267 @@ def lookup_index_period_return(index_df: pd.DataFrame, entry_date: pd.Timestamp,
     entry_px = float(s_entry.iloc[0]["close"])
     exit_px = float(s_exit.iloc[0]["close"])
     return exit_px / (entry_px + EPS) - 1.0
+
+
+def _to_numeric_series(df: pd.DataFrame, col: str, fill_value: float = 0.0) -> pd.Series:
+    """安全读取数值列。"""
+    if col in df.columns:
+        s = pd.to_numeric(df[col], errors="coerce")
+        if s.notna().any():
+            return s.fillna(float(s.median()))
+    return pd.Series(np.full(len(df), fill_value, dtype=float), index=df.index)
+
+
+def _build_style_matrix(selected_df: pd.DataFrame, universe_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    """构建 Barra 风格代理暴露矩阵与目标暴露向量。"""
+    style_cols = [
+        "barra_size_proxy",
+        "barra_momentum_proxy",
+        "barra_volatility_proxy",
+        "barra_liquidity_proxy",
+        "barra_beta_proxy",
+    ]
+
+    if selected_df.empty:
+        return np.zeros((0, 0), dtype=float), np.zeros(0, dtype=float)
+
+    u = universe_df.copy()
+    u["code"] = u["code"].astype(str)
+    sel_codes = selected_df["code"].astype(str)
+
+    exposures: List[np.ndarray] = []
+    targets: List[float] = []
+    for col in style_cols:
+        uni_series = _to_numeric_series(u, col, fill_value=0.0)
+        uni_z = cross_section_zscore(uni_series)
+        code_to_exp = dict(zip(u["code"], uni_z))
+        exp = sel_codes.map(code_to_exp).fillna(0.0).astype(float).to_numpy()
+        exposures.append(exp)
+        targets.append(float(uni_z.mean()))
+
+    style_matrix = np.column_stack(exposures) if exposures else np.zeros((len(selected_df), 0), dtype=float)
+    target_vec = np.asarray(targets, dtype=float)
+    return style_matrix, target_vec
+
+
+def _build_industry_matrix(selected_df: pd.DataFrame, universe_df: pd.DataFrame) -> Tuple[np.ndarray, np.ndarray]:
+    """构建行业暴露矩阵与行业基准权重。"""
+    if selected_df.empty:
+        return np.zeros((0, 0), dtype=float), np.zeros(0, dtype=float)
+
+    if "industry_bucket" in selected_df.columns:
+        sel_ind = selected_df["industry_bucket"].astype(str).fillna("unknown")
+    else:
+        sel_ind = selected_df["code"].astype(str).map(infer_industry_bucket)
+
+    if "industry_bucket" in universe_df.columns:
+        uni_ind = universe_df["industry_bucket"].astype(str).fillna("unknown")
+    else:
+        uni_ind = universe_df["code"].astype(str).map(infer_industry_bucket)
+
+    industries = sorted(set(sel_ind.tolist()) | set(uni_ind.tolist()))
+    if not industries:
+        return np.zeros((len(selected_df), 0), dtype=float), np.zeros(0, dtype=float)
+
+    mat = np.column_stack([(sel_ind == ind).astype(float).to_numpy() for ind in industries]).astype(float)
+    bench = uni_ind.value_counts(normalize=True)
+    target = np.asarray([float(bench.get(ind, 0.0)) for ind in industries], dtype=float)
+    return mat, target
+
+
+def _compute_market_state(universe_df: pd.DataFrame, state_tracker: Dict[str, List[float]]) -> Dict[str, float]:
+    """计算当前组合状态并基于历史做标准化。"""
+    market_vol = float(_to_numeric_series(universe_df, "realized_vol_20", fill_value=0.0).median())
+    crowd_raw = (
+        0.45 * _to_numeric_series(universe_df, "vol_ratio_20", fill_value=0.0).abs()
+        + 0.35 * _to_numeric_series(universe_df, "turn_ratio_5", fill_value=0.0).abs()
+        + 0.20 * _to_numeric_series(universe_df, "ret_vol_corr_20", fill_value=0.0).abs()
+    )
+    crowd_level = float(crowd_raw.median())
+
+    style_dispersion = float(
+        np.nanmean(
+            [
+                cross_section_zscore(_to_numeric_series(universe_df, "barra_size_proxy", fill_value=0.0)).std(ddof=0),
+                cross_section_zscore(_to_numeric_series(universe_df, "barra_momentum_proxy", fill_value=0.0)).std(ddof=0),
+                cross_section_zscore(_to_numeric_series(universe_df, "barra_volatility_proxy", fill_value=0.0)).std(ddof=0),
+            ]
+        )
+    )
+
+    vol_z = robust_history_zscore(market_vol, state_tracker.get("market_vol", []))
+    crowd_z = robust_history_zscore(crowd_level, state_tracker.get("crowding", []))
+    style_z = robust_history_zscore(style_dispersion, state_tracker.get("style_disp", []))
+
+    return {
+        "market_vol": market_vol,
+        "crowding": crowd_level,
+        "style_dispersion": style_dispersion,
+        "vol_z": vol_z,
+        "crowding_z": crowd_z,
+        "style_z": style_z,
+    }
+
+
+def optimize_portfolio_weights(
+    day_pick: pd.DataFrame,
+    day_universe: pd.DataFrame,
+    prev_weights: Dict[str, float],
+    opt_cfg: PortfolioOptimizationConfig,
+    state_tracker: Dict[str, List[float]],
+    fee_bps: float,
+    slippage_bps: float,
+) -> Tuple[pd.Series, Dict[str, float]]:
+    """状态感知组合优化：收益、风格、行业、流动性、交易成本联合优化。"""
+    n = len(day_pick)
+    if n == 0:
+        return pd.Series(dtype=float), {}
+    if n == 1:
+        code = str(day_pick.iloc[0]["code"])
+        return pd.Series({code: 1.0}), {"opt_iterations": 0.0, "optimizer_fallback": 0.0}
+
+    pick = day_pick.copy().reset_index(drop=True)
+    uni = day_universe.copy()
+    pick_codes = pick["code"].astype(str).tolist()
+    pick_code_set = set(pick_codes)
+
+    market_state = _compute_market_state(uni, state_tracker)
+    vol_z = market_state["vol_z"]
+    crowd_z = market_state["crowding_z"]
+    style_z = market_state["style_z"]
+
+    expected_scale = float(np.clip(1.0 + 0.18 * style_z - 0.25 * max(vol_z, 0.0) - 0.18 * max(crowd_z, 0.0), 0.4, 1.8))
+    risk_scale = float(np.clip(1.0 + 0.40 * max(vol_z, 0.0) + 0.25 * max(crowd_z, 0.0), 0.7, 2.8))
+    style_scale = float(np.clip(1.0 + 0.20 * max(crowd_z, 0.0) + 0.15 * abs(style_z), 0.8, 2.4))
+    industry_scale = float(np.clip(1.0 + 0.20 * abs(style_z), 0.8, 2.2))
+    tc_scale = float(np.clip(1.0 + 0.30 * max(crowd_z, 0.0), 0.8, 2.5))
+
+    alpha_prob = cross_section_zscore(_to_numeric_series(pick, "pred_prob_up", fill_value=0.5))
+    alpha_mom = cross_section_zscore(_to_numeric_series(pick, "ret_20d", fill_value=0.0))
+    alpha_micro = cross_section_zscore(_to_numeric_series(pick, "morning_momentum_30m", fill_value=0.0))
+    mu = (0.65 * alpha_prob + 0.25 * alpha_mom + 0.10 * alpha_micro).to_numpy(dtype=float)
+
+    vol_series = _to_numeric_series(pick, "realized_vol_20", fill_value=0.0).clip(lower=0.0)
+    vol_zs = cross_section_zscore(vol_series).to_numpy(dtype=float)
+    risk_diag = np.clip(1.0 + 0.5 * vol_zs, 0.2, 3.0)
+
+    style_mat, style_target = _build_style_matrix(pick, uni)
+    ind_mat, ind_target = _build_industry_matrix(pick, uni)
+
+    crowding = cross_section_zscore(_to_numeric_series(pick, "crowding_proxy_raw", fill_value=0.0)).to_numpy(dtype=float)
+
+    liq_amt = _to_numeric_series(pick, "amount_ma20", fill_value=0.0).clip(lower=0.0)
+    if liq_amt.sum() <= EPS:
+        liq_amt = _to_numeric_series(pick, "amount", fill_value=0.0).clip(lower=0.0)
+    if liq_amt.sum() <= EPS:
+        liq_share = np.full(n, 1.0 / n, dtype=float)
+    else:
+        liq_share = (liq_amt / (liq_amt.sum() + EPS)).to_numpy(dtype=float)
+
+    effective_max_weight = float(np.clip(max(opt_cfg.max_weight, 1.0 / n + 1e-6), 0.01, 1.0))
+    liq_caps = np.clip(liq_share * max(opt_cfg.liquidity_scale, 0.1), 0.01, effective_max_weight)
+    caps = ensure_feasible_caps(liq_caps, target_sum=1.0, hard_cap=effective_max_weight)
+
+    prev_vec = np.asarray([float(prev_weights.get(c, 0.0)) for c in pick_codes], dtype=float)
+    prev_dropped = float(sum(v for c, v in prev_weights.items() if c not in pick_code_set and v > 0))
+    prev_total = float(prev_vec.sum())
+    if prev_total <= EPS:
+        w = np.full(n, 1.0 / n, dtype=float)
+    else:
+        carry = max(0.0, 1.0 - prev_dropped)
+        if carry > EPS:
+            w = prev_vec / (prev_total + EPS) * carry
+            if carry < 1.0:
+                w += (1.0 - carry) / n
+        else:
+            w = np.full(n, 1.0 / n, dtype=float)
+    w = project_to_capped_simplex(w, caps)
+
+    ret_coef = max(opt_cfg.expected_return_weight * expected_scale, 0.0)
+    risk_coef = max(opt_cfg.risk_aversion * risk_scale, 0.0)
+    style_coef = max(opt_cfg.style_penalty * style_scale, 0.0)
+    industry_coef = max(opt_cfg.industry_penalty * industry_scale, 0.0)
+    crowd_coef = max(opt_cfg.crowding_penalty * (1.0 + 0.25 * max(crowd_z, 0.0)), 0.0)
+    tc_bps = (fee_bps + slippage_bps) / 10000.0
+    tc_coef = max(opt_cfg.transaction_cost_penalty * tc_scale * tc_bps * 100.0, 0.0)
+    step = max(opt_cfg.step_size, 1e-4)
+
+    converged = 0.0
+    iterations = 0
+    for i in range(max(opt_cfg.max_iter, 1)):
+        iterations = i + 1
+        grad = ret_coef * mu - 2.0 * risk_coef * risk_diag * w
+
+        if style_mat.size > 0:
+            style_gap = style_mat.T @ w - style_target
+            grad = grad - 2.0 * style_coef * (style_mat @ style_gap)
+
+        if ind_mat.size > 0:
+            ind_gap = ind_mat.T @ w - ind_target
+            grad = grad - 2.0 * industry_coef * (ind_mat @ ind_gap)
+
+        crowd_exp = float(np.dot(crowding, w))
+        grad = grad - 2.0 * crowd_coef * crowding * crowd_exp
+
+        if prev_vec.size == w.size:
+            grad = grad - tc_coef * np.sign(w - prev_vec)
+
+        w_next = project_to_capped_simplex(w + step * grad, caps)
+
+        total_turnover = prev_dropped + float(np.abs(w_next - prev_vec).sum())
+        if total_turnover > opt_cfg.max_turnover + 1e-10:
+            allowed = max(opt_cfg.max_turnover - prev_dropped, 0.0)
+            cur_turnover = float(np.abs(w_next - prev_vec).sum())
+            if cur_turnover > EPS and allowed < cur_turnover:
+                blend = allowed / (cur_turnover + EPS)
+                w_next = prev_vec + blend * (w_next - prev_vec)
+                w_next = project_to_capped_simplex(w_next, caps)
+
+        if float(np.abs(w_next - w).sum()) < opt_cfg.tolerance:
+            w = w_next
+            converged = 1.0
+            break
+        w = w_next
+
+    style_exposure_dev = float(np.linalg.norm((style_mat.T @ w - style_target), ord=2)) if style_mat.size > 0 else 0.0
+    industry_dev = float(np.linalg.norm((ind_mat.T @ w - ind_target), ord=2)) if ind_mat.size > 0 else 0.0
+    crowd_exposure = float(np.dot(crowding, w))
+    liquidity_utilization = float(np.max(w / (caps + EPS)))
+    turnover = prev_dropped + float(np.abs(w - prev_vec).sum())
+    exp_ret_score = float(np.dot(mu, w))
+
+    state_tracker.setdefault("market_vol", []).append(market_state["market_vol"])
+    state_tracker.setdefault("crowding", []).append(market_state["crowding"])
+    state_tracker.setdefault("style_disp", []).append(market_state["style_dispersion"])
+    for k in ("market_vol", "crowding", "style_disp"):
+        if len(state_tracker[k]) > 240:
+            state_tracker[k] = state_tracker[k][-240:]
+
+    diagnostics = {
+        "opt_iterations": float(iterations),
+        "opt_converged": float(converged),
+        "state_market_vol": market_state["market_vol"],
+        "state_crowding": market_state["crowding"],
+        "state_style_dispersion": market_state["style_dispersion"],
+        "state_vol_z": vol_z,
+        "state_crowding_z": crowd_z,
+        "state_style_z": style_z,
+        "dynamic_expected_scale": expected_scale,
+        "dynamic_risk_scale": risk_scale,
+        "dynamic_style_scale": style_scale,
+        "dynamic_industry_scale": industry_scale,
+        "dynamic_tc_scale": tc_scale,
+        "opt_turnover": turnover,
+        "opt_expected_ret_score": exp_ret_score,
+        "opt_style_exposure_dev": style_exposure_dev,
+        "opt_industry_dev": industry_dev,
+        "opt_crowding_exposure": crowd_exposure,
+        "opt_liquidity_utilization": liquidity_utilization,
+        "opt_effective_max_weight": effective_max_weight,
+    }
+    return pd.Series(w, index=pick_codes, dtype=float), diagnostics
+
+
 def run_backtest(
     model: DecisionTreeClassifier,
     test_df: pd.DataFrame,
@@ -1100,6 +1587,7 @@ def run_backtest(
     execution_scheme: str,
     fee_bps: float,
     slippage_bps: float,
+    portfolio_opt_cfg: PortfolioOptimizationConfig,
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object], pd.DataFrame]:
     """执行组合回测并同时计算多基准对比与超额曲线。"""
     conf = EXECUTION_SCHEMES[execution_scheme]
@@ -1118,6 +1606,14 @@ def run_backtest(
     rebalance_dates = sorted(pred_df["date"].dropna().unique())
     trade_records: List[Dict[str, object]] = []
     position_records: List[Dict[str, object]] = []
+    prev_weights: Dict[str, float] = {}
+    state_tracker: Dict[str, List[float]] = {"market_vol": [], "crowding": [], "style_disp": []}
+
+    def _portfolio_turnover(prev_w: Dict[str, float], new_w: Dict[str, float]) -> float:
+        all_codes = set(prev_w.keys()) | set(new_w.keys())
+        if not all_codes:
+            return 0.0
+        return float(sum(abs(float(new_w.get(c, 0.0)) - float(prev_w.get(c, 0.0))) for c in all_codes))
 
     for idx in range(0, len(rebalance_dates), horizon):
         dt = rebalance_dates[idx]
@@ -1143,15 +1639,92 @@ def run_backtest(
 
         day_pick = day_all[day_all["pred_prob_up"] >= long_threshold].copy()
         day_pick = day_pick.sort_values("pred_prob_up", ascending=False).head(top_k)
+        opt_diag: Dict[str, float] = {}
+        portfolio_turnover = float("nan")
+        portfolio_concentration = float("nan")
+        portfolio_entropy = float("nan")
 
         if day_pick.empty:
             strategy_ret = 0.0
             active_count = 0
             avg_prob = float("nan")
+            new_weights: Dict[str, float] = {}
+            portfolio_turnover = _portfolio_turnover(prev_weights, new_weights)
+            prev_weights = new_weights
+            if not day_all.empty:
+                state_info = _compute_market_state(day_all, state_tracker)
+                state_tracker.setdefault("market_vol", []).append(state_info["market_vol"])
+                state_tracker.setdefault("crowding", []).append(state_info["crowding"])
+                state_tracker.setdefault("style_disp", []).append(state_info["style_dispersion"])
+                for k in ("market_vol", "crowding", "style_disp"):
+                    if len(state_tracker[k]) > 240:
+                        state_tracker[k] = state_tracker[k][-240:]
+                opt_diag.update(
+                    {
+                        "state_market_vol": state_info["market_vol"],
+                        "state_crowding": state_info["crowding"],
+                        "state_style_dispersion": state_info["style_dispersion"],
+                        "state_vol_z": state_info["vol_z"],
+                        "state_crowding_z": state_info["crowding_z"],
+                        "state_style_z": state_info["style_z"],
+                    }
+                )
         else:
-            strategy_ret = float(day_pick["net_trade_ret"].mean())
-            active_count = int(len(day_pick))
-            avg_prob = float(day_pick["pred_prob_up"].mean())
+            if portfolio_opt_cfg.mode == "dynamic_opt":
+                weight_series, opt_diag = optimize_portfolio_weights(
+                    day_pick=day_pick,
+                    day_universe=day_all,
+                    prev_weights=prev_weights,
+                    opt_cfg=portfolio_opt_cfg,
+                    state_tracker=state_tracker,
+                    fee_bps=fee_bps,
+                    slippage_bps=slippage_bps,
+                )
+                if weight_series.empty or weight_series.sum() <= EPS:
+                    weight_series = pd.Series(np.full(len(day_pick), 1.0 / len(day_pick)), index=day_pick["code"].astype(str))
+                    opt_diag["optimizer_fallback"] = 1.0
+            else:
+                if not day_all.empty:
+                    state_info = _compute_market_state(day_all, state_tracker)
+                    state_tracker.setdefault("market_vol", []).append(state_info["market_vol"])
+                    state_tracker.setdefault("crowding", []).append(state_info["crowding"])
+                    state_tracker.setdefault("style_disp", []).append(state_info["style_dispersion"])
+                    for k in ("market_vol", "crowding", "style_disp"):
+                        if len(state_tracker[k]) > 240:
+                            state_tracker[k] = state_tracker[k][-240:]
+                    opt_diag.update(
+                        {
+                            "state_market_vol": state_info["market_vol"],
+                            "state_crowding": state_info["crowding"],
+                            "state_style_dispersion": state_info["style_dispersion"],
+                            "state_vol_z": state_info["vol_z"],
+                            "state_crowding_z": state_info["crowding_z"],
+                            "state_style_z": state_info["style_z"],
+                        }
+                    )
+                weight_series = pd.Series(np.full(len(day_pick), 1.0 / len(day_pick)), index=day_pick["code"].astype(str))
+
+            day_pick = day_pick.copy()
+            day_pick["weight"] = day_pick["code"].astype(str).map(weight_series).fillna(0.0)
+            sum_w = float(day_pick["weight"].sum())
+            if sum_w <= EPS:
+                day_pick["weight"] = 1.0 / len(day_pick)
+            else:
+                day_pick["weight"] = day_pick["weight"] / (sum_w + EPS)
+
+            strategy_ret = float((day_pick["net_trade_ret"] * day_pick["weight"]).sum())
+            active_count = int((day_pick["weight"] > 1e-6).sum())
+            avg_prob = float((day_pick["pred_prob_up"] * day_pick["weight"]).sum())
+            portfolio_concentration = float(np.square(day_pick["weight"]).sum())
+            portfolio_entropy = float(-(day_pick["weight"] * np.log(day_pick["weight"] + EPS)).sum())
+
+            new_weights = {
+                str(code): float(w)
+                for code, w in day_pick[["code", "weight"]].itertuples(index=False, name=None)
+                if w > 1e-8
+            }
+            portfolio_turnover = float(opt_diag.get("opt_turnover", _portfolio_turnover(prev_weights, new_weights)))
+            prev_weights = new_weights
 
             for _, r in day_pick.iterrows():
                 position_records.append(
@@ -1166,6 +1739,10 @@ def run_backtest(
                         "future_ret_ref": float(r["future_ret_n"]),
                         "gross_trade_ret": float(r["gross_trade_ret"]),
                         "net_trade_ret": float(r["net_trade_ret"]),
+                        "weight": float(r.get("weight", np.nan)),
+                        "weighting_mode": portfolio_opt_cfg.mode,
+                        "industry_bucket": str(r.get("industry_bucket", "")),
+                        "board_type": str(r.get("board_type", "")),
                     }
                 )
 
@@ -1183,6 +1760,30 @@ def run_backtest(
                 "benchmark_hs300_ret": benchmark_hs300_ret,
                 "benchmark_zz500_ret": benchmark_zz500_ret,
                 "benchmark_zz1000_ret": benchmark_zz1000_ret,
+                "weighting_mode": portfolio_opt_cfg.mode,
+                "portfolio_turnover": portfolio_turnover,
+                "portfolio_concentration": portfolio_concentration,
+                "portfolio_weight_entropy": portfolio_entropy,
+                "state_market_vol": float(opt_diag.get("state_market_vol", np.nan)),
+                "state_crowding": float(opt_diag.get("state_crowding", np.nan)),
+                "state_style_dispersion": float(opt_diag.get("state_style_dispersion", np.nan)),
+                "state_vol_z": float(opt_diag.get("state_vol_z", np.nan)),
+                "state_crowding_z": float(opt_diag.get("state_crowding_z", np.nan)),
+                "state_style_z": float(opt_diag.get("state_style_z", np.nan)),
+                "dynamic_expected_scale": float(opt_diag.get("dynamic_expected_scale", np.nan)),
+                "dynamic_risk_scale": float(opt_diag.get("dynamic_risk_scale", np.nan)),
+                "dynamic_style_scale": float(opt_diag.get("dynamic_style_scale", np.nan)),
+                "dynamic_industry_scale": float(opt_diag.get("dynamic_industry_scale", np.nan)),
+                "dynamic_tc_scale": float(opt_diag.get("dynamic_tc_scale", np.nan)),
+                "opt_iterations": float(opt_diag.get("opt_iterations", np.nan)),
+                "opt_converged": float(opt_diag.get("opt_converged", np.nan)),
+                "opt_expected_ret_score": float(opt_diag.get("opt_expected_ret_score", np.nan)),
+                "opt_style_exposure_dev": float(opt_diag.get("opt_style_exposure_dev", np.nan)),
+                "opt_industry_dev": float(opt_diag.get("opt_industry_dev", np.nan)),
+                "opt_crowding_exposure": float(opt_diag.get("opt_crowding_exposure", np.nan)),
+                "opt_liquidity_utilization": float(opt_diag.get("opt_liquidity_utilization", np.nan)),
+                "opt_effective_max_weight": float(opt_diag.get("opt_effective_max_weight", np.nan)),
+                "opt_fallback": float(opt_diag.get("optimizer_fallback", 0.0)),
             }
         )
 
@@ -1194,6 +1795,7 @@ def run_backtest(
         summary = {
             "execution_scheme": execution_scheme,
             "execution_description": conf["description"],
+            "portfolio_weighting_mode": portfolio_opt_cfg.mode,
             "strategy": compute_return_stats(pd.Series(dtype=float), horizon=horizon),
             "benchmark": compute_return_stats(pd.Series(dtype=float), horizon=horizon),
             "excess": compute_return_stats(pd.Series(dtype=float), horizon=horizon),
@@ -1259,6 +1861,7 @@ def run_backtest(
     summary = {
         "execution_scheme": execution_scheme,
         "execution_description": conf["description"],
+        "portfolio_weighting_mode": portfolio_opt_cfg.mode,
         "strategy": strategy_stats,
         "benchmark": benchmark_pool_stats,
         "excess": excess_pool_stats,
@@ -1271,6 +1874,14 @@ def run_backtest(
         "excess_vs_zz500": excess_zz500_stats,
         "excess_vs_zz1000": excess_zz1000_stats,
         "active_trade_ratio": float((trades_df["active_stocks"] > 0).mean()),
+        "portfolio_avg_turnover": float(pd.to_numeric(trades_df["portfolio_turnover"], errors="coerce").dropna().mean()),
+        "portfolio_avg_concentration": float(pd.to_numeric(trades_df["portfolio_concentration"], errors="coerce").dropna().mean()),
+        "portfolio_avg_entropy": float(pd.to_numeric(trades_df["portfolio_weight_entropy"], errors="coerce").dropna().mean()),
+        "optimizer_converged_ratio": float(pd.to_numeric(trades_df["opt_converged"], errors="coerce").fillna(0.0).mean()),
+        "optimizer_fallback_ratio": float(pd.to_numeric(trades_df["opt_fallback"], errors="coerce").fillna(0.0).mean()),
+        "state_avg_vol_z": float(pd.to_numeric(trades_df["state_vol_z"], errors="coerce").dropna().mean()),
+        "state_avg_crowding_z": float(pd.to_numeric(trades_df["state_crowding_z"], errors="coerce").dropna().mean()),
+        "state_avg_style_z": float(pd.to_numeric(trades_df["state_style_z"], errors="coerce").dropna().mean()),
     }
 
     curve_df = trades_df.copy()
@@ -1408,11 +2019,12 @@ def main() -> None:
     test_end = _parse_date(args.test_end)
     if args.horizon <= 0:
         raise ValueError("horizon must be a positive integer.")
+    if args.top_k <= 0:
+        raise ValueError("top_k must be a positive integer.")
+    if not (0.0 <= args.long_threshold <= 1.0):
+        raise ValueError("long_threshold must be between 0 and 1.")
     if not (train_start <= train_end < test_start <= test_end):
         raise ValueError("Date constraint: train_start <= train_end < test_start <= test_end")
-
-    output_dir = Path(args.output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
 
     factor_lib = FactorLibrary()
     register_default_factors(factor_lib)
@@ -1429,6 +2041,9 @@ def main() -> None:
     load_start = train_start - pd.Timedelta(days=int(args.lookback_days))
     # Because exit_date can be later than signal date, extend load_end beyond test_end by horizon.
     load_end = test_end + pd.Timedelta(days=int(args.horizon) + 5)
+    output_dir = resolve_output_dir(args, train_start, train_end, test_start, test_end)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    portfolio_opt_cfg = build_portfolio_opt_config(args)
 
     print("=== Parameters ===")
     print(f"data_root         : {args.data_root}")
@@ -1439,10 +2054,25 @@ def main() -> None:
     print(f"horizon           : {args.horizon}")
     print(f"top_k             : {args.top_k}")
     print(f"long_threshold    : {args.long_threshold}")
+    print(f"main_board_only   : {args.main_board_only}")
     print(f"execution_scheme  : {args.execution_scheme}")
+    print(f"portfolio_mode    : {args.portfolio_weighting}")
     print(f"fee_bps/slip_bps  : {args.fee_bps}/{args.slippage_bps}")
     print(f"load window       : {load_start.date()} ~ {load_end.date()}")
     print(f"factor_count      : {len(selected_factors)}")
+    print(f"output_dir        : {output_dir}")
+    if args.portfolio_weighting == "dynamic_opt":
+        print(
+            "opt cfg           : "
+            f"max_w={portfolio_opt_cfg.max_weight}, "
+            f"max_to={portfolio_opt_cfg.max_turnover}, "
+            f"liq_scale={portfolio_opt_cfg.liquidity_scale}, "
+            f"risk={portfolio_opt_cfg.risk_aversion}, "
+            f"style_pen={portfolio_opt_cfg.style_penalty}, "
+            f"ind_pen={portfolio_opt_cfg.industry_penalty}, "
+            f"crowd_pen={portfolio_opt_cfg.crowding_penalty}, "
+            f"tc_pen={portfolio_opt_cfg.transaction_cost_penalty}"
+        )
     print()
 
     daily_df, minute_df = load_hs300_data(
@@ -1452,6 +2082,7 @@ def main() -> None:
         file_format=args.file_format,
         max_files=args.max_files,
         hs300_list_path=Path(args.hs300_list_path),
+        main_board_only=args.main_board_only,
     )
     print(f"Loaded daily rows : {len(daily_df):,}")
     print(f"Loaded minute rows: {len(minute_df):,}")
@@ -1520,6 +2151,7 @@ def main() -> None:
         execution_scheme=args.execution_scheme,
         fee_bps=args.fee_bps,
         slippage_bps=args.slippage_bps,
+        portfolio_opt_cfg=portfolio_opt_cfg,
     )
 
     factor_ic_summary_df, factor_ic_series_df = compute_factor_ic_statistics(
@@ -1543,6 +2175,8 @@ def main() -> None:
         f"tr_{train_start.strftime('%Y%m%d')}_{train_end.strftime('%Y%m%d')}"
         f"_te_{test_start.strftime('%Y%m%d')}_{test_end.strftime('%Y%m%d')}"
         f"_h{args.horizon}_{args.execution_scheme}"
+        f"_{'mainboard' if args.main_board_only else 'allboards'}"
+        f"_{args.portfolio_weighting}"
     )
 
     pred_path = output_dir / f"predictions_{run_tag}.csv"
@@ -1604,12 +2238,28 @@ def main() -> None:
             "min_samples_leaf": int(args.min_samples_leaf),
             "max_files": None if args.max_files is None else int(args.max_files),
             "file_format": args.file_format,
+            "main_board_only": bool(args.main_board_only),
             "hs300_list_path": args.hs300_list_path,
             "index_root": args.index_root,
             "execution_scheme": args.execution_scheme,
             "execution_scheme_desc": EXECUTION_SCHEMES[args.execution_scheme]["description"],
             "fee_bps": float(args.fee_bps),
             "slippage_bps": float(args.slippage_bps),
+            "portfolio_weighting": args.portfolio_weighting,
+            "portfolio_opt_config": {
+                "max_weight": float(portfolio_opt_cfg.max_weight),
+                "max_turnover": float(portfolio_opt_cfg.max_turnover),
+                "liquidity_scale": float(portfolio_opt_cfg.liquidity_scale),
+                "expected_return_weight": float(portfolio_opt_cfg.expected_return_weight),
+                "risk_aversion": float(portfolio_opt_cfg.risk_aversion),
+                "style_penalty": float(portfolio_opt_cfg.style_penalty),
+                "industry_penalty": float(portfolio_opt_cfg.industry_penalty),
+                "crowding_penalty": float(portfolio_opt_cfg.crowding_penalty),
+                "transaction_cost_penalty": float(portfolio_opt_cfg.transaction_cost_penalty),
+                "max_iter": int(portfolio_opt_cfg.max_iter),
+                "step_size": float(portfolio_opt_cfg.step_size),
+                "tolerance": float(portfolio_opt_cfg.tolerance),
+            },
             "selected_factors": selected_factors,
             "note_no_future_leakage": (
                 "Factors use only signal-day and historical info; labels/backtest share the same execution scheme;"
@@ -1633,6 +2283,7 @@ def main() -> None:
         "model_score_spread": score_spread,
         "factor_ic_top10": top_factors.to_dict(orient="records") if not top_factors.empty else [],
         "outputs": {
+            "output_dir": str(output_dir),
             "predictions_csv": str(pred_path),
             "trades_csv": str(trades_path),
             "positions_csv": str(positions_path),
