@@ -148,43 +148,43 @@ class UnifiedPipeline:
             (bundle.label_buffer_dates >= out_start) & (bundle.label_buffer_dates <= out_end)
         ]
         # 目前只实现了在日频label_freq尺度上统计收益率、波动率等label
+        if req.label_freq == "D":
+            # A) 日频close统计卖出价（daily source）
+            cfg1 = label_cfg_daily_sell or LabelConfig(
+                horizon_n=20,
+                price_source="daily",
+                daily_sell_method="last_close",
+                topk=5,
+            )
+            labels["daily_label_by_daily_close"] = le.build_labels_panel(
+                daily=daily,
+                minute=minute5,
+                cfg=cfg1,
+                output_dates=output_dates,
+                code_col=self.schema.code_col,
+                date_col=self.schema.date_col,
+                close_col="close",
+                dt_col=self.schema.datetime_col,
+            )
 
-        # A) 日频close统计卖出价（daily source）
-        cfg1 = label_cfg_daily_sell or LabelConfig(
-            horizon_n=20,
-            price_source="daily",
-            daily_sell_method="last_close",
-            topk=5,
-        )
-        labels["daily_label_by_daily_close"] = le.build_labels_panel(
-            daily=daily,
-            minute=minute5,
-            cfg=cfg1,
-            output_dates=output_dates,
-            code_col=self.schema.code_col,
-            date_col=self.schema.date_col,
-            close_col="close",
-            dt_col=self.schema.datetime_col,
-        )
-
-        # B) 5min close统计卖出价（minute source）
-        cfg2 = label_cfg_minute_sell or LabelConfig(
-            horizon_n=20,
-            price_source="minute",
-            minute_sell_method="window_intraday_max",
-            topk=5,
-        )
-        
-        labels["daily_label_by_minute_close"] = le.build_labels_panel(
-            daily=daily,
-            minute=minute5,   # 如果 minute5=None，则 sell_px 全 NaN
-            cfg=cfg2,
-            output_dates=output_dates,
-            code_col=self.schema.code_col,
-            date_col=self.schema.date_col,
-            close_col="close",
-            dt_col=self.schema.datetime_col,
-        )
+            # B) 5min close统计卖出价（minute source）
+            cfg2 = label_cfg_minute_sell or LabelConfig(
+                horizon_n=20,
+                price_source="minute",
+                minute_sell_method="window_intraday_max",
+                topk=5,
+            )
+            
+            labels["daily_label_by_minute_close"] = le.build_labels_panel(
+                daily=daily,
+                minute=minute5,   # 如果 minute5=None，则 sell_px 全 NaN
+                cfg=cfg2,
+                output_dates=output_dates,
+                code_col=self.schema.code_col,
+                date_col=self.schema.date_col,
+                close_col="close",
+                dt_col=self.schema.datetime_col,
+            )
 
         # 行情  因子 和标签（收益率、波动率），都有各自的统计频率和统计来源
         # 比如我要统计日频（D）的行情 因子 和标签，统计来源是日频历史行情、以及5min历史行情（在计算量价因子时，可以用5min数据计算一些日频量价因子；在统计标签时，设置不同的horizon_n长度）

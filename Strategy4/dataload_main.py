@@ -69,19 +69,19 @@ minute5 = res.bundle.minute5
 trade_dates = res.bundle.trade_dates
 factor_panel = res.factor_panel
 
-labels_daily = res.labels["daily_label_by_daily_close"]
-labels_minute = res.labels["daily_label_by_minute_close"]
+daily_label_by_daily_close = res.labels["daily_label_by_daily_close"]
+daily_label_by_minute_close = res.labels["daily_label_by_minute_close"]
 
 print("daily", daily)
 print("minute5", None if minute5 is None else minute5)
 # print("trade_dates", trade_dates[:5], "...", trade_dates[-5:])
 
 print("factor_panel", factor_panel)
-print("labels_daily_sell", labels_daily[:5], "...", labels_daily[-5:])
-print("labels_minute_sell", labels_minute[:5], "...", labels_minute[-5:])
+print("labels_daily_sell", daily_label_by_daily_close[:5], "...", daily_label_by_daily_close[-5:])
+print("labels_minute_sell", daily_label_by_minute_close[:5], "...", daily_label_by_minute_close[-5:])
 
 # 你会看到 labels 中带 is_complete 字段
-print("labels_daily_sell is_complete ratio:", labels_daily["is_complete"].mean())
+print("labels_daily_sell is_complete ratio:", daily_label_by_daily_close["is_complete"].mean())
 
 
 
