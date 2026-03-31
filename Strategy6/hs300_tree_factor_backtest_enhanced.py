@@ -167,14 +167,16 @@ def parse_args() -> argparse.Namespace:
         "--hs300-list-path",
         type=str,
         # default=r"E:/pythonProject/data_baostock/metadata/stock_list_hs300.csv",
-        default=r"/workspace/Quant/data_baostock/metadata/stock_list_hs300.csv",
+        # default=r"/workspace/Quant/data_baostock/metadata/stock_list_hs300.csv",
+        default=r"D:/PythonProject/Quant/data_baostock/metadata/stock_list_hs300.csv",
         help="Path to HS300 constituent list CSV.",
     )
     parser.add_argument(
         "--index-root",
         type=str,
         # default=r"E:/pythonProject/data_baostock/ak_index",
-        default=r"/workspace/Quant/data_baostock/ak_index",
+        # default=r"/workspace/Quant/data_baostock/ak_index",
+        default=r"D:/PythonProject/Quant/data_baostock/ak_index",
         help="Directory containing hs300/zz500/zz1000 index price files.",
     )
 

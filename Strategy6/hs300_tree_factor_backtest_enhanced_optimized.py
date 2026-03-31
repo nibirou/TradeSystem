@@ -293,18 +293,18 @@ def parse_args() -> argparse.Namespace:
         "--data-root",
         type=str,
         # default=r"E:\pythonProject\data_baostock\stock_hist\hs300",
-        # default=r"/workspace/Quant/data_baostock/stock_hist/hs300",
-        default=r"D:/PythonProject/Quant/data_baostock/stock_hist/hs300",
+        default=r"/workspace/Quant/data_baostock/stock_hist/hs300",
+        # default=r"D:/PythonProject/Quant/data_baostock/stock_hist/hs300",
         help="数据根目录，需包含 d(日频) 和 5(5分钟) 子目录。",
     )
-    parser.add_argument("--train-start", type=str, default="2024-01-01", help="训练开始日期。")
+    parser.add_argument("--train-start", type=str, default="2020-01-01", help="训练开始日期。")
     parser.add_argument("--train-end", type=str, default="2024-12-31", help="训练结束日期。")
     parser.add_argument("--test-start", type=str, default="2025-01-01", help="回测开始日期（信号日）。")
     parser.add_argument("--test-end", type=str, default="2025-12-31", help="回测结束日期（信号日）。")
     parser.add_argument("--horizon", type=int, default=5, help="持有n个交易日后卖出。")
     parser.add_argument("--top-k", type=int, default=10, help="每次调仓选取概率最高的股票数。")
     parser.add_argument("--long-threshold", type=float, default=0.50, help="做多阈值。")
-    parser.add_argument("--max-depth", type=int, default=6, help="决策树最大深度。")
+    parser.add_argument("--max-depth", type=int, default=10, help="决策树最大深度。")
     parser.add_argument("--min-samples-leaf", type=int, default=200, help="叶子最小样本数。")
     parser.add_argument("--lookback-days", type=int, default=160, help="因子计算额外回看天数。")
     parser.add_argument("--max-files", type=int, default=None, help="仅加载前N只股票（调试用）。")
@@ -315,6 +315,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         # default=r"E:/pythonProject/data_baostock/metadata/stock_list_hs300.csv",
         default=r"/workspace/Quant/data_baostock/metadata/stock_list_hs300.csv",
+        # default=r"D:/PythonProject/Quant/data_baostock/metadata/stock_list_hs300.csv",
         help="Path to HS300 constituent list CSV.",
     )
     parser.add_argument(
@@ -322,6 +323,7 @@ def parse_args() -> argparse.Namespace:
         type=str,
         # default=r"E:/pythonProject/data_baostock/ak_index",
         default=r"/workspace/Quant/data_baostock/ak_index",
+        # default=r"D:/PythonProject/Quant/data_baostock/ak_index",
         help="Directory containing hs300/zz500/zz1000 index price files.",
     )
 
@@ -343,7 +345,7 @@ def parse_args() -> argparse.Namespace:
         "--portfolio-weighting",
         type=str,
         choices=["equal_weight", "dynamic_opt"],
-        default="equal_weight",
+        default="dynamic_opt",
         help="回测持仓权重构建方式：等权或状态感知动态优化。",
     )
     parser.add_argument("--opt-max-weight", type=float, default=0.25, help="动态优化时单票最大权重上限。")
