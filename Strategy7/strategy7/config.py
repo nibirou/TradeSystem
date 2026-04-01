@@ -131,9 +131,9 @@ def parse_args() -> argparse.Namespace:
             "Strategy7: modular quant research engine with pluggable data/factor/model/backtest components."
         )
     )
-    parser.add_argument("--data-root", type=str, default=r"D:/PythonProject/Quant/data_baostock/stock_hist/hs300")
-    parser.add_argument("--hs300-list-path", type=str, default=r"D:/PythonProject/Quant/data_baostock/metadata/stock_list_hs300.csv")
-    parser.add_argument("--index-root", type=str, default=r"D:/PythonProject/Quant/data_baostock/ak_index")
+    parser.add_argument("--data-root", type=str, default=r"/workspace/Quant/data_baostock/stock_hist/hs300")
+    parser.add_argument("--hs300-list-path", type=str, default=r"/workspace/Quant/data_baostock/metadata/stock_list_hs300.csv")
+    parser.add_argument("--index-root", type=str, default=r"/workspace/Quant/data_baostock/ak_index")
     parser.add_argument("--file-format", type=str, choices=["auto", "csv", "parquet"], default="auto")
     parser.add_argument("--max-files", type=int, default=None)
     parser.add_argument("--main-board-only", action="store_true")

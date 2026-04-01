@@ -425,7 +425,7 @@ def load_index_benchmark_data(
     end_date: pd.Timestamp,
     file_format: str = "auto",
 ) -> Dict[str, pd.DataFrame]:
-    mapping = {"hs300": "hs300", "zz500": "zz500", "zz1000": "zz1000"}
+    mapping = {"hs300": "hs300_price", "zz500": "zz500_price", "zz1000": "zz1000_price"}
     idx_data: Dict[str, pd.DataFrame] = {}
     for name, stem in mapping.items():
         fp = pick_named_file(index_root, stem, file_format=file_format)

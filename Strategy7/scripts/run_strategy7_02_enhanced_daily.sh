@@ -1,12 +1,13 @@
 #!/usr/bin/env bash
+# bash /workspace/Quant/TradeSystem/Strategy7/scripts/run_strategy7_02_enhanced_daily.sh
 set -euo pipefail
 
-cd /mnt/d/PythonProject/Quant/TradeSystem
+cd /workspace/Quant/TradeSystem
 
 python3 ./Strategy7/run_strategy7.py \
-  --data-root D:/PythonProject/Quant/data_baostock/stock_hist/hs300 \
-  --hs300-list-path D:/PythonProject/Quant/data_baostock/metadata/stock_list_hs300.csv \
-  --index-root D:/PythonProject/Quant/data_baostock/ak_index \
+  --data-root /workspace/Quant/data_baostock/stock_hist/hs300 \
+  --hs300-list-path /workspace/Quant/data_baostock/metadata/stock_list_hs300.csv \
+  --index-root /workspace/Quant/data_baostock/ak_index \
   --train-start 2024-01-01 \
   --train-end 2024-12-31 \
   --test-start 2025-01-01 \
