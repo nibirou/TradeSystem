@@ -8,10 +8,32 @@ import numpy as np
 import pandas as pd
 
 from ..config import BacktestConfig
-from ..core.constants import EPS
+from ..core.constants import EPS, TRADING_DAYS_PER_YEAR
 from ..data.loaders import lookup_index_period_return
 from ..models.base import ExecutionModel, PortfolioModel, TimingModel
 from .metrics import calc_trade_return, compute_return_stats
+
+
+def _infer_periods_per_year(factor_freq: str, rebalance_stride: int) -> float:
+    stride = max(int(rebalance_stride), 1)
+    intraday_bars_per_day = {
+        "5min": 48.0,
+        "15min": 16.0,
+        "30min": 8.0,
+        "60min": 4.0,
+        "120min": 2.0,
+    }
+    if factor_freq == "D":
+        base = float(TRADING_DAYS_PER_YEAR)
+    elif factor_freq == "W":
+        base = 52.0
+    elif factor_freq == "M":
+        base = 12.0
+    elif factor_freq in intraday_bars_per_day:
+        base = float(TRADING_DAYS_PER_YEAR) * intraday_bars_per_day[factor_freq]
+    else:
+        base = float(TRADING_DAYS_PER_YEAR)
+    return max(base / stride, 1e-9)
 
 
 def run_backtest(
@@ -39,6 +61,11 @@ def run_backtest(
     )
 
     signal_col = "signal_ts"
+    overlap_possible = int(backtest_cfg.rebalance_stride < backtest_cfg.horizon)
+    periods_per_year = _infer_periods_per_year(
+        factor_freq=factor_freq,
+        rebalance_stride=backtest_cfg.rebalance_stride,
+    )
     rebalance_points = sorted(pd.to_datetime(data[signal_col].dropna().unique()))
     trade_records: List[Dict[str, object]] = []
     position_records: List[Dict[str, object]] = []
@@ -193,9 +220,19 @@ def run_backtest(
     positions_df = pd.DataFrame(position_records)
     if trades_df.empty:
         summary = {
-            "strategy": compute_return_stats(pd.Series(dtype=float), horizon=backtest_cfg.horizon),
-            "benchmark_pool": compute_return_stats(pd.Series(dtype=float), horizon=backtest_cfg.horizon),
-            "excess_vs_pool": compute_return_stats(pd.Series(dtype=float), horizon=backtest_cfg.horizon),
+            "strategy": compute_return_stats(pd.Series(dtype=float), horizon=backtest_cfg.horizon, periods_per_year=periods_per_year),
+            "benchmark_pool": compute_return_stats(
+                pd.Series(dtype=float),
+                horizon=backtest_cfg.horizon,
+                periods_per_year=periods_per_year,
+            ),
+            "excess_vs_pool": compute_return_stats(
+                pd.Series(dtype=float),
+                horizon=backtest_cfg.horizon,
+                periods_per_year=periods_per_year,
+            ),
+            "annualization_periods_per_year": periods_per_year,
+            "rebalance_overlap_possible": float(overlap_possible),
             "portfolio_weighting_mode": backtest_cfg.portfolio_mode,
         }
         return trades_df, positions_df, pd.DataFrame(), summary
@@ -238,16 +275,48 @@ def run_backtest(
     trades_df["excess_cum_return"] = trades_df["excess_vs_pool_cum_return"]
     trades_df["excess_cum_ret"] = trades_df["excess_cum_return"]
 
-    strategy_stats = compute_return_stats(trades_df["strategy_ret"], horizon=backtest_cfg.horizon)
-    benchmark_pool_stats = compute_return_stats(trades_df["benchmark_pool_ret"], horizon=backtest_cfg.horizon)
-    benchmark_hs300_stats = compute_return_stats(trades_df["benchmark_hs300_ret"], horizon=backtest_cfg.horizon)
-    benchmark_zz500_stats = compute_return_stats(trades_df["benchmark_zz500_ret"], horizon=backtest_cfg.horizon)
-    benchmark_zz1000_stats = compute_return_stats(trades_df["benchmark_zz1000_ret"], horizon=backtest_cfg.horizon)
+    strategy_stats = compute_return_stats(trades_df["strategy_ret"], horizon=backtest_cfg.horizon, periods_per_year=periods_per_year)
+    benchmark_pool_stats = compute_return_stats(
+        trades_df["benchmark_pool_ret"],
+        horizon=backtest_cfg.horizon,
+        periods_per_year=periods_per_year,
+    )
+    benchmark_hs300_stats = compute_return_stats(
+        trades_df["benchmark_hs300_ret"],
+        horizon=backtest_cfg.horizon,
+        periods_per_year=periods_per_year,
+    )
+    benchmark_zz500_stats = compute_return_stats(
+        trades_df["benchmark_zz500_ret"],
+        horizon=backtest_cfg.horizon,
+        periods_per_year=periods_per_year,
+    )
+    benchmark_zz1000_stats = compute_return_stats(
+        trades_df["benchmark_zz1000_ret"],
+        horizon=backtest_cfg.horizon,
+        periods_per_year=periods_per_year,
+    )
 
-    excess_pool_stats = compute_return_stats(trades_df["excess_vs_pool_ret"], horizon=backtest_cfg.horizon)
-    excess_hs300_stats = compute_return_stats(trades_df["excess_vs_hs300_ret"], horizon=backtest_cfg.horizon)
-    excess_zz500_stats = compute_return_stats(trades_df["excess_vs_zz500_ret"], horizon=backtest_cfg.horizon)
-    excess_zz1000_stats = compute_return_stats(trades_df["excess_vs_zz1000_ret"], horizon=backtest_cfg.horizon)
+    excess_pool_stats = compute_return_stats(
+        trades_df["excess_vs_pool_ret"],
+        horizon=backtest_cfg.horizon,
+        periods_per_year=periods_per_year,
+    )
+    excess_hs300_stats = compute_return_stats(
+        trades_df["excess_vs_hs300_ret"],
+        horizon=backtest_cfg.horizon,
+        periods_per_year=periods_per_year,
+    )
+    excess_zz500_stats = compute_return_stats(
+        trades_df["excess_vs_zz500_ret"],
+        horizon=backtest_cfg.horizon,
+        periods_per_year=periods_per_year,
+    )
+    excess_zz1000_stats = compute_return_stats(
+        trades_df["excess_vs_zz1000_ret"],
+        horizon=backtest_cfg.horizon,
+        periods_per_year=periods_per_year,
+    )
 
     summary = {
         "strategy": strategy_stats,
@@ -261,6 +330,8 @@ def run_backtest(
         "excess_vs_hs300": excess_hs300_stats,
         "excess_vs_zz500": excess_zz500_stats,
         "excess_vs_zz1000": excess_zz1000_stats,
+        "annualization_periods_per_year": periods_per_year,
+        "rebalance_overlap_possible": float(overlap_possible),
         "active_trade_ratio": float((trades_df["active_stocks"] > 0).mean()),
         "portfolio_weighting_mode": backtest_cfg.portfolio_mode,
         "portfolio_avg_turnover": float(pd.to_numeric(trades_df["portfolio_turnover"], errors="coerce").dropna().mean()),

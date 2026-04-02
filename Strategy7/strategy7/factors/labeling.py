@@ -120,14 +120,27 @@ def split_train_test(
     if time_col not in out.columns:
         raise ValueError(f"missing time column {time_col} for factor_freq={factor_freq}")
 
-    t = pd.to_datetime(out[time_col], errors="coerce")
-    train_mask = (t >= train_start) & (t <= train_end)
-    test_mask = (t >= test_start) & (t <= test_end)
+    signal_ts = pd.to_datetime(out[time_col], errors="coerce")
+    if factor_freq in INTRADAY_FREQS:
+        # Use trading date boundaries for intraday bars to include the whole session.
+        signal_anchor = signal_ts.dt.normalize()
+    else:
+        signal_anchor = signal_ts
+    train_mask = (signal_anchor >= train_start) & (signal_anchor <= train_end)
+    test_mask = (signal_anchor >= test_start) & (signal_anchor <= test_end)
 
-    if factor_freq == "D":
-        if "target_date" in out.columns:
-            td = pd.to_datetime(out["target_date"], errors="coerce")
-            train_mask = train_mask & (td <= train_end)
-            test_mask = test_mask & (td <= test_end)
+    if "target_date" in out.columns:
+        target_ts = pd.to_datetime(out["target_date"], errors="coerce")
+    elif "exit_ts" in out.columns:
+        target_ts = pd.to_datetime(out["exit_ts"], errors="coerce")
+    else:
+        target_ts = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns]")
+
+    if factor_freq in INTRADAY_FREQS:
+        target_anchor = target_ts.dt.normalize()
+    else:
+        target_anchor = target_ts
+    train_mask = train_mask & (target_anchor <= train_end)
+    test_mask = test_mask & (target_anchor <= test_end)
+
     return out[train_mask].copy(), out[test_mask].copy()
-

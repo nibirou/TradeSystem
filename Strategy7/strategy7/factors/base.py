@@ -80,10 +80,19 @@ def resolve_selected_factors(library: FactorLibrary, freq: str, factor_list_arg:
 def compute_factor_panel(base_df: pd.DataFrame, library: FactorLibrary, freq: str, selected_factors: List[str]) -> pd.DataFrame:
     panel = base_df.copy()
     for fac in selected_factors:
-        values = library.get(freq, fac).func(panel)
+        try:
+            values = library.get(freq, fac).func(panel)
+        except Exception as exc:
+            raise RuntimeError(f"factor computation failed: {fac} @ {freq}") from exc
         if isinstance(values, pd.Series):
-            panel[fac] = pd.to_numeric(values, errors="coerce")
+            aligned = values.reindex(panel.index)
         else:
-            panel[fac] = pd.to_numeric(pd.Series(values, index=panel.index), errors="coerce")
+            aligned = pd.Series(values)
+            if len(aligned) != len(panel):
+                raise ValueError(
+                    f"factor result length mismatch for {fac} @ {freq}: "
+                    f"expected={len(panel)}, got={len(aligned)}"
+                )
+            aligned.index = panel.index
+        panel[fac] = pd.to_numeric(aligned, errors="coerce")
     return panel
-

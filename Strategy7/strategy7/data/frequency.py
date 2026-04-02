@@ -24,10 +24,10 @@ def resample_intraday(minute_df: pd.DataFrame, freq: str) -> pd.DataFrame:
         return out.sort_values(["code", "datetime"]).reset_index(drop=True)
 
     rule_map = {
-        "15min": "15T",
-        "30min": "30T",
-        "60min": "60T",
-        "120min": "120T",
+        "15min": "15min",
+        "30min": "30min",
+        "60min": "60min",
+        "120min": "120min",
     }
     rule = rule_map[freq]
 
@@ -76,7 +76,7 @@ def resample_daily_to_period(daily_df: pd.DataFrame, freq: str) -> pd.DataFrame:
         if c in d.columns:
             d[c] = pd.to_numeric(d[c], errors="coerce")
 
-    rule = "W-FRI" if freq == "W" else "M"
+    rule = "W-FRI" if freq == "W" else "ME"
     pieces = []
     for code, g in d.groupby("code"):
         gg = g.sort_values("date").set_index("date")
@@ -150,4 +150,3 @@ def add_generic_micro_structure_features(df: pd.DataFrame, time_col: str) -> pd.
     out["barra_beta_proxy"] = out["vol_chg_1"]
     out["crowding_proxy_raw"] = 0.5 * out["amount_ratio_12"].abs() + 0.5 * out["vol_chg_1"].abs()
     return out
-

@@ -89,12 +89,13 @@ class RealisticFillExecutionModel(ExecutionModel):
         vol_z = (vol - float(vol.mean())) / (float(vol.std(ddof=0)) + EPS)
         crowd_z = (crowd - float(crowd.mean())) / (float(crowd.std(ddof=0)) + EPS)
         state_penalty = (0.10 * vol_z.clip(lower=0.0) + 0.10 * crowd_z.clip(lower=0.0)).clip(lower=0.0, upper=0.5)
-
-        fill_ratio = (fill_ratio * self.cfg.base_fill_rate * (1.0 - state_penalty)).clip(lower=0.0, upper=1.0)
+        latency_penalty = float(np.clip(max(int(self.cfg.latency_bars), 0) * 0.03, 0.0, 0.60))
+        fill_ratio = (fill_ratio * self.cfg.base_fill_rate * (1.0 - state_penalty) * (1.0 - latency_penalty)).clip(lower=0.0, upper=1.0)
         out["fill_ratio"] = fill_ratio
         out["executed_weight"] = w * fill_ratio
 
-        extra_cost_bps_each = (state_penalty * (slippage_bps + 0.5 * fee_bps)).astype(float)
+        latency_cost_bps = latency_penalty * (0.8 * slippage_bps + 0.2 * fee_bps)
+        extra_cost_bps_each = (state_penalty * (slippage_bps + 0.5 * fee_bps) + latency_cost_bps).astype(float)
         extra_cost_ret_each = extra_cost_bps_each / 10000.0
         out["extra_cost_bps"] = extra_cost_bps_each
         out["realized_trade_ret"] = pd.to_numeric(out["net_trade_ret"], errors="coerce").fillna(0.0) - extra_cost_ret_each
@@ -104,6 +105,8 @@ class RealisticFillExecutionModel(ExecutionModel):
             "avg_fill_ratio": float(out["fill_ratio"].mean()),
             "cash_drag_weight": float(max(0.0, 1.0 - out["executed_weight"].sum())),
             "extra_cost_bps": float(out["extra_cost_bps"].mean()),
+            "latency_bars": float(max(int(self.cfg.latency_bars), 0)),
+            "latency_penalty": latency_penalty,
         }
         return out, diag
 
@@ -115,4 +118,3 @@ class RealisticFillExecutionModel(ExecutionModel):
             pickle.dump(self, f)
         dump_json(meta, {"model_type": "realistic_fill", "config": self.cfg.__dict__})
         return {"model_pkl": str(pkl), "meta_json": str(meta)}
-

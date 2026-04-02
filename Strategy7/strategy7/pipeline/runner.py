@@ -2,11 +2,9 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Dict, List
 
-import numpy as np
 import pandas as pd
 
 from ..backtest.engine import run_backtest
@@ -23,7 +21,12 @@ from ..config import RunConfig
 from ..core.constants import INTRADAY_FREQS
 from ..core.utils import dump_json, ensure_dir
 from ..data.loaders import HS300MarketDataLoader, build_feature_bundle, load_index_benchmark_data
-from ..data.preprocess import PreprocessOptions, apply_cross_section_pipeline, fill_feature_na
+from ..data.preprocess import (
+    PreprocessOptions,
+    apply_cross_section_pipeline,
+    fill_feature_na_with_reference,
+    fit_feature_fill_values,
+)
 from ..data.sources import DataSourceRegistry, TableFileSource, load_custom_source_module, merge_external_sources
 from ..factors.base import FactorLibrary, compute_factor_panel, load_custom_factor_module, resolve_selected_factors
 from ..factors.defaults import DEFAULT_FACTOR_SET_BY_FREQ, register_default_factors
@@ -57,7 +60,9 @@ def _build_external_source_registry(cfg: RunConfig) -> DataSourceRegistry:
 
 def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     output_dir = ensure_dir(cfg.output_dir)
-    model_dir = ensure_dir(output_dir / "models")
+    model_dir: Path | None = None
+    if cfg.save_models:
+        model_dir = ensure_dir(output_dir / "models")
 
     loader = HS300MarketDataLoader(
         data_cfg=cfg.data,
@@ -113,7 +118,6 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     if factor_freq in INTRADAY_FREQS:
         panel[group_col] = pd.to_datetime(panel["datetime"], errors="coerce").dt.normalize()
     panel = apply_cross_section_pipeline(panel, selected_factors, pp_opt, group_col=group_col)
-    panel = fill_feature_na(panel, selected_factors, method=pp_opt.fill_method)
 
     panel = add_labels(
         panel=panel,
@@ -136,6 +140,20 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         raise RuntimeError("training set is empty.")
     if test_df.empty:
         raise RuntimeError("test set is empty.")
+
+    fill_values = fit_feature_fill_values(train_df, selected_factors)
+    train_df = fill_feature_na_with_reference(
+        train_df,
+        selected_factors,
+        method=pp_opt.fill_method,
+        reference_fill_values=fill_values,
+    )
+    test_df = fill_feature_na_with_reference(
+        test_df,
+        selected_factors,
+        method=pp_opt.fill_method,
+        reference_fill_values=fill_values,
+    )
 
     target_col = pick_target_column(cfg.factors.label_task)
 
@@ -260,7 +278,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     files["backtest_excess_plot_png"] = plot_excess_path
 
     model_files: Dict[str, Dict[str, str]] = {}
-    if cfg.save_models:
+    if cfg.save_models and model_dir is not None:
         model_files["stock_model"] = stock_model.save(model_dir, run_tag)
         model_files["timing_model"] = timing_model.save(model_dir, run_tag)
         model_files["portfolio_model"] = portfolio_model.save(model_dir, run_tag)
@@ -289,6 +307,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             **{k: str(v) for k, v in files.items()},
             "plot_main_generated": bool(plot_status.get("main", False)),
             "plot_excess_generated": bool(plot_status.get("excess", False)),
+            "save_models_enabled": bool(cfg.save_models),
             "model_files": model_files,
         },
         "notes": {
@@ -296,9 +315,15 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
                 "factor features only use current/past information; labels use shifted future window;"
                 "train/test split constrained by signal timestamps and target end timestamps."
             ),
+            "feature_fill_method": pp_opt.fill_method,
+            "feature_fill_fit_scope": "train_only",
             "timing_model_enabled": cfg.timing_model.model_type != "none",
             "portfolio_dynamic_enabled": cfg.portfolio_opt.mode == "dynamic_opt",
             "realistic_execution_enabled": cfg.execution_model.model_type == "realistic_fill",
+            "model_persistence": (
+                "model files are saved only when --save-models is set;"
+                " otherwise no models directory/files are created."
+            ),
         },
     }
     summary_path = output_dir / f"summary_{run_tag}.json"

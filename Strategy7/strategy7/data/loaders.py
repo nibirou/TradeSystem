@@ -141,11 +141,17 @@ class HS300MarketDataLoader(MarketDataLoader):
             if daily_path is None or minute_path is None:
                 continue
 
-            ddf = read_data_file(daily_path, daily_cols, start_date, end_date)
-            mdf = read_data_file(minute_path, minute_cols, start_date, end_date)
+            try:
+                ddf = read_data_file(daily_path, daily_cols, start_date, end_date)
+                mdf = read_data_file(minute_path, minute_cols, start_date, end_date)
+            except Exception:
+                # Skip broken files instead of failing the whole run.
+                continue
             if ddf.empty or mdf.empty:
                 continue
 
+            ddf["code"] = ddf["code"].astype(str).str.strip()
+            mdf["code"] = mdf["code"].astype(str).str.strip()
             for col in ["open", "high", "low", "close", "preclose", "volume", "amount", "turn", "tradestatus"]:
                 if col in ddf.columns:
                     ddf[col] = pd.to_numeric(ddf[col], errors="coerce")
@@ -176,6 +182,8 @@ class HS300MarketDataLoader(MarketDataLoader):
 
         daily_df = pd.concat(daily_frames, ignore_index=True).sort_values(["code", "date"]).reset_index(drop=True)
         minute_df = pd.concat(minute_frames, ignore_index=True).sort_values(["code", "datetime"]).reset_index(drop=True)
+        daily_df = daily_df.drop_duplicates(["code", "date"], keep="last").reset_index(drop=True)
+        minute_df = minute_df.drop_duplicates(["code", "datetime"], keep="last").reset_index(drop=True)
         return daily_df, minute_df
 
     def load(self) -> MarketBundle:

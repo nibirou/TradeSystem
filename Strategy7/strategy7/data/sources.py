@@ -21,6 +21,22 @@ class ExternalDataSource(Protocol):
         ...
 
 
+def _sanitize_source_frame(df: pd.DataFrame, date_col: str, code_col: str) -> pd.DataFrame:
+    out = df.copy()
+    out[date_col] = pd.to_datetime(out[date_col], errors="coerce").dt.normalize()
+    out[code_col] = out[code_col].astype(str).str.strip()
+    out = out.dropna(subset=[date_col, code_col])
+    if out.empty:
+        return out
+    return out.sort_values([date_col, code_col]).drop_duplicates([date_col, code_col], keep="last").reset_index(drop=True)
+
+
+def _safe_name_prefix(name: str) -> str:
+    keep = [ch if ch.isalnum() else "_" for ch in str(name).strip().lower()]
+    out = "".join(keep).strip("_")
+    return out or "external"
+
+
 @dataclass
 class TableFileSource:
     """Load one external factor/fundamental/text table file."""
@@ -42,12 +58,11 @@ class TableFileSource:
             df = pd.read_csv(fp)
         if self.date_col not in df.columns or self.code_col not in df.columns:
             return pd.DataFrame()
-        out = df.copy()
-        out[self.date_col] = pd.to_datetime(out[self.date_col], errors="coerce").dt.normalize()
-        out[self.code_col] = out[self.code_col].astype(str)
-        out = out.dropna(subset=[self.date_col, self.code_col])
-        out = out[out[self.date_col].isin(pd.DatetimeIndex(trade_dates))]
-        out = out[out[self.code_col].isin(set(code_universe))]
+        out = _sanitize_source_frame(df, date_col=self.date_col, code_col=self.code_col)
+        trade_date_set = set(pd.DatetimeIndex(trade_dates).normalize().tolist())
+        code_set = {str(x).strip() for x in code_universe}
+        out = out[out[self.date_col].isin(trade_date_set)]
+        out = out[out[self.code_col].isin(code_set)]
         if out.empty:
             return out
         rename_map: Dict[str, str] = {}
@@ -92,7 +107,8 @@ class DirectoryTableSource:
         if not frames:
             return pd.DataFrame()
         out = pd.concat(frames, ignore_index=True)
-        return out.sort_values(["date", "code"]).drop_duplicates(["date", "code"], keep="last").reset_index(drop=True)
+        out = out.sort_values(["date", "code"]).groupby(["date", "code"], as_index=False).last()
+        return out.reset_index(drop=True)
 
 
 class DataSourceRegistry(Registry[ExternalDataSource]):
@@ -114,17 +130,24 @@ def merge_external_sources(
     code_universe: List[str],
 ) -> tuple[pd.DataFrame, Dict[str, int]]:
     out = base_panel.copy()
+    if "code" in out.columns:
+        out["code"] = out["code"].astype(str).str.strip()
     notes: Dict[str, int] = {}
     for name, source in registry.items():
         df = source.load(trade_dates, code_universe)
         if df is None or df.empty:
             notes[name] = 0
             continue
-        df = df.copy()
         if "date" not in df.columns or "code" not in df.columns:
             notes[name] = 0
             continue
+        df = _sanitize_source_frame(df, date_col="date", code_col="code")
+        value_cols = [c for c in df.columns if c not in {"date", "code"}]
+        collision_cols = [c for c in value_cols if c in out.columns]
+        if collision_cols:
+            prefix = _safe_name_prefix(name)
+            rename_map = {c: f"{prefix}_{c}" for c in collision_cols}
+            df = df.rename(columns=rename_map)
         out = out.merge(df, on=["date", "code"], how="left")
         notes[name] = int(len(df))
     return out, notes
-

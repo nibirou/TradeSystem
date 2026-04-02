@@ -40,8 +40,13 @@ def main() -> None:
     ]:
         if k in outputs:
             print(f"{k:24s}: {outputs[k]}")
+    save_models_enabled = bool(outputs.get("save_models_enabled", False))
+    model_files = outputs.get("model_files", {}) or {}
+    if save_models_enabled:
+        print(f"{'model_files':24s}: {len(model_files)} models persisted")
+    else:
+        print(f"{'model_files':24s}: not saved (enable --save-models)")
 
 
 if __name__ == "__main__":
     main()
-

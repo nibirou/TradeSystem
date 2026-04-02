@@ -25,11 +25,20 @@ def max_drawdown(net_values: pd.Series) -> float:
     return float(dd.min())
 
 
-def compute_return_stats(returns: pd.Series, horizon: int) -> Dict[str, float]:
+def compute_return_stats(
+    returns: pd.Series,
+    horizon: int,
+    periods_per_year: float | None = None,
+) -> Dict[str, float]:
+    ppy = float(periods_per_year) if periods_per_year is not None else float(TRADING_DAYS_PER_YEAR / max(horizon, 1))
+    if not np.isfinite(ppy) or ppy <= 0:
+        ppy = float(TRADING_DAYS_PER_YEAR / max(horizon, 1))
+
     r = pd.to_numeric(returns, errors="coerce").dropna()
     if r.empty:
         return {
             "periods": 0.0,
+            "periods_per_year": ppy,
             "win_rate": float("nan"),
             "avg_return": float("nan"),
             "cum_return": float("nan"),
@@ -45,17 +54,15 @@ def compute_return_stats(returns: pd.Series, horizon: int) -> Dict[str, float]:
         }
 
     periods = len(r)
-    periods_per_year = TRADING_DAYS_PER_YEAR / max(horizon, 1)
-
     cum_return = float((1.0 + r).prod() - 1.0)
-    annualized_return = float((1.0 + cum_return) ** (periods_per_year / periods) - 1.0)
+    annualized_return = float((1.0 + cum_return) ** (ppy / periods) - 1.0)
     std = float(r.std(ddof=1)) if periods > 1 else float("nan")
-    annualized_vol = float(std * np.sqrt(periods_per_year)) if periods > 1 else float("nan")
-    sharpe = float((r.mean() / std) * np.sqrt(periods_per_year)) if periods > 1 and std > 0 else float("nan")
+    annualized_vol = float(std * np.sqrt(ppy)) if periods > 1 else float("nan")
+    sharpe = float((r.mean() / std) * np.sqrt(ppy)) if periods > 1 and std > 0 else float("nan")
 
     downside = r[r < 0]
     down_std = float(downside.std(ddof=1)) if len(downside) > 1 else float("nan")
-    sortino = float((r.mean() / down_std) * np.sqrt(periods_per_year)) if periods > 1 and down_std and down_std > 0 else float("nan")
+    sortino = float((r.mean() / down_std) * np.sqrt(ppy)) if periods > 1 and down_std and down_std > 0 else float("nan")
 
     net = (1.0 + r).cumprod()
     mdd = max_drawdown(net)
@@ -66,6 +73,7 @@ def compute_return_stats(returns: pd.Series, horizon: int) -> Dict[str, float]:
 
     return {
         "periods": float(periods),
+        "periods_per_year": ppy,
         "win_rate": float((r > 0).mean()),
         "avg_return": float(r.mean()),
         "cum_return": cum_return,
@@ -213,4 +221,3 @@ def compute_score_spread(df: pd.DataFrame, score_col: str, ret_col: str, quantil
     std = float(s.std(ddof=1)) if len(s) > 1 else float("nan")
     ir = float(s.mean() / std * np.sqrt(TRADING_DAYS_PER_YEAR)) if pd.notna(std) and std > 0 else float("nan")
     return {"obs": float(len(s)), "spread_mean": float(s.mean()), "spread_std": std, "spread_ir": ir}
-

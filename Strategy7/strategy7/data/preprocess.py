@@ -91,19 +91,59 @@ def neutralize_cross_section(
 
 
 def fill_feature_na(df: pd.DataFrame, cols: List[str], method: str = "median") -> pd.DataFrame:
+    valid_cols = [c for c in cols if c in df.columns]
+    if not valid_cols:
+        return df.copy()
     out = df.copy()
     if method == "zero":
-        out[cols] = out[cols].fillna(0.0)
+        out[valid_cols] = out[valid_cols].fillna(0.0)
         return out
 
     if method == "ffill_by_code" and "code" in out.columns:
-        out[cols] = out.groupby("code")[cols].ffill()
-        out[cols] = out[cols].fillna(out[cols].median(numeric_only=True))
+        out[valid_cols] = out.groupby("code")[valid_cols].ffill()
+        out[valid_cols] = out[valid_cols].fillna(out[valid_cols].median(numeric_only=True))
         return out
 
     # median default
-    med = out[cols].median(numeric_only=True)
-    out[cols] = out[cols].fillna(med)
+    med = out[valid_cols].median(numeric_only=True)
+    out[valid_cols] = out[valid_cols].fillna(med)
+    return out
+
+
+def fit_feature_fill_values(df: pd.DataFrame, cols: List[str]) -> pd.Series:
+    valid_cols = [c for c in cols if c in df.columns]
+    if not valid_cols:
+        return pd.Series(dtype=float)
+    return df[valid_cols].median(numeric_only=True)
+
+
+def fill_feature_na_with_reference(
+    df: pd.DataFrame,
+    cols: List[str],
+    method: str = "median",
+    reference_fill_values: pd.Series | None = None,
+) -> pd.DataFrame:
+    """Fill NA by train-fitted statistics to avoid test-period leakage."""
+    valid_cols = [c for c in cols if c in df.columns]
+    if not valid_cols:
+        return df.copy()
+
+    out = df.copy()
+    if method == "zero":
+        out[valid_cols] = out[valid_cols].fillna(0.0)
+        return out
+
+    fill_values = reference_fill_values if reference_fill_values is not None else fit_feature_fill_values(df, valid_cols)
+    fill_values = pd.Series(fill_values, dtype=float).reindex(valid_cols)
+
+    if method == "ffill_by_code" and "code" in out.columns:
+        out[valid_cols] = out.groupby("code")[valid_cols].ffill()
+        out[valid_cols] = out[valid_cols].fillna(fill_values)
+        out[valid_cols] = out[valid_cols].fillna(0.0)
+        return out
+
+    out[valid_cols] = out[valid_cols].fillna(fill_values)
+    out[valid_cols] = out[valid_cols].fillna(0.0)
     return out
 
 
@@ -134,4 +174,3 @@ def apply_cross_section_pipeline(
         if options.do_zscore:
             out[fac] = out.groupby(group_col)[fac].transform(zscore_series)
     return out
-

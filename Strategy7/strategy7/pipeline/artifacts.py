@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import os
 from pathlib import Path
 from typing import Dict
 
@@ -21,16 +23,44 @@ def build_run_tag(
     board_tag: str,
     portfolio_mode: str,
 ) -> str:
-    return (
+    raw = (
         f"tr_{train_start}_{train_end}"
         f"_te_{test_start}_{test_end}"
         f"_f{factor_freq}"
         f"_h{horizon}_{execution_scheme}_{board_tag}_{portfolio_mode}"
     )
+    if len(raw) <= 80:
+        return raw
+
+    digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:10]
+    exec_tag = str(execution_scheme).replace("_", "")[:12]
+    compact = (
+        f"tr{train_start[-6:]}{train_end[-6:]}"
+        f"_te{test_start[-6:]}{test_end[-6:]}"
+        f"_f{factor_freq}_h{horizon}_{exec_tag}_{board_tag}_{portfolio_mode}_{digest}"
+    )
+    if len(compact) <= 80:
+        return compact
+    return f"{factor_freq}_h{horizon}_{board_tag}_{portfolio_mode}_{digest}"
+
+
+def _windows_long_path(path: Path) -> str:
+    p = str(path.resolve())
+    if p.startswith("\\\\?\\"):
+        return p
+    if p.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + p.lstrip("\\")
+    return "\\\\?\\" + p
 
 
 def save_dataframe(path: Path, df: pd.DataFrame) -> None:
     ensure_dir(path.parent)
+    if os.name == "nt":
+        try:
+            df.to_csv(path, index=False, encoding="utf-8-sig")
+        except (FileNotFoundError, OSError):
+            df.to_csv(_windows_long_path(path), index=False, encoding="utf-8-sig")
+        return
     df.to_csv(path, index=False, encoding="utf-8-sig")
 
 
@@ -66,4 +96,3 @@ def save_common_artifacts(
     save_dataframe(files["model_ic_series_csv"], model_ic_series_df)
     save_dataframe(files["factor_library_csv"], factor_meta_df)
     return files
-
