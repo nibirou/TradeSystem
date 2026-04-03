@@ -89,34 +89,90 @@ def compute_return_stats(
     }
 
 
-def evaluate_selection_model(target: pd.Series, pred_score: pd.Series, threshold: float = 0.5) -> Dict[str, float]:
+def evaluate_selection_model(target: pd.Series, pred_score: pd.Series, threshold: float = 0.5) -> Dict[str, object]:
     y_true = pd.to_numeric(target, errors="coerce")
     y_pred_score = pd.to_numeric(pred_score, errors="coerce")
     valid = y_true.notna() & y_pred_score.notna()
     y_true = y_true.loc[valid]
     y_pred_score = y_pred_score.loc[valid]
+
+    def _regression_metrics(y_t: pd.Series, y_p: pd.Series) -> Dict[str, float]:
+        if y_t.empty:
+            return {
+                "reg_mae": float("nan"),
+                "reg_rmse": float("nan"),
+                "reg_r2": float("nan"),
+                "reg_pearson_corr": float("nan"),
+                "reg_target_std": float("nan"),
+                "reg_pred_std": float("nan"),
+            }
+        yt = y_t.astype(float)
+        yp = y_p.astype(float)
+        err = yt - yp
+        mse = float(np.mean(np.square(err)))
+        ss_res = float(np.sum(np.square(err)))
+        ss_tot = float(np.sum(np.square(yt - float(yt.mean()))))
+        pearson = yt.corr(yp, method="pearson")
+        return {
+            "reg_mae": float(np.mean(np.abs(err))),
+            "reg_rmse": float(np.sqrt(max(mse, 0.0))),
+            "reg_r2": float(1.0 - ss_res / ss_tot) if ss_tot > EPS else float("nan"),
+            "reg_pearson_corr": float(pearson) if pd.notna(pearson) else float("nan"),
+            "reg_target_std": float(yt.std(ddof=1)) if len(yt) > 1 else float("nan"),
+            "reg_pred_std": float(yp.std(ddof=1)) if len(yp) > 1 else float("nan"),
+        }
+
+    reg_metrics = _regression_metrics(y_true, y_pred_score)
     if y_true.empty:
-        return {"accuracy": float("nan"), "precision": float("nan"), "recall": float("nan"), "auc": float("nan")}
+        return {
+            "accuracy": float("nan"),
+            "precision": float("nan"),
+            "recall": float("nan"),
+            "auc": float("nan"),
+            "rank_corr": float("nan"),
+            "target_mode": "empty",
+            "direction_labeling": "empty",
+            **reg_metrics,
+        }
 
     uniq = sorted(pd.Series(y_true).dropna().unique().tolist())
-    if set(uniq).issubset({0, 1}) and len(uniq) <= 2:
-        pred = (y_pred_score >= threshold).astype(int)
-        out = {
-            "accuracy": float(accuracy_score(y_true.astype(int), pred)),
-            "precision": float(precision_score(y_true.astype(int), pred, zero_division=0)),
-            "recall": float(recall_score(y_true.astype(int), pred, zero_division=0)),
-            "auc": float(roc_auc_score(y_true.astype(int), y_pred_score)) if len(uniq) == 2 else float("nan"),
-        }
-        return out
+    is_binary_target = set(uniq).issubset({0, 1}) and len(uniq) <= 2
+    if is_binary_target:
+        y_eval = y_true.astype(int)
+        target_mode = "binary"
+        direction_labeling = "native_binary"
+    else:
+        # For continuous labels (e.g. return/volatility), derive a direction label
+        # so framework-level classification metrics stay comparable and non-NaN.
+        if (y_true > 0).any() and (y_true <= 0).any():
+            y_eval = (y_true > 0).astype(int)
+            direction_labeling = "gt_zero"
+        else:
+            y_eval = (y_true >= float(y_true.median())).astype(int)
+            if y_eval.nunique() < 2:
+                y_eval = (y_true.rank(method="first", pct=True) >= 0.5).astype(int)
+                direction_labeling = "rank50"
+            else:
+                direction_labeling = "median"
+        target_mode = "continuous"
 
-    # regression-style target
+    pred = (y_pred_score >= threshold).astype(int)
+    auc = float("nan")
+    if y_eval.nunique() == 2:
+        try:
+            auc = float(roc_auc_score(y_eval, y_pred_score))
+        except Exception:
+            auc = float("nan")
     corr = y_true.corr(y_pred_score, method="spearman")
     return {
-        "accuracy": float("nan"),
-        "precision": float("nan"),
-        "recall": float("nan"),
-        "auc": float("nan"),
+        "accuracy": float(accuracy_score(y_eval, pred)),
+        "precision": float(precision_score(y_eval, pred, zero_division=0)),
+        "recall": float(recall_score(y_eval, pred, zero_division=0)),
+        "auc": auc,
         "rank_corr": float(corr) if pd.notna(corr) else float("nan"),
+        "target_mode": target_mode,
+        "direction_labeling": direction_labeling,
+        **reg_metrics,
     }
 
 

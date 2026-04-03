@@ -83,6 +83,24 @@ Only samples with complete past+future windows are used for TRCL training.
 
 The model predicts raw continuous scores, then converts to cross-sectional percentile rank per trading day to match Strategy7's score usage (`pred_score` in `[0,1]`).
 
+### 3.5 Evaluation metrics under `label_task=return`
+
+When `label_task=return`, target is continuous (`target_return`) rather than binary.
+Strategy7 now computes model metrics in a framework-compatible way:
+
+- `rank_corr`: Spearman correlation between `pred_score` and `target_return`
+- `accuracy/precision/recall/auc`: computed on derived direction labels
+  - default direction label: `target_return > 0` (`direction_labeling=gt_zero`)
+  - fallback: median/rank split when sign split is unavailable
+- `target_mode`: indicates whether metrics were evaluated with `binary` or `continuous` target mode
+- Regression metrics are output in parallel:
+  - `reg_mae`
+  - `reg_rmse`
+  - `reg_r2`
+  - `reg_pearson_corr`
+  - `reg_target_std`
+  - `reg_pred_std`
+
 ## 4. New CLI and Scripts
 
 ### 4.1 New model type
