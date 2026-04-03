@@ -45,6 +45,23 @@ class StockModelConfig:
     min_samples_leaf: int
     random_state: int
     custom_model_py: str | None
+    fgcl_seq_len: int
+    fgcl_future_look: int
+    fgcl_hidden_size: int
+    fgcl_num_layers: int
+    fgcl_num_factor: int
+    fgcl_gamma: float
+    fgcl_tau: float
+    fgcl_epochs: int
+    fgcl_lr: float
+    fgcl_early_stop: int
+    fgcl_smooth_steps: int
+    fgcl_per_epoch_batch: int
+    fgcl_batch_size: int
+    fgcl_label_transform: str
+    fgcl_weight_decay: float
+    fgcl_dropout: float
+    fgcl_device: str
 
 
 @dataclass
@@ -271,6 +288,29 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--max-depth", type=int, default=6)
     parser.add_argument("--min-samples-leaf", type=int, default=200)
     parser.add_argument("--random-state", type=int, default=42)
+    parser.add_argument("--fgcl-seq-len", type=int, default=30)
+    parser.add_argument("--fgcl-future-look", type=int, default=20)
+    parser.add_argument("--fgcl-hidden-size", type=int, default=128)
+    parser.add_argument("--fgcl-num-layers", type=int, default=2)
+    parser.add_argument("--fgcl-num-factor", type=int, default=48)
+    parser.add_argument("--fgcl-gamma", type=float, default=1.0)
+    parser.add_argument("--fgcl-tau", type=float, default=0.25)
+    parser.add_argument("--fgcl-epochs", type=int, default=200)
+    parser.add_argument("--fgcl-lr", type=float, default=9e-5)
+    parser.add_argument("--fgcl-early-stop", type=int, default=20)
+    parser.add_argument("--fgcl-smooth-steps", type=int, default=5)
+    parser.add_argument("--fgcl-per-epoch-batch", type=int, default=100)
+    parser.add_argument("--fgcl-batch-size", type=int, default=-1, help="-1 -> one whole cross section per trading day")
+    parser.add_argument(
+        "--fgcl-label-transform",
+        type=str,
+        choices=["raw", "csrank", "cszscore", "csranknorm"],
+        default="csranknorm",
+        help="target transform used by FactorGCL training",
+    )
+    parser.add_argument("--fgcl-weight-decay", type=float, default=1e-4)
+    parser.add_argument("--fgcl-dropout", type=float, default=0.0)
+    parser.add_argument("--fgcl-device", type=str, choices=["auto", "cpu", "cuda"], default="auto")
 
     parser.add_argument("--timing-model-type", type=str, choices=["none", "volatility_regime"], default="none")
     parser.add_argument("--custom-timing-model-py", type=str, default=None)
@@ -375,6 +415,36 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("max_depth must be positive.")
     if int(args.min_samples_leaf) <= 0:
         raise ValueError("min_samples_leaf must be positive.")
+    if int(args.fgcl_seq_len) <= 1:
+        raise ValueError("fgcl_seq_len must be greater than 1.")
+    if int(args.fgcl_future_look) <= 0:
+        raise ValueError("fgcl_future_look must be positive.")
+    if int(args.fgcl_hidden_size) <= 0:
+        raise ValueError("fgcl_hidden_size must be positive.")
+    if int(args.fgcl_num_layers) <= 0:
+        raise ValueError("fgcl_num_layers must be positive.")
+    if int(args.fgcl_num_factor) <= 0:
+        raise ValueError("fgcl_num_factor must be positive.")
+    if float(args.fgcl_gamma) < 0.0:
+        raise ValueError("fgcl_gamma must be non-negative.")
+    if float(args.fgcl_tau) <= 0.0:
+        raise ValueError("fgcl_tau must be positive.")
+    if int(args.fgcl_epochs) <= 0:
+        raise ValueError("fgcl_epochs must be positive.")
+    if float(args.fgcl_lr) <= 0.0:
+        raise ValueError("fgcl_lr must be positive.")
+    if int(args.fgcl_early_stop) <= 0:
+        raise ValueError("fgcl_early_stop must be positive.")
+    if int(args.fgcl_smooth_steps) <= 0:
+        raise ValueError("fgcl_smooth_steps must be positive.")
+    if int(args.fgcl_per_epoch_batch) <= 0:
+        raise ValueError("fgcl_per_epoch_batch must be positive.")
+    if int(args.fgcl_batch_size) == 0 or int(args.fgcl_batch_size) < -1:
+        raise ValueError("fgcl_batch_size must be -1 or positive.")
+    if float(args.fgcl_weight_decay) < 0.0:
+        raise ValueError("fgcl_weight_decay must be non-negative.")
+    if not (0.0 <= float(args.fgcl_dropout) < 1.0):
+        raise ValueError("fgcl_dropout must be in [0, 1).")
     if not (0.0 < float(args.max_participation_rate) <= 1.0):
         raise ValueError("max_participation_rate must be in (0,1].")
     if not (0.0 <= float(args.base_fill_rate) <= 1.0):
@@ -431,6 +501,23 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         min_samples_leaf=int(args.min_samples_leaf),
         random_state=int(args.random_state),
         custom_model_py=_resolve_path(args.custom_stock_model_py) if args.custom_stock_model_py else None,
+        fgcl_seq_len=int(args.fgcl_seq_len),
+        fgcl_future_look=int(args.fgcl_future_look),
+        fgcl_hidden_size=int(args.fgcl_hidden_size),
+        fgcl_num_layers=int(args.fgcl_num_layers),
+        fgcl_num_factor=int(args.fgcl_num_factor),
+        fgcl_gamma=float(args.fgcl_gamma),
+        fgcl_tau=float(args.fgcl_tau),
+        fgcl_epochs=int(args.fgcl_epochs),
+        fgcl_lr=float(args.fgcl_lr),
+        fgcl_early_stop=int(args.fgcl_early_stop),
+        fgcl_smooth_steps=int(args.fgcl_smooth_steps),
+        fgcl_per_epoch_batch=int(args.fgcl_per_epoch_batch),
+        fgcl_batch_size=int(args.fgcl_batch_size),
+        fgcl_label_transform=str(args.fgcl_label_transform),
+        fgcl_weight_decay=float(args.fgcl_weight_decay),
+        fgcl_dropout=float(args.fgcl_dropout),
+        fgcl_device=str(args.fgcl_device),
     )
     timing = TimingModelConfig(
         model_type=args.timing_model_type,

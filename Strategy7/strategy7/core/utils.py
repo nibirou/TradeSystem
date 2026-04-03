@@ -53,7 +53,16 @@ def split_exchange_code(code_or_key: str) -> Tuple[str, str]:
     if "_" in s:
         ex, code = s.split("_", 1)
     elif "." in s:
-        code, ex = s.split(".", 1)
+        left, right = s.split(".", 1)
+        # common forms:
+        # 1) sh.600000 / sz.000001
+        # 2) 600000.sh / 000001.sz
+        if left in {"sh", "sz"}:
+            ex, code = left, right
+        elif right in {"sh", "sz"}:
+            ex, code = right, left
+        else:
+            code, ex = left, right
     else:
         code, ex = s, ""
 
@@ -97,4 +106,3 @@ def infer_industry_bucket(code_or_key: str) -> str:
     if not code:
         return "unknown"
     return f"{ex}_{code[:2]}"
-

@@ -76,7 +76,16 @@ def resample_daily_to_period(daily_df: pd.DataFrame, freq: str) -> pd.DataFrame:
         if c in d.columns:
             d[c] = pd.to_numeric(d[c], errors="coerce")
 
-    rule = "W-FRI" if freq == "W" else "ME"
+    # pandas>=2.2 prefers "ME", while some older versions only support "M".
+    if freq == "W":
+        rule = "W-FRI"
+    else:
+        try:
+            # If this succeeds we are on a version that supports month-end alias "ME".
+            pd.tseries.frequencies.to_offset("ME")
+            rule = "ME"
+        except Exception:
+            rule = "M"
     pieces = []
     for code, g in d.groupby("code"):
         gg = g.sort_values("date").set_index("date")
