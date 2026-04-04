@@ -287,144 +287,302 @@ DEFAULT_INDEX_ROOT = _autodetect_default_path(
 
 
 def parse_args() -> argparse.Namespace:
-    """Build CLI arguments for Strategy7.
+    """构建 Strategy7 命令行参数。
 
-    Design notes:
-    - Keep backward-compatible aliases where possible.
-    - Validate most value ranges in `build_run_config`.
-    - Parse booleans explicitly (instead of argparse truthiness pitfalls).
+    说明：
+    1. 本函数只负责“参数定义与帮助文案”，具体取值合法性在 `build_run_config` 校验。
+    2. 参数字段与 `DataConfig/FactorConfig/...` 数据类基本一一对应，便于追踪配置流。
+    3. 布尔参数使用 `_parse_bool`，避免 argparse 中 `bool("false")==True` 的常见陷阱。
     """
     parser = argparse.ArgumentParser(
         description=(
-            "Strategy7: modular quant research engine with pluggable data/factor/model/backtest components."
+            "Strategy7：模块化量化研究引擎（数据/因子/模型/回测可插拔）"
         )
     )
-    parser.add_argument("--data-root", type=str, default=DEFAULT_DATA_ROOT)
-    parser.add_argument("--hs300-list-path", type=str, default=DEFAULT_HS300_LIST_PATH)
-    parser.add_argument("--index-root", type=str, default=DEFAULT_INDEX_ROOT)
-    parser.add_argument("--file-format", type=str, choices=["auto", "csv", "parquet"], default="auto")
-    parser.add_argument("--max-files", type=int, default=None)
-    parser.add_argument("--main-board-only", action="store_true")
-    parser.add_argument("--extra-factor-paths", type=str, default="")
-    parser.add_argument("--extra-source-module", type=str, default=None, help="custom source module with register_sources(registry)")
-    parser.add_argument(
+    # =========================
+    # 数据与外部因子源参数
+    # =========================
+    g_data = parser.add_argument_group("数据与因子源配置")
+    g_data.add_argument(
+        "--data-root",
+        type=str,
+        default=DEFAULT_DATA_ROOT,
+        help="行情数据根目录（通常为 .../data_baostock/stock_hist/hs300）",
+    )
+    g_data.add_argument(
+        "--hs300-list-path",
+        type=str,
+        default=DEFAULT_HS300_LIST_PATH,
+        help="HS300 成分股文件路径，用于限制股票池",
+    )
+    g_data.add_argument(
+        "--index-root",
+        type=str,
+        default=DEFAULT_INDEX_ROOT,
+        help="指数行情目录（用于 HS300/ZZ500/ZZ1000 基准对比）",
+    )
+    g_data.add_argument(
+        "--file-format",
+        type=str,
+        choices=["auto", "csv", "parquet"],
+        default="auto",
+        help="行情文件格式：auto 自动识别；csv/parquet 强制指定",
+    )
+    g_data.add_argument(
+        "--max-files",
+        type=int,
+        default=None,
+        help="最多读取多少只股票文件（调试加速用，默认全量）",
+    )
+    g_data.add_argument(
+        "--main-board-only",
+        action="store_true",
+        help="仅使用主板股票（过滤创业板/科创板等）",
+    )
+    g_data.add_argument(
+        "--extra-factor-paths",
+        type=str,
+        default="",
+        help="额外因子表路径，多个用逗号分隔；会按 [date,code] 左连接到主面板",
+    )
+    g_data.add_argument(
+        "--extra-source-module",
+        type=str,
+        default=None,
+        help="自定义外部数据源插件路径，模块需实现 register_sources(registry)",
+    )
+    g_data.add_argument(
         "--factor-catalog-path",
         type=str,
         default="auto",
         help=(
-            "mined factor catalog path (json). "
-            "Use 'auto' to resolve under data_baostock/factor_mining/factor_catalog.json; "
-            "use 'none' to disable."
+            "因子挖掘 catalog(JSON) 路径。"
+            "auto=自动定位到 data_baostock/factor_mining/factor_catalog.json；"
+            "none/null=禁用 catalog。"
         ),
     )
-    parser.add_argument(
+    g_data.add_argument(
         "--disable-catalog-factors",
         action="store_true",
-        help="disable auto loading of catalog factors into factor library",
+        help="关闭 catalog 因子的自动加载与注册",
     )
 
-    parser.add_argument("--train-start", type=str, default="2024-01-01")
-    parser.add_argument("--train-end", type=str, default="2024-12-31")
-    parser.add_argument("--test-start", type=str, default="2025-01-01")
-    parser.add_argument("--test-end", type=str, default="2025-12-31")
+    # =========================
+    # 时间区间参数
+    # =========================
+    g_date = parser.add_argument_group("训练/测试区间配置")
+    g_date.add_argument("--train-start", type=str, default="2024-01-01", help="训练开始日期（含）")
+    g_date.add_argument("--train-end", type=str, default="2024-12-31", help="训练结束日期（含）")
+    g_date.add_argument("--test-start", type=str, default="2025-01-01", help="测试开始日期（含）")
+    g_date.add_argument("--test-end", type=str, default="2025-12-31", help="测试结束日期（含）")
 
-    parser.add_argument("--factor-freq", type=str, choices=SUPPORTED_FREQS, default="D")
-    parser.add_argument("--factor-list", type=str, default="")
-    parser.add_argument("--custom-factor-py", type=str, default=None)
-    parser.add_argument("--list-factors", action="store_true")
-    parser.add_argument("--lookback-days", type=int, default=160)
-    parser.add_argument("--min-ic-cross-section", type=int, default=30)
-    parser.add_argument(
+    # =========================
+    # 因子与标签参数
+    # =========================
+    g_factor = parser.add_argument_group("因子与标签配置")
+    g_factor.add_argument(
+        "--factor-freq",
+        type=str,
+        choices=SUPPORTED_FREQS,
+        default="D",
+        help="因子频率：5min/15min/30min/60min/120min/D/W/M",
+    )
+    g_factor.add_argument(
+        "--factor-list",
+        type=str,
+        default="",
+        help="显式指定因子名列表（逗号分隔）；为空时使用该频率默认因子集",
+    )
+    g_factor.add_argument(
+        "--custom-factor-py",
+        type=str,
+        default=None,
+        help="自定义因子插件路径，模块需实现 register_factors(library)",
+    )
+    g_factor.add_argument(
+        "--list-factors",
+        action="store_true",
+        help="仅列出当前频率可用因子并退出（默认不训练不回测）",
+    )
+    g_factor.add_argument(
+        "--lookback-days",
+        type=int,
+        default=160,
+        help="加载数据时向前额外回溯天数（用于滚动指标稳定计算）",
+    )
+    g_factor.add_argument(
+        "--min-ic-cross-section",
+        type=int,
+        default=30,
+        help="计算 IC/RankIC 时最小横截面样本数阈值",
+    )
+    g_factor.add_argument(
         "--label-task",
         type=str,
         choices=["direction", "return", "volatility", "multi_task"],
         default="direction",
-        help="prediction target type for training labels",
+        help=(
+            "训练标签类型：direction=涨跌分类；return=连续收益；"
+            "volatility=连续波动率；multi_task=多任务占位（当前以 direction 为主）"
+        ),
     )
 
-    parser.add_argument("--stock-model-type", type=str, default="decision_tree")
-    parser.add_argument("--custom-stock-model-py", type=str, default=None)
-    parser.add_argument("--max-depth", type=int, default=6)
-    parser.add_argument("--min-samples-leaf", type=int, default=200)
-    parser.add_argument("--random-state", type=int, default=42)
-    parser.add_argument("--fgcl-seq-len", type=int, default=30)
-    parser.add_argument("--fgcl-future-look", type=int, default=20)
-    parser.add_argument("--fgcl-hidden-size", type=int, default=128)
-    parser.add_argument("--fgcl-num-layers", type=int, default=2)
-    parser.add_argument("--fgcl-num-factor", type=int, default=48)
-    parser.add_argument("--fgcl-gamma", type=float, default=1.0)
-    parser.add_argument("--fgcl-tau", type=float, default=0.25)
-    parser.add_argument("--fgcl-epochs", type=int, default=200)
-    parser.add_argument("--fgcl-lr", type=float, default=9e-5)
-    parser.add_argument("--fgcl-early-stop", type=int, default=20)
-    parser.add_argument("--fgcl-smooth-steps", type=int, default=5)
-    parser.add_argument("--fgcl-per-epoch-batch", type=int, default=100)
-    parser.add_argument("--fgcl-batch-size", type=int, default=-1, help="-1 -> one whole cross section per trading day")
-    parser.add_argument(
+    # =========================
+    # 选股模型参数
+    # =========================
+    g_stock = parser.add_argument_group("选股模型配置")
+    g_stock.add_argument(
+        "--stock-model-type",
+        type=str,
+        default="decision_tree",
+        help="选股模型类型：decision_tree / factor_gcl / 自定义插件",
+    )
+    g_stock.add_argument(
+        "--custom-stock-model-py",
+        type=str,
+        default=None,
+        help="自定义选股模型插件路径，需实现 build_model(cfg)",
+    )
+    g_stock.add_argument("--max-depth", type=int, default=6, help="决策树最大深度（仅 decision_tree 生效）")
+    g_stock.add_argument("--min-samples-leaf", type=int, default=200, help="决策树叶节点最小样本数")
+    g_stock.add_argument("--random-state", type=int, default=42, help="随机种子（影响模型训练与采样）")
+    g_stock.add_argument("--fgcl-seq-len", type=int, default=30, help="FactorGCL 历史序列长度")
+    g_stock.add_argument("--fgcl-future-look", type=int, default=20, help="FactorGCL 未来对比分支长度")
+    g_stock.add_argument("--fgcl-hidden-size", type=int, default=128, help="FactorGCL 隐层维度")
+    g_stock.add_argument("--fgcl-num-layers", type=int, default=2, help="FactorGCL GRU 层数")
+    g_stock.add_argument("--fgcl-num-factor", type=int, default=48, help="FactorGCL 隐式超边因子数量")
+    g_stock.add_argument("--fgcl-gamma", type=float, default=1.0, help="FactorGCL 对比损失权重系数")
+    g_stock.add_argument("--fgcl-tau", type=float, default=0.25, help="FactorGCL InfoNCE 温度系数")
+    g_stock.add_argument("--fgcl-epochs", type=int, default=200, help="FactorGCL 最大训练轮数")
+    g_stock.add_argument("--fgcl-lr", type=float, default=9e-5, help="FactorGCL 学习率")
+    g_stock.add_argument("--fgcl-early-stop", type=int, default=20, help="FactorGCL 早停耐心轮数")
+    g_stock.add_argument("--fgcl-smooth-steps", type=int, default=5, help="FactorGCL 最优权重平滑窗口")
+    g_stock.add_argument("--fgcl-per-epoch-batch", type=int, default=100, help="每轮抽取多少交易日切片训练")
+    g_stock.add_argument(
+        "--fgcl-batch-size",
+        type=int,
+        default=-1,
+        help="-1=单日横截面全量；正整数=单日随机抽样股票数",
+    )
+    g_stock.add_argument(
         "--fgcl-label-transform",
         type=str,
         choices=["raw", "csrank", "cszscore", "csranknorm"],
         default="csranknorm",
-        help="target transform used by FactorGCL training",
+        help="FactorGCL 训练标签变换方式（截面排序/标准化）",
     )
-    parser.add_argument("--fgcl-weight-decay", type=float, default=1e-4)
-    parser.add_argument("--fgcl-dropout", type=float, default=0.0)
-    parser.add_argument("--fgcl-device", type=str, choices=["auto", "cpu", "cuda"], default="auto")
+    g_stock.add_argument("--fgcl-weight-decay", type=float, default=1e-4, help="FactorGCL L2 正则强度")
+    g_stock.add_argument("--fgcl-dropout", type=float, default=0.0, help="FactorGCL GRU dropout 概率")
+    g_stock.add_argument("--fgcl-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="FactorGCL 训练设备")
 
-    parser.add_argument("--timing-model-type", type=str, choices=["none", "volatility_regime"], default="none")
-    parser.add_argument("--custom-timing-model-py", type=str, default=None)
-    parser.add_argument("--timing-vol-threshold", type=float, default=0.0)
-    parser.add_argument("--timing-momentum-threshold", type=float, default=0.0)
+    # =========================
+    # 择时模型参数
+    # =========================
+    g_timing = parser.add_argument_group("择时模型配置")
+    g_timing.add_argument(
+        "--timing-model-type",
+        type=str,
+        choices=["none", "volatility_regime"],
+        default="none",
+        help="择时模型类型：none=不择时；volatility_regime=波动/拥挤/动量状态择时",
+    )
+    g_timing.add_argument(
+        "--custom-timing-model-py",
+        type=str,
+        default=None,
+        help="自定义择时模型插件路径，需实现 build_model(cfg)",
+    )
+    g_timing.add_argument("--timing-vol-threshold", type=float, default=0.0, help="波动阈值（0 表示训练期自动估计）")
+    g_timing.add_argument("--timing-momentum-threshold", type=float, default=0.0, help="动量阈值（0 表示训练期自动估计）")
 
-    parser.add_argument("--execution-model-type", type=str, choices=["ideal_fill", "realistic_fill"], default="ideal_fill")
-    parser.add_argument("--custom-execution-model-py", type=str, default=None)
-    parser.add_argument("--max-participation-rate", type=float, default=0.15)
-    parser.add_argument("--base-fill-rate", type=float, default=0.95)
-    parser.add_argument("--latency-bars", type=int, default=0)
+    # =========================
+    # 执行模型参数
+    # =========================
+    g_exec = parser.add_argument_group("执行模型配置")
+    g_exec.add_argument(
+        "--execution-model-type",
+        type=str,
+        choices=["ideal_fill", "realistic_fill"],
+        default="ideal_fill",
+        help="执行模型类型：ideal_fill=理想成交；realistic_fill=含流动性/延迟惩罚",
+    )
+    g_exec.add_argument(
+        "--custom-execution-model-py",
+        type=str,
+        default=None,
+        help="自定义执行模型插件路径，需实现 build_model(cfg)",
+    )
+    g_exec.add_argument("--max-participation-rate", type=float, default=0.15, help="单标的最大成交参与率上限")
+    g_exec.add_argument("--base-fill-rate", type=float, default=0.95, help="基础成交比例（realistic_fill）")
+    g_exec.add_argument("--latency-bars", type=int, default=0, help="执行延迟 bars 数（realistic_fill）")
 
-    parser.add_argument("--horizon", type=int, default=5)
-    parser.add_argument("--top-k", type=int, default=10)
-    parser.add_argument("--long-threshold", type=float, default=0.50)
-    parser.add_argument("--execution-scheme", type=str, choices=sorted(EXECUTION_SCHEMES.keys()), default="vwap30_vwap30")
-    parser.add_argument("--fee-bps", type=float, default=1.5)
-    parser.add_argument("--slippage-bps", type=float, default=1.5)
-    parser.add_argument("--rebalance-stride", type=int, default=0, help="0 -> use horizon")
+    # =========================
+    # 回测交易参数
+    # =========================
+    g_bt = parser.add_argument_group("回测交易配置")
+    g_bt.add_argument("--horizon", type=int, default=5, help="持有期长度（单位：当前频率 bars）")
+    g_bt.add_argument("--top-k", type=int, default=10, help="每次调仓最多持仓股票数")
+    g_bt.add_argument("--long-threshold", type=float, default=0.50, help="做多阈值：pred_score >= 该值才入选")
+    g_bt.add_argument(
+        "--execution-scheme",
+        type=str,
+        choices=sorted(EXECUTION_SCHEMES.keys()),
+        default="vwap30_vwap30",
+        help="买卖价格规则（如 open5_open5 / vwap30_vwap30 / open5_twap_last30）",
+    )
+    g_bt.add_argument("--fee-bps", type=float, default=1.5, help="单边交易费率（bps）")
+    g_bt.add_argument("--slippage-bps", type=float, default=1.5, help="单边滑点（bps）")
+    g_bt.add_argument("--rebalance-stride", type=int, default=0, help="调仓间隔（0 表示使用 horizon）")
 
-    parser.add_argument(
+    # =========================
+    # 组合优化参数
+    # =========================
+    g_port = parser.add_argument_group("组合模型配置")
+    g_port.add_argument(
         "--portfolio-model-type",
         type=str,
         choices=["equal_weight", "dynamic_opt"],
         default="equal_weight",
+        help="组合模型：equal_weight=等权；dynamic_opt=动态优化",
     )
-    parser.add_argument(
+    g_port.add_argument(
         "--portfolio-weighting",
         type=str,
         choices=["equal_weight", "dynamic_opt"],
         default=None,
-        help="backward-compatible alias of --portfolio-model-type",
+        help="兼容旧参数名（等价于 --portfolio-model-type）",
     )
-    parser.add_argument("--opt-max-weight", type=float, default=0.25)
-    parser.add_argument("--custom-portfolio-model-py", type=str, default=None)
-    parser.add_argument("--opt-max-turnover", type=float, default=1.20)
-    parser.add_argument("--opt-liquidity-scale", type=float, default=3.0)
-    parser.add_argument("--opt-expected-return-weight", type=float, default=1.0)
-    parser.add_argument("--opt-risk-aversion", type=float, default=1.2)
-    parser.add_argument("--opt-style-penalty", type=float, default=0.8)
-    parser.add_argument("--opt-industry-penalty", type=float, default=0.7)
-    parser.add_argument("--opt-crowding-penalty", type=float, default=0.5)
-    parser.add_argument("--opt-transaction-cost-penalty", type=float, default=0.6)
-    parser.add_argument("--opt-max-iter", type=int, default=220)
-    parser.add_argument("--opt-step-size", type=float, default=0.08)
-    parser.add_argument("--opt-tolerance", type=float, default=1e-6)
+    g_port.add_argument("--opt-max-weight", type=float, default=0.25, help="单标的权重上限")
+    g_port.add_argument("--custom-portfolio-model-py", type=str, default=None, help="自定义组合模型插件路径")
+    g_port.add_argument("--opt-max-turnover", type=float, default=1.20, help="单次调仓最大换手约束")
+    g_port.add_argument("--opt-liquidity-scale", type=float, default=3.0, help="流动性容量缩放系数")
+    g_port.add_argument("--opt-expected-return-weight", type=float, default=1.0, help="目标函数中收益项权重")
+    g_port.add_argument("--opt-risk-aversion", type=float, default=1.2, help="目标函数中风险厌恶系数")
+    g_port.add_argument("--opt-style-penalty", type=float, default=0.8, help="风格暴露偏离惩罚系数")
+    g_port.add_argument("--opt-industry-penalty", type=float, default=0.7, help="行业偏离惩罚系数")
+    g_port.add_argument("--opt-crowding-penalty", type=float, default=0.5, help="拥挤度暴露惩罚系数")
+    g_port.add_argument("--opt-transaction-cost-penalty", type=float, default=0.6, help="交易成本惩罚系数")
+    g_port.add_argument("--opt-max-iter", type=int, default=220, help="优化最大迭代次数")
+    g_port.add_argument("--opt-step-size", type=float, default=0.08, help="梯度步长")
+    g_port.add_argument("--opt-tolerance", type=float, default=1e-6, help="优化收敛阈值")
 
-    parser.add_argument("--output-dir", type=str, default="auto")
-    parser.add_argument(
+    # =========================
+    # 输出与落盘参数
+    # =========================
+    g_out = parser.add_argument_group("输出配置")
+    g_out.add_argument(
+        "--output-dir",
+        type=str,
+        default="auto",
+        help="输出目录；auto 会按时间戳与关键参数自动生成目录",
+    )
+    g_out.add_argument(
         "--save-models",
         type=_parse_bool,
         nargs="?",
         const=True,
         default=True,
-        help="whether to persist trained models (true/false)",
+        help="是否保存模型文件（true/false）",
     )
 
     return parser.parse_args()
