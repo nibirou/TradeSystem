@@ -287,6 +287,13 @@ DEFAULT_INDEX_ROOT = _autodetect_default_path(
 
 
 def parse_args() -> argparse.Namespace:
+    """Build CLI arguments for Strategy7.
+
+    Design notes:
+    - Keep backward-compatible aliases where possible.
+    - Validate most value ranges in `build_run_config`.
+    - Parse booleans explicitly (instead of argparse truthiness pitfalls).
+    """
     parser = argparse.ArgumentParser(
         description=(
             "Strategy7: modular quant research engine with pluggable data/factor/model/backtest components."
@@ -450,6 +457,7 @@ def resolve_output_dir(args: argparse.Namespace) -> Path:
 
 
 def build_run_config(args: argparse.Namespace) -> RunConfig:
+    """Validate CLI args and convert them into typed dataclass configs."""
     dates = DateConfig(
         train_start=parse_date(args.train_start),
         train_end=parse_date(args.train_end),

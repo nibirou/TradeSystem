@@ -47,7 +47,8 @@ def load_catalog(catalog_path: str | Path | None) -> Dict[str, object]:
     if not p.exists():
         return _normalize_catalog()
     try:
-        obj = json.loads(p.read_text(encoding="utf-8"))
+        # Support both UTF-8 and UTF-8-BOM files.
+        obj = json.loads(p.read_text(encoding="utf-8-sig"))
     except Exception:
         return _normalize_catalog()
     return _normalize_catalog(obj)

@@ -48,6 +48,8 @@ class MinuteFormulaSpec:
 
 def winsorize_mad_cs(s: pd.Series, group: pd.Series, limit: float = 3.0) -> pd.Series:
     def _clip(v: pd.Series) -> pd.Series:
+        if v.notna().sum() == 0:
+            return v
         med = float(v.median())
         mad = float((v - med).abs().median())
         if mad <= EPS:
@@ -61,6 +63,8 @@ def winsorize_mad_cs(s: pd.Series, group: pd.Series, limit: float = 3.0) -> pd.S
 
 def cs_zscore(s: pd.Series, group: pd.Series) -> pd.Series:
     def _z(v: pd.Series) -> pd.Series:
+        if v.notna().sum() == 0:
+            return pd.Series(np.nan, index=v.index, dtype=float)
         std = float(v.std(ddof=0))
         if std <= EPS:
             return pd.Series(np.zeros(len(v), dtype=float), index=v.index)
@@ -90,7 +94,10 @@ def neutralize_series(
             sx = pd.Series(np.nan, index=g.index)
 
         if valid.sum() < 8:
-            out.loc[idx] = yy - yy.mean()
+            if yy.notna().sum() > 0:
+                out.loc[idx] = yy - float(yy.mean())
+            else:
+                out.loc[idx] = yy
             continue
 
         X_parts: List[np.ndarray] = [np.ones((int(valid.sum()), 1), dtype=float)]
@@ -112,11 +119,13 @@ def neutralize_series(
             beta, *_ = np.linalg.lstsq(X, yv, rcond=None)
             resid = yv - X.dot(beta)
         except Exception:
-            resid = yv - np.nanmean(yv)
+            yv_mean = float(np.nanmean(yv)) if np.isfinite(yv).any() else 0.0
+            resid = yv - yv_mean
 
         tmp = pd.Series(np.nan, index=idx, dtype=float)
         tmp.loc[valid.index[valid]] = resid
-        tmp = tmp.fillna(tmp.mean())
+        tmp_mean = float(tmp.mean()) if tmp.notna().sum() > 0 else 0.0
+        tmp = tmp.fillna(tmp_mean)
         out.loc[idx] = tmp
 
     return out
@@ -225,21 +234,23 @@ def compute_fundamental_factor(panel: pd.DataFrame, spec: FundamentalFormulaSpec
     elif mode == "mean":
         raw = 0.5 * (y + x)
     elif mode == "corr20":
-        raw = (
-            pd.DataFrame({"code": code, "y": y, "x": x})
-            .groupby("code", group_keys=False)
-            .apply(lambda t: t["y"].rolling(20, min_periods=10).corr(t["x"]))
-            .reset_index(level=0, drop=True)
-        )
+        mean_y = y.groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        mean_x = x.groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        mean_yx = (y * x).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        mean_y2 = (y * y).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        mean_x2 = (x * x).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        cov_yx = mean_yx - mean_y * mean_x
+        var_y = mean_y2 - mean_y * mean_y
+        var_x = mean_x2 - mean_x * mean_x
+        raw = cov_yx / (np.sqrt(np.clip(var_y * var_x, a_min=0.0, a_max=None)) + EPS)
     elif mode == "beta20":
-        tmp = pd.DataFrame({"code": code, "y": y, "x": x})
-        cov = (
-            tmp.groupby("code", group_keys=False)
-            .apply(lambda t: t["y"].rolling(20, min_periods=10).cov(t["x"]))
-            .reset_index(level=0, drop=True)
-        )
-        var = tmp.groupby("code")["x"].transform(lambda s: s.rolling(20, min_periods=10).var())
-        raw = cov / (var + EPS)
+        mean_y = y.groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        mean_x = x.groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        mean_yx = (y * x).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        mean_x2 = (x * x).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        cov_yx = mean_yx - mean_y * mean_x
+        var_x = mean_x2 - mean_x * mean_x
+        raw = cov_yx / (var_x + EPS)
     else:
         raw = y - x
 

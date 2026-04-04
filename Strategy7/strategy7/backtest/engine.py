@@ -45,7 +45,14 @@ def run_backtest(
     execution_model: ExecutionModel,
     index_benchmarks: Dict[str, pd.DataFrame],
 ) -> Tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame, Dict[str, object]]:
-    """Run backtest using model scores already attached in pred_df as pred_score."""
+    """Run backtest using model scores already attached in pred_df as pred_score.
+
+    The engine is intentionally stage-separated:
+    1) stock picking by score threshold/top-k
+    2) timing model -> portfolio exposure
+    3) portfolio model -> target weights
+    4) execution model -> fill ratio and realized return
+    """
     data = pred_df.copy()
     if "pred_score" not in data.columns:
         raise ValueError("pred_df must contain pred_score.")
@@ -75,6 +82,7 @@ def run_backtest(
         all_codes = set(prev_w.keys()) | set(new_w.keys())
         return float(sum(abs(float(new_w.get(c, 0.0)) - float(prev_w.get(c, 0.0))) for c in all_codes))
 
+    # Rebalance loop: each step is one "decision timestamp".
     for idx in range(0, len(rebalance_points), int(backtest_cfg.rebalance_stride)):
         dt = rebalance_points[idx]
         day_raw = data[pd.to_datetime(data[signal_col]) == dt].copy()
@@ -103,6 +111,7 @@ def run_backtest(
             benchmark_zz500_ret = float("nan")
             benchmark_zz1000_ret = float("nan")
 
+        # Selection layer: threshold + top-k.
         day_pick = day_all[day_all["pred_score"] >= backtest_cfg.long_threshold].copy()
         day_pick = day_pick.sort_values("pred_score", ascending=False).head(backtest_cfg.top_k)
 
@@ -121,6 +130,7 @@ def run_backtest(
             portfolio_turnover = _turnover(prev_weights, new_weights)
             prev_weights = new_weights
         else:
+            # Weighting layer.
             target_w, portfolio_diag = portfolio_model.compute_weights(
                 day_pick=day_pick,
                 day_universe=day_all,
@@ -140,9 +150,10 @@ def run_backtest(
             else:
                 day_pick["weight_target"] = day_pick["weight_target"] / (sw + EPS)
 
-            # timing as top-down portfolio exposure control
+            # Timing is applied as top-down exposure scaling.
             day_pick["weight_target"] = day_pick["weight_target"] * float(timing_exposure)
 
+            # Execution layer (fills/cost adjustments).
             day_exec, execution_diag = execution_model.apply_execution(
                 day_pick=day_pick,
                 weight_col="weight_target",
@@ -216,6 +227,7 @@ def run_backtest(
                 row[k] = float(v) if isinstance(v, (int, float, np.floating)) and np.isfinite(v) else v
         trade_records.append(row)
 
+    # Build outputs: per-rebalance trades and per-position details.
     trades_df = pd.DataFrame(trade_records)
     positions_df = pd.DataFrame(position_records)
     if trades_df.empty:

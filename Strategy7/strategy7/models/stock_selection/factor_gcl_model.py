@@ -435,6 +435,7 @@ class FactorGCLStockModel(StockSelectionModel):
         target = self._build_target(df, target_col=target_col, anchor=time_anchor)
 
         self._fit_concepts(df)
+        # Build per-date training samples with complete past/future windows.
         grouped = self._build_train_samples(df=df, factor_cols=self._factor_cols, target=target)
         grouped = {k: v for k, v in grouped.items() if len(v) >= 8}
         if not grouped:
@@ -487,6 +488,7 @@ class FactorGCLStockModel(StockSelectionModel):
             else:
                 sampled_keys = epoch_keys
 
+            # Training is done by date-batches (cross-sectional slices).
             for key in sampled_keys:
                 samples = train_groups.get(key, [])
                 if len(samples) < 8:
@@ -508,6 +510,8 @@ class FactorGCLStockModel(StockSelectionModel):
                 mse = F.mse_loss(out["y_hat"], y_true)
                 loss_temporal = self._temporal_infonce(out["z_past"], out["z_future"], torch=torch)
                 loss_cross = self._cross_infonce(out["z_past"], torch=torch)
+                # Report-aligned objective:
+                # total = mse + gamma * (temporal_infoNCE + cross_section_infoNCE)
                 loss = mse + float(self.gamma) * (loss_temporal + loss_cross)
 
                 optimizer.zero_grad()
@@ -542,9 +546,12 @@ class FactorGCLStockModel(StockSelectionModel):
             best_epoch = len(train_losses)
             best_ic = self._evaluate_ic(net, groups=val_groups, torch=torch, device=device)
 
+        # Smooth checkpoint states to reduce epoch-level noise.
         final_state = self._average_state_dicts(list(best_states)) if len(best_states) > 1 else best_state
         net.load_state_dict(final_state)
         final_val_ic = self._evaluate_ic(net, groups=val_groups, torch=torch, device=device)
+        # If validation rankIC is negative, flip raw score direction so higher score
+        # still means stronger expected return in downstream ranking.
         sign_ref_ic = final_val_ic if np.isfinite(final_val_ic) else best_ic
         self._score_sign = -1.0 if np.isfinite(sign_ref_ic) and float(sign_ref_ic) < 0.0 else 1.0
 

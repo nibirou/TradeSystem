@@ -350,6 +350,7 @@ def run_factor_mining(
     """
     rng = _seed(cfg.random_state)
 
+    # 1) Normalize and validate base daily panel with future return labels.
     panel = daily_panel_with_label.copy()
     panel["date"] = pd.to_datetime(panel["date"], errors="coerce").dt.normalize()
     panel["code"] = panel["code"].astype(str).str.strip()
@@ -362,6 +363,17 @@ def run_factor_mining(
     if int(valid_mask.sum()) <= 0:
         raise RuntimeError("factor mining valid set is empty")
 
+    def _split_train_valid(frame: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
+        """Split by date range on the frame itself.
+
+        We intentionally avoid reusing outer boolean masks by index alignment because
+        some candidate-evaluation paths (e.g. merge/join) may rebuild indexes.
+        """
+        tm = _split_mask(frame, cfg.train_start, cfg.train_end, time_col="date")
+        vm = _split_mask(frame, cfg.valid_start, cfg.valid_end, time_col="date")
+        return frame.loc[tm], frame.loc[vm]
+
+    # 2) Resolve admission standard (supports CLI threshold overrides).
     framework = str(cfg.framework).strip().lower()
     standard = resolve_admission_standard(cfg.factor_freq, framework=framework)
     for attr in [
@@ -377,9 +389,11 @@ def run_factor_mining(
         if v is not None and np.isfinite(float(v)):
             setattr(standard, attr, float(v))
 
+    # Candidate cache avoids repeated recomputation for duplicated specs in evolution.
     cache: Dict[str, Dict[str, object]] = {}
 
     if framework == "custom":
+        # 3A) Custom framework: evaluate user-provided expressions directly.
         specs = custom_specs or []
         if not specs:
             raise RuntimeError("custom framework requires at least one custom factor spec")
@@ -390,8 +404,9 @@ def run_factor_mining(
             factor_col = spec.name
             tmp = panel[["date", "code", "future_ret_n"]].copy()
             tmp[factor_col] = pd.to_numeric(fac_df[factor_col], errors="coerce")
-            m_tr = _collect_metrics(tmp.loc[train_mask], factor_col=factor_col, cfg=cfg, framework=framework)
-            m_va = _collect_metrics(tmp.loc[valid_mask], factor_col=factor_col, cfg=cfg, framework=framework)
+            tmp_tr, tmp_va = _split_train_valid(tmp)
+            m_tr = _collect_metrics(tmp_tr, factor_col=factor_col, cfg=cfg, framework=framework)
+            m_va = _collect_metrics(tmp_va, factor_col=factor_col, cfg=cfg, framework=framework)
             passed, admission = check_admission(m_va, standard)
             key = _to_key(spec.to_dict())
             result = {
@@ -409,6 +424,7 @@ def run_factor_mining(
             results.append(result)
 
     elif framework == "fundamental_multiobj":
+        # 3B) Fundamental framework: NSGA-II over parametric daily formulas.
         fields = _discover_daily_feature_pool(panel)
         if len(fields) < 2:
             raise RuntimeError("insufficient daily feature columns for fundamental mining")
@@ -422,8 +438,9 @@ def run_factor_mining(
             tmp = panel[["date", "code", "future_ret_n"]].copy()
             tmp["_factor"] = pd.to_numeric(fac, errors="coerce")
 
-            m_tr = _collect_metrics(tmp.loc[train_mask], factor_col="_factor", cfg=cfg, framework=framework)
-            m_va = _collect_metrics(tmp.loc[valid_mask], factor_col="_factor", cfg=cfg, framework=framework)
+            tmp_tr, tmp_va = _split_train_valid(tmp)
+            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework)
+            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework)
             obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
 
             passed, admission = check_admission(m_va, standard)
@@ -478,6 +495,7 @@ def run_factor_mining(
         results = list(archive.values())
 
     elif framework == "minute_parametric":
+        # 3C) Minute framework: NSGA-III over parametric minute operators.
         if minute_df is None or minute_df.empty:
             raise RuntimeError("minute_parametric framework requires minute_df")
 
@@ -497,8 +515,9 @@ def run_factor_mining(
             fac_df = fac.rename("_factor").reset_index()
             tmp = daily_ctx[["date", "code", "future_ret_n"]].merge(fac_df, on=["date", "code"], how="left")
 
-            m_tr = _collect_metrics(tmp.loc[train_mask], factor_col="_factor", cfg=cfg, framework=framework)
-            m_va = _collect_metrics(tmp.loc[valid_mask], factor_col="_factor", cfg=cfg, framework=framework)
+            tmp_tr, tmp_va = _split_train_valid(tmp)
+            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework)
+            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework)
             obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
 
             passed, admission = check_admission(m_va, standard)
@@ -558,7 +577,8 @@ def run_factor_mining(
     else:
         raise ValueError(f"unsupported mining framework: {cfg.framework}")
 
-    # sort candidates: admitted first, then by validation ICIR score
+    # 4) Candidate ranking and diversification.
+    # Rule: admitted first, then higher validation ICIR, then low pairwise correlation.
     ranked = sorted(results, key=lambda r: (int(bool(r.get("passed", False))), float(r.get("score", -1e9))), reverse=True)
     minute_feat_cached = build_minute_feature_matrix(minute_df) if framework == "minute_parametric" and minute_df is not None else None
 
@@ -590,6 +610,7 @@ def run_factor_mining(
         corr_threshold=float(cfg.corr_threshold),
     )
 
+    # 5) Persist selected factors and update global catalog.
     run_root = _make_run_root(cfg)
 
     # build factor value table

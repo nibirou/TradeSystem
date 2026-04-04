@@ -32,7 +32,7 @@ from ..factors.base import FactorLibrary, compute_factor_panel, load_custom_fact
 from ..factors.defaults import DEFAULT_FACTOR_SET_BY_FREQ, register_default_factors
 from ..factors.labeling import add_labels, pick_target_column, split_train_test
 from ..models import build_execution_model, build_portfolio_model, build_stock_model, build_timing_model
-from ..mining.catalog import merge_catalog_factors, register_catalog_factors
+from ..mining.catalog import load_active_catalog_entries, merge_catalog_factors, register_catalog_factors
 from .artifacts import build_run_tag, save_common_artifacts
 
 
@@ -60,11 +60,32 @@ def _build_external_source_registry(cfg: RunConfig) -> DataSourceRegistry:
 
 
 def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
+    # Fast path: listing factors should not require loading market data.
+    # This makes `--list-factors` usable even when local data folders are unavailable.
+    if cfg.factors.list_factors:
+        factor_lib = FactorLibrary()
+        register_default_factors(factor_lib)
+        catalog_count = 0
+        if cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path:
+            entries = load_active_catalog_entries(cfg.data.factor_catalog_path, freq=cfg.factors.factor_freq)
+            if entries:
+                register_catalog_factors(factor_lib, entries)
+                catalog_count = int(len(entries))
+        if cfg.factors.custom_factor_py:
+            load_custom_factor_module(factor_lib, cfg.factors.custom_factor_py)
+        print(factor_lib.metadata(freq=cfg.factors.factor_freq).to_string(index=False))
+        return {
+            "status": "listed_factors_only",
+            "factor_freq": cfg.factors.factor_freq,
+            "catalog_factor_count": catalog_count,
+        }
+
     output_dir = ensure_dir(cfg.output_dir)
     model_dir: Path | None = None
     if cfg.save_models:
         model_dir = ensure_dir(output_dir / "models")
 
+    # 1) Load raw market data and build feature bundle for all supported frequencies.
     loader = HS300MarketDataLoader(
         data_cfg=cfg.data,
         date_cfg=cfg.dates,
@@ -81,7 +102,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     if base_df.empty:
         raise RuntimeError(f"base feature frame is empty for freq={factor_freq}")
 
-    # Merge admitted mined/custom factors from catalog (if enabled)
+    # 2) Merge admitted mined/custom factors from catalog (if enabled).
+    # These factors are materialized values produced by the mining subsystem.
     catalog_rows: Dict[str, int] = {}
     catalog_entries: List[Dict[str, object]] = []
     if cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path:
@@ -91,7 +113,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             factor_freq=factor_freq,
         )
 
-    # Merge external sources (fundamental / NLP / mined factors)
+    # 3) Merge optional external sources (fundamental/NLP/custom tables).
     source_registry = _build_external_source_registry(cfg)
     external_rows: Dict[str, int] = {}
     if source_registry.keys():
@@ -104,6 +126,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             code_universe=code_universe,
         )
 
+    # 4) Build factor registry (default + catalog + optional custom Python plugin).
     factor_lib = FactorLibrary()
     register_default_factors(factor_lib)
     if catalog_entries:
@@ -111,10 +134,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     if cfg.factors.custom_factor_py:
         load_custom_factor_module(factor_lib, cfg.factors.custom_factor_py)
 
-    if cfg.factors.list_factors:
-        print(factor_lib.metadata(freq=factor_freq).to_string(index=False))
-        return {"status": "listed_factors_only", "factor_freq": factor_freq}
-
+    # 5) Resolve selected factors and compute the factor panel.
     default_set = DEFAULT_FACTOR_SET_BY_FREQ.get(factor_freq, [])
     selected_factors = resolve_selected_factors(
         library=factor_lib,
@@ -125,13 +145,15 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
 
     panel = compute_factor_panel(base_df=base_df, library=factor_lib, freq=factor_freq, selected_factors=selected_factors)
 
-    # feature cross-sectional pipeline
+    # 6) Cross-sectional preprocessing (winsorize / zscore / optional neutralize).
     pp_opt = PreprocessOptions(winsorize_limit=0.01, do_zscore=True, neutralize=False, fill_method="median")
     group_col = "date" if factor_freq in {"D", "W", "M"} else "signal_date_proxy"
     if factor_freq in INTRADAY_FREQS:
         panel[group_col] = pd.to_datetime(panel["datetime"], errors="coerce").dt.normalize()
     panel = apply_cross_section_pipeline(panel, selected_factors, pp_opt, group_col=group_col)
 
+    # 7) Labeling and strict time-split.
+    # split_train_test enforces target-date boundaries to avoid look-ahead leakage.
     panel = add_labels(
         panel=panel,
         horizon=cfg.backtest.horizon,
@@ -154,6 +176,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     if test_df.empty:
         raise RuntimeError("test set is empty.")
 
+    # 8) Train-fitted feature fill values are reused on test set.
+    # This avoids using future-period statistics to fill missing values.
     fill_values = fit_feature_fill_values(train_df, selected_factors)
     train_df = fill_feature_na_with_reference(
         train_df,
@@ -170,12 +194,14 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
 
     target_col = pick_target_column(cfg.factors.label_task)
 
+    # 9) Train pluggable models.
     stock_model = build_stock_model(cfg.stock_model)
     stock_model.fit(train_df=train_df, factor_cols=selected_factors, target_col=target_col)
     timing_model = build_timing_model(cfg.timing_model).fit(train_df)
     portfolio_model = build_portfolio_model(cfg.portfolio_opt)
     execution_model = build_execution_model(cfg.execution_model)
 
+    # 10) Generate predictions and model-level metrics.
     test_df = test_df.copy()
     test_df["pred_score"] = stock_model.predict_score(test_df, selected_factors)
     test_df["pred_up"] = (test_df["pred_score"] >= cfg.backtest.long_threshold).astype(int)
@@ -200,6 +226,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         file_format=cfg.data.file_format,
     )
 
+    # 11) Run backtest engine (timing + portfolio + execution).
     trades_df, positions_df, curve_df, bt_summary = run_backtest(
         pred_df=test_df,
         backtest_cfg=cfg.backtest,
@@ -210,6 +237,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         index_benchmarks=index_benchmarks,
     )
 
+    # 12) Compute IC diagnostics for model score and raw factors.
     ic_group_col = "signal_ts" if "signal_ts" in test_df.columns else ("date" if "date" in test_df.columns else "signal_ts")
     factor_ic_summary_df, factor_ic_series_df = compute_factor_ic_statistics(
         pred_df=test_df,
@@ -234,6 +262,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         group_col=ic_group_col,
     )
 
+    # 13) Persist artifacts and summarize run.
     board_tag = "mainboard" if cfg.data.main_board_only else "allboards"
     run_tag = build_run_tag(
         train_start=cfg.dates.train_start.strftime("%Y%m%d"),

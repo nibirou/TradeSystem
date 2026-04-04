@@ -302,7 +302,13 @@ def _rolling_std(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Se
 
 
 def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataFrame) -> pd.DataFrame:
-    """Build robust daily base features for factor library and portfolio models."""
+    """Build robust daily base features for factor library and portfolio models.
+
+    The output acts as the shared feature substrate for:
+    - factor computation (default/custom/catalog factors)
+    - timing and portfolio dynamic features
+    - execution-related liquidity proxies
+    """
     df = daily_df.copy()
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
     for col in ["open", "high", "low", "close", "preclose", "volume", "amount", "turn"]:
@@ -315,6 +321,7 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
     if "turn" not in df.columns:
         df["turn"] = np.nan
 
+    # Merge minute-derived daily micro-structure features/prices.
     df = df.merge(minute_daily_feat, on=["code", "date"], how="left")
     g = df.groupby("code")
     df["ret_1d"] = g["close"].pct_change(1)
@@ -384,7 +391,7 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
     df["overnight_gap"] = df["open"] / (df["preclose"] + EPS) - 1.0
     df["px_daily_close"] = df["close"]
 
-    # portfolio/timing features
+    # Portfolio/timing state features (style + crowding proxies).
     df["barra_size_proxy"] = np.log(df["amount_ma20"].clip(lower=0.0) + 1.0)
     df["barra_momentum_proxy"] = df["ret_20d"]
     df["barra_volatility_proxy"] = df["realized_vol_20"]
