@@ -7,7 +7,7 @@ python .\Strategy7\run_factor_mining.py `
   --data-root D:/PythonProject/Quant/data_baostock/stock_hist/hs300 `
   --hs300-list-path D:/PythonProject/Quant/data_baostock/metadata/stock_list_hs300.csv `
   --index-root D:/PythonProject/Quant/data_baostock/ak_index `
-  --train-start 2021-01-01 `
+  --train-start 2023-01-01 `
   --train-end 2023-12-31 `
   --valid-start 2024-01-01 `
   --valid-end 2024-12-31 `
