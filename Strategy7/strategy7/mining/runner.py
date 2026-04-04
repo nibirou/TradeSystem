@@ -5,9 +5,9 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any, Callable, Dict, Iterable, List
+from typing import Any, Callable, Dict, Iterable, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -26,10 +26,29 @@ from .formulas import (
     FundamentalFormulaSpec,
     MinuteFormulaSpec,
     build_minute_feature_matrix,
+    cs_zscore,
     compute_fundamental_factor,
     compute_minute_factor_daily,
+    neutralize_series,
+    winsorize_mad_cs,
 )
 from .nsga import apply_dynamic_shortboard_penalty, nsga2_select, nsga3_select
+
+
+@dataclass
+class MLEnsembleFormulaSpec:
+    model_name: str
+    feature_cols: List[str]
+    n_estimators: int
+    max_depth: int
+    min_samples_leaf: int
+    learning_rate: float
+    max_leaf_nodes: int
+    subsample: float
+    random_state: int
+
+    def to_dict(self) -> Dict[str, object]:
+        return asdict(self)
 
 
 @dataclass
@@ -61,6 +80,16 @@ class FactorMiningConfig:
     min_long_sharpe: float | None = None
     min_long_win_rate: float | None = None
     min_coverage: float | None = None
+    # ml_ensemble_alpha 专用参数（仅该框架读取，不影响旧框架）
+    ml_population_size: int = 48
+    ml_generations: int = 10
+    ml_model_pool: str = "rf,et,hgbt"
+    ml_prefilter_topk: int = 80
+    ml_feature_min: int = 10
+    ml_feature_max: int = 36
+    ml_train_sample_frac: float = 0.40
+    ml_max_train_rows: int = 220000
+    ml_num_jobs: int = -1
 
 
 def _seed(seed: int) -> np.random.Generator:
@@ -200,29 +229,81 @@ def _fundamental_crossover(a: FundamentalFormulaSpec, b: FundamentalFormulaSpec,
     return out
 
 
-def _minute_random_spec(rng: np.random.Generator, fields: List[str]) -> MinuteFormulaSpec:
-    unary_ops = ["mean", "std", "skew", "kurt", "rank", "slope", "r2", "max", "min", "abs_mean"]
-    cross_ops = ["corr", "cov", "beta", "euc_dist", "ols_intercept", "spread_mean", "r2"]
-    windows = [20, 30, 45, 60, 90, 120]
-    slices = [None, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
-    masks = ["none", "high_0.7", "high_0.8", "low_0.2", "low_0.3"]
+_MINUTE_UNARY_OPS_V1 = ["mean", "std", "skew", "kurt", "rank", "slope", "r2", "max", "min", "abs_mean"]
+_MINUTE_CROSS_OPS_V1 = ["corr", "cov", "beta", "euc_dist", "ols_intercept", "spread_mean", "r2"]
+_MINUTE_WINDOWS_V1 = [20, 30, 45, 60, 90, 120]
+_MINUTE_SLICES_V1 = [None, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]
+_MINUTE_MASKS_V1 = ["none", "high_0.7", "high_0.8", "low_0.2", "low_0.3"]
+
+# minute_parametric_plus 使用增强算子池；旧框架参数空间保持不变。
+_MINUTE_UNARY_OPS_V2 = _MINUTE_UNARY_OPS_V1 + [
+    "median",
+    "mad",
+    "iqr",
+    "up_ratio",
+    "down_ratio",
+    "tail_ratio",
+    "energy",
+    "entropy",
+    "autocorr1",
+]
+_MINUTE_CROSS_OPS_V2 = _MINUTE_CROSS_OPS_V1 + [
+    "spearman_corr",
+    "kendall_corr",
+    "cosine_sim",
+    "zspread_mean",
+    "downside_beta",
+    "corr_diff1",
+]
+_MINUTE_WINDOWS_V2 = [15, 20, 30, 45, 60, 90, 120, 180, 240]
+_MINUTE_SLICES_V2 = [None, 0.05, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90, 0.95]
+_MINUTE_MASKS_V2 = _MINUTE_MASKS_V1 + ["high_0.9", "low_0.1"]
+
+
+def _minute_random_spec_with_space(
+    rng: np.random.Generator,
+    fields: List[str],
+    unary_ops: Sequence[str],
+    cross_ops: Sequence[str],
+    windows: Sequence[int],
+    slices: Sequence[float | None],
+    masks: Sequence[str],
+    shift_lag: tuple[int, int],
+) -> MinuteFormulaSpec:
+    lo, hi = int(shift_lag[0]), int(shift_lag[1])
+    if lo > hi:
+        lo, hi = hi, lo
 
     mode = int(rng.choice([1, 2]))
     return MinuteFormulaSpec(
         a_field=str(rng.choice(fields)),
         b_field=str(rng.choice(fields)),
-        window=int(rng.choice(windows)),
-        slice_pos=rng.choice(slices),
+        window=int(rng.choice(list(windows))),
+        slice_pos=rng.choice(list(slices)),
         mask_field=str(rng.choice(fields)),
-        mask_rule=str(rng.choice(masks)),
+        mask_rule=str(rng.choice(list(masks))),
         mode=mode,
-        op_name=str(rng.choice(unary_ops)),
-        cross_op_name=str(rng.choice(cross_ops)),
-        b_shift_lag=int(rng.integers(-5, 6)),
+        op_name=str(rng.choice(list(unary_ops))),
+        cross_op_name=str(rng.choice(list(cross_ops))),
+        b_shift_lag=int(rng.integers(lo, hi + 1)),
     )
 
 
-def _minute_mutate(spec: MinuteFormulaSpec, rng: np.random.Generator, fields: List[str]) -> MinuteFormulaSpec:
+def _minute_mutate_with_space(
+    spec: MinuteFormulaSpec,
+    rng: np.random.Generator,
+    fields: List[str],
+    unary_ops: Sequence[str],
+    cross_ops: Sequence[str],
+    windows: Sequence[int],
+    slices: Sequence[float | None],
+    masks: Sequence[str],
+    shift_lag: tuple[int, int],
+) -> MinuteFormulaSpec:
+    lo, hi = int(shift_lag[0]), int(shift_lag[1])
+    if lo > hi:
+        lo, hi = hi, lo
+
     s = copy.deepcopy(spec)
     attr = str(rng.choice([
         "a_field",
@@ -239,20 +320,74 @@ def _minute_mutate(spec: MinuteFormulaSpec, rng: np.random.Generator, fields: Li
     if attr in {"a_field", "b_field", "mask_field"}:
         setattr(s, attr, str(rng.choice(fields)))
     elif attr == "window":
-        setattr(s, attr, int(rng.choice([20, 30, 45, 60, 90, 120])))
+        setattr(s, attr, int(rng.choice(list(windows))))
     elif attr == "slice_pos":
-        setattr(s, attr, rng.choice([None, 0.10, 0.20, 0.30, 0.40, 0.50, 0.60, 0.70, 0.80, 0.90]))
+        setattr(s, attr, rng.choice(list(slices)))
     elif attr == "mask_rule":
-        setattr(s, attr, str(rng.choice(["none", "high_0.7", "high_0.8", "low_0.2", "low_0.3"])))
+        setattr(s, attr, str(rng.choice(list(masks))))
     elif attr == "mode":
         setattr(s, attr, int(rng.choice([1, 2])))
     elif attr == "op_name":
-        setattr(s, attr, str(rng.choice(["mean", "std", "skew", "kurt", "rank", "slope", "r2", "max", "min", "abs_mean"])))
+        setattr(s, attr, str(rng.choice(list(unary_ops))))
     elif attr == "cross_op_name":
-        setattr(s, attr, str(rng.choice(["corr", "cov", "beta", "euc_dist", "ols_intercept", "spread_mean", "r2"])))
+        setattr(s, attr, str(rng.choice(list(cross_ops))))
     elif attr == "b_shift_lag":
-        setattr(s, attr, int(rng.integers(-5, 6)))
+        setattr(s, attr, int(rng.integers(lo, hi + 1)))
     return s
+
+
+def _minute_random_spec(rng: np.random.Generator, fields: List[str]) -> MinuteFormulaSpec:
+    return _minute_random_spec_with_space(
+        rng=rng,
+        fields=fields,
+        unary_ops=_MINUTE_UNARY_OPS_V1,
+        cross_ops=_MINUTE_CROSS_OPS_V1,
+        windows=_MINUTE_WINDOWS_V1,
+        slices=_MINUTE_SLICES_V1,
+        masks=_MINUTE_MASKS_V1,
+        shift_lag=(-5, 5),
+    )
+
+
+def _minute_mutate(spec: MinuteFormulaSpec, rng: np.random.Generator, fields: List[str]) -> MinuteFormulaSpec:
+    return _minute_mutate_with_space(
+        spec=spec,
+        rng=rng,
+        fields=fields,
+        unary_ops=_MINUTE_UNARY_OPS_V1,
+        cross_ops=_MINUTE_CROSS_OPS_V1,
+        windows=_MINUTE_WINDOWS_V1,
+        slices=_MINUTE_SLICES_V1,
+        masks=_MINUTE_MASKS_V1,
+        shift_lag=(-5, 5),
+    )
+
+
+def _minute_plus_random_spec(rng: np.random.Generator, fields: List[str]) -> MinuteFormulaSpec:
+    return _minute_random_spec_with_space(
+        rng=rng,
+        fields=fields,
+        unary_ops=_MINUTE_UNARY_OPS_V2,
+        cross_ops=_MINUTE_CROSS_OPS_V2,
+        windows=_MINUTE_WINDOWS_V2,
+        slices=_MINUTE_SLICES_V2,
+        masks=_MINUTE_MASKS_V2,
+        shift_lag=(-10, 10),
+    )
+
+
+def _minute_plus_mutate(spec: MinuteFormulaSpec, rng: np.random.Generator, fields: List[str]) -> MinuteFormulaSpec:
+    return _minute_mutate_with_space(
+        spec=spec,
+        rng=rng,
+        fields=fields,
+        unary_ops=_MINUTE_UNARY_OPS_V2,
+        cross_ops=_MINUTE_CROSS_OPS_V2,
+        windows=_MINUTE_WINDOWS_V2,
+        slices=_MINUTE_SLICES_V2,
+        masks=_MINUTE_MASKS_V2,
+        shift_lag=(-10, 10),
+    )
 
 
 def _minute_crossover(a: MinuteFormulaSpec, b: MinuteFormulaSpec, rng: np.random.Generator) -> MinuteFormulaSpec:
@@ -261,6 +396,239 @@ def _minute_crossover(a: MinuteFormulaSpec, b: MinuteFormulaSpec, rng: np.random
         if bool(rng.integers(0, 2)):
             setattr(out, k, getattr(b, k))
     return out
+
+
+def _valid_nonconstant_features(frame: pd.DataFrame, cols: Sequence[str]) -> List[str]:
+    out: List[str] = []
+    for c in cols:
+        if c not in frame.columns:
+            continue
+        s = pd.to_numeric(frame[c], errors="coerce")
+        if int(s.notna().sum()) < 100:
+            continue
+        std = float(s.std(ddof=0))
+        if np.isfinite(std) and std > 1e-12:
+            out.append(str(c))
+    return sorted(set(out))
+
+
+def _prefilter_features_by_ic(
+    train_frame: pd.DataFrame,
+    candidate_cols: Sequence[str],
+    target_col: str,
+    topk: int,
+) -> List[str]:
+    scores: List[tuple[str, float]] = []
+    y = pd.to_numeric(train_frame[target_col], errors="coerce")
+    for c in candidate_cols:
+        x = pd.to_numeric(train_frame[c], errors="coerce")
+        valid = x.notna() & y.notna()
+        if int(valid.sum()) < 200:
+            continue
+        if int(x[valid].nunique()) < 5:
+            continue
+        ic = x[valid].corr(y[valid], method="spearman")
+        if pd.notna(ic):
+            scores.append((str(c), abs(float(ic))))
+    scores = sorted(scores, key=lambda x: x[1], reverse=True)
+    if int(topk) <= 0:
+        return [k for k, _ in scores]
+    return [k for k, _ in scores[: int(topk)]]
+
+
+def _bounded_int(v: int, lo: int, hi: int) -> int:
+    if lo > hi:
+        lo, hi = hi, lo
+    return int(np.clip(int(v), lo, hi))
+
+
+def _random_feature_subset(
+    rng: np.random.Generator,
+    feature_pool: Sequence[str],
+    n_min: int,
+    n_max: int,
+) -> List[str]:
+    pool = list(dict.fromkeys([str(x) for x in feature_pool if str(x)]))
+    if not pool:
+        return []
+    n_min = max(1, int(n_min))
+    n_max = max(n_min, int(n_max))
+    n_pick = _bounded_int(int(rng.integers(n_min, n_max + 1)), 1, len(pool))
+    return sorted([str(x) for x in rng.choice(pool, size=n_pick, replace=False).tolist()])
+
+
+def _parse_model_pool(raw: str) -> List[str]:
+    allowed = {"rf", "et", "hgbt"}
+    parts = [str(x).strip().lower() for x in str(raw).split(",")]
+    out = [x for x in parts if x in allowed]
+    return out if out else ["rf", "et", "hgbt"]
+
+
+def _ml_random_spec(rng: np.random.Generator, feature_pool: Sequence[str], cfg: FactorMiningConfig) -> MLEnsembleFormulaSpec:
+    model_pool = _parse_model_pool(cfg.ml_model_pool)
+    return MLEnsembleFormulaSpec(
+        model_name=str(rng.choice(model_pool)),
+        feature_cols=_random_feature_subset(rng, feature_pool, cfg.ml_feature_min, cfg.ml_feature_max),
+        n_estimators=int(rng.choice([120, 160, 200, 260, 320])),
+        max_depth=int(rng.choice([3, 4, 5, 6, 8, 10, 12])),
+        min_samples_leaf=int(rng.choice([8, 16, 24, 36, 48, 64])),
+        learning_rate=float(rng.choice([0.03, 0.05, 0.08, 0.10])),
+        max_leaf_nodes=int(rng.choice([15, 31, 63, 127, 255])),
+        subsample=float(rng.choice([0.55, 0.65, 0.75, 0.85, 1.0])),
+        random_state=int(rng.integers(1, 10_000_000)),
+    )
+
+
+def _ml_mutate(spec: MLEnsembleFormulaSpec, rng: np.random.Generator, feature_pool: Sequence[str], cfg: FactorMiningConfig) -> MLEnsembleFormulaSpec:
+    s = copy.deepcopy(spec)
+    attrs = [
+        "model_name",
+        "feature_cols",
+        "n_estimators",
+        "max_depth",
+        "min_samples_leaf",
+        "learning_rate",
+        "max_leaf_nodes",
+        "subsample",
+    ]
+    attr = str(rng.choice(attrs))
+    if attr == "model_name":
+        s.model_name = str(rng.choice(_parse_model_pool(cfg.ml_model_pool)))
+    elif attr == "feature_cols":
+        current = set(s.feature_cols)
+        action = str(rng.choice(["add", "drop", "swap", "resample"]))
+        if action == "resample" or len(current) < 2:
+            s.feature_cols = _random_feature_subset(rng, feature_pool, cfg.ml_feature_min, cfg.ml_feature_max)
+        else:
+            if action in {"add", "swap"} and len(current) < len(feature_pool):
+                remain = [f for f in feature_pool if f not in current]
+                if remain:
+                    current.add(str(rng.choice(remain)))
+            if action in {"drop", "swap"} and len(current) > max(2, int(cfg.ml_feature_min)):
+                current.remove(str(rng.choice(sorted(list(current)))))
+            s.feature_cols = sorted(current)
+    elif attr == "n_estimators":
+        s.n_estimators = int(rng.choice([120, 160, 200, 260, 320]))
+    elif attr == "max_depth":
+        s.max_depth = int(rng.choice([3, 4, 5, 6, 8, 10, 12]))
+    elif attr == "min_samples_leaf":
+        s.min_samples_leaf = int(rng.choice([8, 16, 24, 36, 48, 64]))
+    elif attr == "learning_rate":
+        s.learning_rate = float(rng.choice([0.03, 0.05, 0.08, 0.10]))
+    elif attr == "max_leaf_nodes":
+        s.max_leaf_nodes = int(rng.choice([15, 31, 63, 127, 255]))
+    elif attr == "subsample":
+        s.subsample = float(rng.choice([0.55, 0.65, 0.75, 0.85, 1.0]))
+    s.feature_cols = sorted(set([x for x in s.feature_cols if x in set(feature_pool)]))
+    return s
+
+
+def _ml_crossover(a: MLEnsembleFormulaSpec, b: MLEnsembleFormulaSpec, rng: np.random.Generator, cfg: FactorMiningConfig) -> MLEnsembleFormulaSpec:
+    out = copy.deepcopy(a)
+    for k in ["model_name", "n_estimators", "max_depth", "min_samples_leaf", "learning_rate", "max_leaf_nodes", "subsample"]:
+        if bool(rng.integers(0, 2)):
+            setattr(out, k, getattr(b, k))
+    union_feats = sorted(set(a.feature_cols) | set(b.feature_cols))
+    out.feature_cols = _random_feature_subset(
+        rng=rng,
+        feature_pool=union_feats if union_feats else a.feature_cols,
+        n_min=max(2, int(cfg.ml_feature_min)),
+        n_max=max(2, int(cfg.ml_feature_max)),
+    )
+    return out
+
+
+def _fit_ml_factor_series(
+    panel: pd.DataFrame,
+    train_mask: pd.Series,
+    spec: MLEnsembleFormulaSpec,
+    cfg: FactorMiningConfig,
+) -> pd.Series:
+    from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
+
+    cols = [c for c in spec.feature_cols if c in panel.columns]
+    if len(cols) < 2:
+        return pd.Series(np.nan, index=panel.index, dtype=float)
+
+    train_df = panel.loc[train_mask, cols + ["future_ret_n"]].copy()
+    for c in cols:
+        train_df[c] = pd.to_numeric(train_df[c], errors="coerce")
+    train_df["future_ret_n"] = pd.to_numeric(train_df["future_ret_n"], errors="coerce")
+    train_df = train_df.replace([np.inf, -np.inf], np.nan)
+
+    med = train_df[cols].median(numeric_only=True)
+    valid_cols = [c for c in cols if c in med.index and np.isfinite(float(med[c]))]
+    if len(valid_cols) < 2:
+        return pd.Series(np.nan, index=panel.index, dtype=float)
+
+    train_x = train_df[valid_cols].fillna(med[valid_cols])
+    train_y = train_df["future_ret_n"]
+    valid_rows = train_y.notna()
+    train_x = train_x.loc[valid_rows]
+    train_y = train_y.loc[valid_rows]
+    if len(train_x) < 1200:
+        return pd.Series(np.nan, index=panel.index, dtype=float)
+
+    sample_frac = float(np.clip(spec.subsample * float(cfg.ml_train_sample_frac), 0.10, 1.0))
+    cap = int(max(2000, cfg.ml_max_train_rows))
+    n_target = int(min(cap, max(1000, round(len(train_x) * sample_frac))))
+    if len(train_x) > n_target:
+        sample_idx = train_x.sample(n=n_target, random_state=int(spec.random_state)).index
+        train_x = train_x.loc[sample_idx]
+        train_y = train_y.loc[sample_idx]
+
+    model_name = str(spec.model_name).strip().lower()
+    if model_name == "rf":
+        model = RandomForestRegressor(
+            n_estimators=int(spec.n_estimators),
+            max_depth=int(spec.max_depth),
+            min_samples_leaf=int(spec.min_samples_leaf),
+            random_state=int(spec.random_state),
+            n_jobs=int(cfg.ml_num_jobs),
+        )
+    elif model_name == "et":
+        model = ExtraTreesRegressor(
+            n_estimators=int(spec.n_estimators),
+            max_depth=int(spec.max_depth),
+            min_samples_leaf=int(spec.min_samples_leaf),
+            random_state=int(spec.random_state),
+            n_jobs=int(cfg.ml_num_jobs),
+        )
+    else:
+        model = HistGradientBoostingRegressor(
+            max_depth=int(spec.max_depth),
+            max_leaf_nodes=int(spec.max_leaf_nodes),
+            min_samples_leaf=int(spec.min_samples_leaf),
+            learning_rate=float(spec.learning_rate),
+            max_iter=max(80, int(spec.n_estimators)),
+            random_state=int(spec.random_state),
+        )
+
+    try:
+        model.fit(train_x.to_numpy(dtype=float), train_y.to_numpy(dtype=float))
+    except Exception:
+        return pd.Series(np.nan, index=panel.index, dtype=float)
+
+    all_x = panel[valid_cols].copy()
+    for c in valid_cols:
+        all_x[c] = pd.to_numeric(all_x[c], errors="coerce")
+    all_x = all_x.replace([np.inf, -np.inf], np.nan).fillna(med[valid_cols])
+    try:
+        pred = model.predict(all_x.to_numpy(dtype=float))
+    except Exception:
+        return pd.Series(np.nan, index=panel.index, dtype=float)
+
+    fac = pd.Series(pred, index=panel.index, dtype=float)
+    fac = winsorize_mad_cs(fac, group=panel["date"], limit=3.0)
+    fac = neutralize_series(
+        fac,
+        panel,
+        group_col="date",
+        size_col="barra_size_proxy",
+        industry_col="industry_bucket" if "industry_bucket" in panel.columns else None,
+    )
+    fac = cs_zscore(fac, group=panel["date"])
+    return pd.to_numeric(fac, errors="coerce")
 
 
 def _collect_metrics(
@@ -494,15 +862,22 @@ def run_factor_mining(
 
         results = list(archive.values())
 
-    elif framework == "minute_parametric":
-        # 3C) Minute framework: NSGA-III over parametric minute operators.
+    elif framework in {"minute_parametric", "minute_parametric_plus"}:
+        # 3C/3D) Minute framework family: NSGA-III over parametric minute operators.
         if minute_df is None or minute_df.empty:
-            raise RuntimeError("minute_parametric framework requires minute_df")
+            raise RuntimeError(f"{framework} framework requires minute_df")
 
         minute_feat = build_minute_feature_matrix(minute_df)
         fields = _discover_minute_feature_pool(minute_feat)
         if len(fields) < 2:
-            raise RuntimeError("insufficient minute feature columns for minute mining")
+            raise RuntimeError(f"insufficient minute feature columns for {framework}")
+
+        is_plus = framework == "minute_parametric_plus"
+        pop_size = int(cfg.population_size)
+        generations = int(cfg.generations)
+        mutate_fn = _minute_plus_mutate if is_plus else _minute_mutate
+        random_fn = _minute_plus_random_spec if is_plus else _minute_random_spec
+        tag = "minute_plus" if is_plus else "minute"
 
         daily_ctx = panel[[c for c in ["date", "code", "future_ret_n", "barra_size_proxy", "industry_bucket"] if c in panel.columns]].copy()
 
@@ -518,7 +893,16 @@ def run_factor_mining(
             tmp_tr, tmp_va = _split_train_valid(tmp)
             m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework)
             m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework)
-            obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
+
+            base_obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
+            if is_plus:
+                # 稳定性目标：训练/验证 absIC 差异越小越好
+                tr_ic = float(m_tr.get("abs_ic_mean", float("nan")))
+                va_ic = float(m_va.get("abs_ic_mean", float("nan")))
+                stability = -abs(tr_ic - va_ic) if np.isfinite(tr_ic) and np.isfinite(va_ic) else -1.0
+                obj = np.concatenate([base_obj, np.asarray([stability], dtype=float)], axis=0)
+            else:
+                obj = base_obj
 
             passed, admission = check_admission(m_va, standard)
             score = _ic_score(m_va)
@@ -535,10 +919,10 @@ def run_factor_mining(
             cache[key] = result
             return result
 
-        pop: List[MinuteFormulaSpec] = [_minute_random_spec(rng, fields) for _ in range(cfg.population_size)]
+        pop: List[MinuteFormulaSpec] = [random_fn(rng, fields) for _ in range(pop_size)]
         archive: Dict[str, Dict[str, object]] = {}
 
-        for gen in range(cfg.generations):
+        for gen in range(generations):
             res = [_evaluate(s) for s in pop]
             for r in res:
                 k = str(r["key"])
@@ -547,30 +931,120 @@ def run_factor_mining(
 
             raw_obj = np.asarray([r["objectives"] for r in res], dtype=float)
             penalized_obj, penalty = apply_dynamic_shortboard_penalty(raw_obj, floor_quantile=0.30, penalty_strength=0.20)
-            parent_idx = nsga3_select(penalized_obj, n_select=max(8, cfg.population_size // 2), ref_divisions=8)
+            parent_idx = nsga3_select(penalized_obj, n_select=max(8, pop_size // 2), ref_divisions=8)
             parent_pool = [pop[i] for i in parent_idx]
-            elites = sorted(res, key=lambda r: float(r["score"]), reverse=True)[: max(1, cfg.elite_size)]
+            elites = sorted(res, key=lambda r: float(r["score"]), reverse=True)[: max(1, int(cfg.elite_size))]
 
             best = elites[0]
             mean_penalty = float(np.mean(penalty)) if len(penalty) > 0 else float("nan")
             print(
-                f"[minute][gen={gen:02d}] best_score={best['score']:.4f} "
+                f"[{tag}][gen={gen:02d}] best_score={best['score']:.4f} "
                 f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
                 f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f} "
                 f"penalty={mean_penalty:.4f}"
             )
 
             new_pop: List[MinuteFormulaSpec] = [copy.deepcopy(e["spec"]) for e in elites]
-            while len(new_pop) < cfg.population_size:
+            while len(new_pop) < pop_size:
                 p1 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
                 child = p1
                 if rng.random() < cfg.crossover_rate and len(parent_pool) > 1:
                     p2 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
                     child = _minute_crossover(p1, p2, rng)
                 if rng.random() < cfg.mutation_rate:
-                    child = _minute_mutate(child, rng, fields)
+                    child = mutate_fn(child, rng, fields)
                 new_pop.append(child)
-            pop = new_pop[: cfg.population_size]
+            pop = new_pop[: pop_size]
+
+        results = list(archive.values())
+
+    elif framework == "ml_ensemble_alpha":
+        # 3E) ML ensemble framework: model + feature-subset co-search.
+        fields_all = _discover_daily_feature_pool(panel)
+        train_frame = panel.loc[train_mask].copy()
+        fields_valid = _valid_nonconstant_features(train_frame, fields_all)
+        if len(fields_valid) < 5:
+            raise RuntimeError("insufficient daily features for ml_ensemble_alpha")
+
+        fields_pref = _prefilter_features_by_ic(
+            train_frame=train_frame,
+            candidate_cols=fields_valid,
+            target_col="future_ret_n",
+            topk=int(cfg.ml_prefilter_topk),
+        )
+        feature_pool = fields_pref if len(fields_pref) >= 5 else fields_valid
+        if len(feature_pool) < 5:
+            raise RuntimeError("ml_ensemble_alpha prefiltered feature pool too small")
+
+        pop_size = max(8, int(cfg.ml_population_size))
+        generations = max(1, int(cfg.ml_generations))
+        archive: Dict[str, Dict[str, object]] = {}
+
+        def _evaluate(spec: MLEnsembleFormulaSpec) -> Dict[str, object]:
+            key = _to_key(spec.to_dict())
+            if key in cache:
+                return cache[key]
+
+            fac = _fit_ml_factor_series(panel=panel, train_mask=train_mask, spec=spec, cfg=cfg)
+            tmp = panel[["date", "code", "future_ret_n"]].copy()
+            tmp["_factor"] = pd.to_numeric(fac, errors="coerce")
+
+            tmp_tr, tmp_va = _split_train_valid(tmp)
+            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework)
+            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework)
+            obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
+
+            passed, admission = check_admission(m_va, standard)
+            score = _ic_score(m_va)
+            result = {
+                "key": key,
+                "spec": spec,
+                "series": pd.DataFrame({"date": panel["date"], "code": panel["code"], "v": fac})
+                .set_index(["date", "code"])["v"]
+                .sort_index(),
+                "metrics_train": m_tr,
+                "metrics_valid": m_va,
+                "objectives": obj.tolist(),
+                "score": score,
+                "passed": bool(passed),
+                "admission": admission,
+            }
+            cache[key] = result
+            return result
+
+        pop: List[MLEnsembleFormulaSpec] = [_ml_random_spec(rng, feature_pool=feature_pool, cfg=cfg) for _ in range(pop_size)]
+        for gen in range(generations):
+            res = [_evaluate(s) for s in pop]
+            for r in res:
+                k = str(r["key"])
+                if k not in archive or float(r["score"]) > float(archive[k]["score"]):
+                    archive[k] = r
+
+            objs = [r["objectives"] for r in res]
+            parent_idx = nsga2_select(objs, n_select=max(8, pop_size // 2))
+            parent_pool = [pop[i] for i in parent_idx]
+            elites = sorted(res, key=lambda r: float(r["score"]), reverse=True)[: max(1, int(cfg.elite_size))]
+
+            best = elites[0]
+            print(
+                f"[ml_ensemble][gen={gen:02d}] best_score={best['score']:.4f} "
+                f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
+                f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f} "
+                f"featN={len(best['spec'].feature_cols)} "
+                f"model={best['spec'].model_name}"
+            )
+
+            new_pop: List[MLEnsembleFormulaSpec] = [copy.deepcopy(e["spec"]) for e in elites]
+            while len(new_pop) < pop_size:
+                p1 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
+                child = p1
+                if rng.random() < cfg.crossover_rate and len(parent_pool) > 1:
+                    p2 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
+                    child = _ml_crossover(p1, p2, rng, cfg=cfg)
+                if rng.random() < cfg.mutation_rate:
+                    child = _ml_mutate(child, rng, feature_pool=feature_pool, cfg=cfg)
+                new_pop.append(child)
+            pop = new_pop[: pop_size]
 
         results = list(archive.values())
 
@@ -580,7 +1054,12 @@ def run_factor_mining(
     # 4) Candidate ranking and diversification.
     # Rule: admitted first, then higher validation ICIR, then low pairwise correlation.
     ranked = sorted(results, key=lambda r: (int(bool(r.get("passed", False))), float(r.get("score", -1e9))), reverse=True)
-    minute_feat_cached = build_minute_feature_matrix(minute_df) if framework == "minute_parametric" and minute_df is not None else None
+    minute_frameworks = {"minute_parametric", "minute_parametric_plus"}
+    minute_feat_cached = (
+        build_minute_feature_matrix(minute_df)
+        if framework in minute_frameworks and minute_df is not None
+        else None
+    )
 
     def _series_getter(cand: Dict[str, object]) -> pd.Series:
         spec = cand["spec"]
@@ -591,11 +1070,16 @@ def run_factor_mining(
             s = compute_fundamental_factor(panel, spec)
             fac = pd.DataFrame({"date": panel["date"], "code": panel["code"], "v": s * sign})
             return fac.set_index(["date", "code"])["v"].sort_index()
-        if framework == "minute_parametric":
+        if framework in minute_frameworks:
             minute_feat = minute_feat_cached if minute_feat_cached is not None else pd.DataFrame()
             daily_ctx = panel[[c for c in ["date", "code", "future_ret_n", "barra_size_proxy", "industry_bucket"] if c in panel.columns]].copy()
             s2 = compute_minute_factor_daily(minute_feature_df=minute_feat, daily_context_df=daily_ctx, spec=spec)
             return (s2 * sign).sort_index()
+        if framework == "ml_ensemble_alpha":
+            s3 = cand.get("series")
+            if isinstance(s3, pd.Series):
+                return (pd.to_numeric(s3, errors="coerce") * sign).sort_index()
+            return pd.Series(dtype=float)
 
         # custom
         fac_df = evaluate_custom_specs(panel=panel, specs=[spec], time_col="date", code_col="code")
@@ -626,6 +1110,12 @@ def run_factor_mining(
             fac_name = str(spec.name)
         elif framework == "fundamental_multiobj":
             fac_name = _hash_name("fund_mo", spec.to_dict())
+        elif framework == "minute_parametric":
+            fac_name = _hash_name("min_mo", spec.to_dict())
+        elif framework == "minute_parametric_plus":
+            fac_name = _hash_name("minx_mo", spec.to_dict())
+        elif framework == "ml_ensemble_alpha":
+            fac_name = _hash_name("mla_mo", spec.to_dict())
         else:
             fac_name = _hash_name("min_mo", spec.to_dict())
 
@@ -674,8 +1164,8 @@ def run_factor_mining(
         "factor_freq": cfg.factor_freq,
         "train_period": [str(pd.Timestamp(cfg.train_start).date()), str(pd.Timestamp(cfg.train_end).date())],
         "valid_period": [str(pd.Timestamp(cfg.valid_start).date()), str(pd.Timestamp(cfg.valid_end).date())],
-        "population_size": int(cfg.population_size),
-        "generations": int(cfg.generations),
+        "population_size": int(cfg.ml_population_size) if framework == "ml_ensemble_alpha" else int(cfg.population_size),
+        "generations": int(cfg.ml_generations) if framework == "ml_ensemble_alpha" else int(cfg.generations),
         "candidate_count": int(len(results)),
         "selected_count": int(len(selected)),
         "catalog_path": str(catalog_path),

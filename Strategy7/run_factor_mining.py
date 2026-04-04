@@ -33,17 +33,19 @@ def _infer_data_baostock_root(data_root: str) -> Path:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Strategy7 因子挖掘入口（基本面多目标 / 分钟参数化 / 自定义表达式）"
+        description="Strategy7 因子挖掘入口（基本面/分钟参数化/ML集成/自定义表达式）"
     )
     parser.add_argument(
         "--framework",
         type=str,
-        choices=["fundamental_multiobj", "minute_parametric", "custom"],
+        choices=["fundamental_multiobj", "minute_parametric", "minute_parametric_plus", "ml_ensemble_alpha", "custom"],
         default="fundamental_multiobj",
         help=(
             "挖掘框架类型："
             "fundamental_multiobj=基本面参数化+NSGA-II；"
             "minute_parametric=分钟参数化+NSGA-III；"
+            "minute_parametric_plus=分钟增强参数化+NSGA-III；"
+            "ml_ensemble_alpha=集成学习因子挖掘；"
             "custom=用户自定义表达式。"
         ),
     )
@@ -132,6 +134,25 @@ def _parse_args() -> argparse.Namespace:
     g_evo.add_argument("--random-state", type=int, default=42, help="随机种子（保证可复现）")
 
     # =========================
+    # ML 集成框架参数
+    # =========================
+    g_ml = parser.add_argument_group("ML 集成框架配置（framework=ml_ensemble_alpha 时）")
+    g_ml.add_argument("--ml-population-size", type=int, default=48, help="ML 框架每代种群规模（建议小于基础框架）")
+    g_ml.add_argument("--ml-generations", type=int, default=10, help="ML 框架进化代数")
+    g_ml.add_argument(
+        "--ml-model-pool",
+        type=str,
+        default="rf,et,hgbt",
+        help="模型池（逗号分隔）：rf=随机森林，et=极端随机树，hgbt=直方图梯度提升树",
+    )
+    g_ml.add_argument("--ml-prefilter-topk", type=int, default=80, help="按训练期 IC 预筛后的特征数量上限")
+    g_ml.add_argument("--ml-feature-min", type=int, default=10, help="单个候选模型最小特征数")
+    g_ml.add_argument("--ml-feature-max", type=int, default=36, help="单个候选模型最大特征数")
+    g_ml.add_argument("--ml-train-sample-frac", type=float, default=0.40, help="训练样本抽样比例（控制训练耗时）")
+    g_ml.add_argument("--ml-max-train-rows", type=int, default=220000, help="训练样本最大行数上限")
+    g_ml.add_argument("--ml-num-jobs", type=int, default=-1, help="并行线程数（RF/ET 生效，-1 表示尽量使用全部核）")
+
+    # =========================
     # 自定义表达式参数
     # =========================
     g_custom = parser.add_argument_group("自定义因子配置（framework=custom 时）")
@@ -199,6 +220,16 @@ def main() -> None:
 
     if not (train_start <= train_end < valid_start <= valid_end):
         raise ValueError("date constraint: train_start <= train_end < valid_start <= valid_end")
+    if int(args.ml_population_size) <= 0 or int(args.ml_generations) <= 0:
+        raise ValueError("ml_population_size and ml_generations must be positive")
+    if int(args.ml_feature_min) <= 0 or int(args.ml_feature_max) <= 0:
+        raise ValueError("ml_feature_min and ml_feature_max must be positive")
+    if int(args.ml_feature_min) > int(args.ml_feature_max):
+        raise ValueError("ml_feature_min must be <= ml_feature_max")
+    if not (0.0 < float(args.ml_train_sample_frac) <= 1.0):
+        raise ValueError("ml_train_sample_frac must be in (0,1]")
+    if int(args.ml_max_train_rows) < 2000:
+        raise ValueError("ml_max_train_rows must be >= 2000")
 
     data_root = str(Path(args.data_root).expanduser())
     data_cfg = DataConfig(
@@ -283,6 +314,15 @@ def main() -> None:
         min_long_sharpe=args.min_long_sharpe,
         min_long_win_rate=args.min_long_win_rate,
         min_coverage=args.min_coverage,
+        ml_population_size=int(args.ml_population_size),
+        ml_generations=int(args.ml_generations),
+        ml_model_pool=str(args.ml_model_pool),
+        ml_prefilter_topk=int(args.ml_prefilter_topk),
+        ml_feature_min=int(args.ml_feature_min),
+        ml_feature_max=int(args.ml_feature_max),
+        ml_train_sample_frac=float(args.ml_train_sample_frac),
+        ml_max_train_rows=int(args.ml_max_train_rows),
+        ml_num_jobs=int(args.ml_num_jobs),
     )
 
     summary = run_factor_mining(

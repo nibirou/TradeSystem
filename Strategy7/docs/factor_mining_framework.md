@@ -4,8 +4,10 @@
 
 1. 基本面参数化多目标挖掘（对应 2025-08-11 华泰报告）
 2. 分钟级特征参数化多目标挖掘（对应 2026-03-31 华泰报告）
-3. 用户自定义因子表达式挖掘、评估、入库
-4. 因子 catalog 入库与主回测框架自动适配
+3. 分钟级增强参数化挖掘（`minute_parametric_plus`）
+4. 集成学习因子挖掘（`ml_ensemble_alpha`，基于 `scikit-learn`）
+5. 用户自定义因子表达式挖掘、评估、入库
+6. 因子 catalog 入库与主回测框架自动适配
 
 ## 1. 模块结构
 
@@ -27,6 +29,7 @@
   - 因子表 merge + 因子库自动注册
 - `strategy7/mining/runner.py`
   - 挖掘全流程（进化、评估、筛选、入库）
+  - `MLEnsembleFormulaSpec`（模型结构 + 特征子集参数化）
 - `run_factor_mining.py`
   - 挖掘 CLI 入口
 
@@ -61,6 +64,32 @@
   - `NSGA-III` 参考点机制
   - `动态短板惩罚`（弱维度惩罚）
 
+### 2.3 分钟增强参数化框架（`minute_parametric_plus`）
+
+- 在 `minute_parametric` 基础上扩展：
+  - 窗口池（新增更短/更长窗口）
+  - 算子池（新增 `median/mad/iqr/entropy/autocorr1/spearman_corr/cosine_sim/downside_beta` 等）
+  - 稳定性目标（训练/验证 `abs_ic_mean` 差异惩罚）
+- 适用场景：
+  - 想提升分钟级挖掘的表达能力
+  - 同时控制过拟合（通过稳定性目标约束）
+
+### 2.4 ML 集成框架（`ml_ensemble_alpha`）
+
+- 候选体包含两部分：
+  - 模型参数：`rf/et/hgbt` 超参数
+  - 特征子集：从预筛后的日频特征池中抽样
+- 训练流程：
+  - 训练期 IC 预筛特征
+  - 进化搜索候选（模型 + 特征子集）
+  - 对预测分数做去极值/中性化/标准化后评估
+- 目标函数（5 维）：
+  - `abs_ic_mean`
+  - `ic_win_rate`
+  - `ndcg_k`
+  - `long_excess_annualized`
+  - `long_sharpe`
+
 ## 3. 入库标准（频率分层）
 
 `strategy7/mining/evaluation.py` 中内置频率+框架标准：
@@ -79,6 +108,20 @@
   - `long_excess_annualized >= 0.02`
   - `long_sharpe >= 0.80`
   - `coverage >= 0.85`
+- 分钟增强（`*_minute_nsga3_plus_v1`）
+  - `abs_ic_mean >= 0.018`
+  - `ic_win_rate >= 0.54`
+  - `ic_ir >= 0.18`
+  - `long_excess_annualized >= 0.03`
+  - `long_sharpe >= 0.90`
+  - `coverage >= 0.88`
+- ML 集成（`*_ml_ensemble_v1`）
+  - `abs_ic_mean >= 0.018`
+  - `ic_win_rate >= 0.54`
+  - `ic_ir >= 0.16`
+  - `long_excess_annualized >= 0.02`
+  - `long_sharpe >= 0.70`
+  - `coverage >= 0.90`
 
 仅通过准入标准的因子才会以 `status=active` 入 catalog。
 
@@ -156,6 +199,28 @@ python Strategy7/run_factor_mining.py \
   --custom-spec-json ./Strategy7/docs/custom_factor_specs.json \
   --train-start 2021-01-01 --train-end 2023-12-31 \
   --valid-start 2024-01-01 --valid-end 2024-12-31
+```
+
+### 6.4 分钟增强参数化挖掘
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --framework minute_parametric_plus \
+  --train-start 2021-01-01 --train-end 2023-12-31 \
+  --valid-start 2024-01-01 --valid-end 2024-12-31 \
+  --population-size 96 --generations 16 --top-n 20
+```
+
+### 6.5 ML 集成因子挖掘
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --framework ml_ensemble_alpha \
+  --train-start 2021-01-01 --train-end 2023-12-31 \
+  --valid-start 2024-01-01 --valid-end 2024-12-31 \
+  --ml-population-size 48 --ml-generations 10 \
+  --ml-model-pool rf,et,hgbt \
+  --ml-prefilter-topk 80 --ml-feature-min 10 --ml-feature-max 36
 ```
 
 ## 7. 说明

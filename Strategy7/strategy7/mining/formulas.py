@@ -323,6 +323,38 @@ def _unary_op(v: np.ndarray, op_name: str) -> float:
         return float(np.min(x))
     if op == "abs_mean":
         return float(np.mean(np.abs(x)))
+    if op == "median":
+        return float(np.median(x))
+    if op == "mad":
+        med = float(np.median(x))
+        return float(np.median(np.abs(x - med)))
+    if op == "iqr":
+        q75, q25 = np.quantile(x, [0.75, 0.25])
+        return float(q75 - q25)
+    if op == "up_ratio":
+        return float(np.mean(x > 0.0))
+    if op == "down_ratio":
+        return float(np.mean(x < 0.0))
+    if op == "tail_ratio":
+        q90, q50, q10 = np.quantile(x, [0.90, 0.50, 0.10])
+        upper = q90 - q50
+        lower = q50 - q10
+        return float(upper / (lower + EPS))
+    if op == "energy":
+        return float(np.mean(x * x))
+    if op == "entropy":
+        if x.size < 5:
+            return float("nan")
+        hist, _ = np.histogram(x, bins=min(16, max(4, x.size // 8)), density=False)
+        p = hist.astype(float) / max(float(np.sum(hist)), 1.0)
+        p = p[p > 0]
+        if p.size == 0:
+            return float("nan")
+        return float(-np.sum(p * np.log(p + EPS)))
+    if op == "autocorr1":
+        if x.size < 4:
+            return float("nan")
+        return float(pd.Series(x[1:]).corr(pd.Series(x[:-1]), method="pearson"))
     if op == "rank":
         return float(pd.Series(x).rank(pct=True).iloc[-1])
     if op == "slope":
@@ -358,18 +390,41 @@ def _binary_op(a: np.ndarray, b: np.ndarray, op_name: str) -> float:
     op = str(op_name).lower()
     if op == "corr":
         return float(pd.Series(x).corr(pd.Series(y), method="pearson"))
+    if op == "spearman_corr":
+        return float(pd.Series(x).corr(pd.Series(y), method="spearman"))
+    if op == "kendall_corr":
+        return float(pd.Series(x).corr(pd.Series(y), method="kendall"))
     if op == "cov":
         return float(np.cov(x, y, ddof=1)[0, 1])
     if op == "beta":
         return float(np.cov(x, y, ddof=1)[0, 1] / (np.var(y, ddof=1) + EPS))
+    if op == "downside_beta":
+        mask = y < 0.0
+        if int(np.sum(mask)) < 3:
+            return float("nan")
+        xx = x[mask]
+        yy = y[mask]
+        return float(np.cov(xx, yy, ddof=1)[0, 1] / (np.var(yy, ddof=1) + EPS))
     if op == "euc_dist":
         return float(np.linalg.norm(x - y) / np.sqrt(len(x)))
+    if op == "cosine_sim":
+        return float(np.dot(x, y) / (np.linalg.norm(x) * np.linalg.norm(y) + EPS))
     if op == "spread_mean":
         return float(np.mean(x - y))
+    if op == "zspread_mean":
+        zx = (x - float(np.mean(x))) / (float(np.std(x, ddof=0)) + EPS)
+        zy = (y - float(np.mean(y))) / (float(np.std(y, ddof=0)) + EPS)
+        return float(np.mean(zx - zy))
     if op == "ols_intercept":
         b1, b0 = np.polyfit(y, x, deg=1)
         _ = b1
         return float(b0)
+    if op == "corr_diff1":
+        if x.size < 4:
+            return float("nan")
+        dx = np.diff(x)
+        dy = np.diff(y)
+        return float(pd.Series(dx).corr(pd.Series(dy), method="pearson"))
     if op == "r2":
         b1, b0 = np.polyfit(y, x, deg=1)
         y_hat = b1 * y + b0
