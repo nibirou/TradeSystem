@@ -368,12 +368,18 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
 
     df["amihud_1d"] = np.abs(df["ret_1d"]) / (df["amount"] + EPS)
     df["amihud_20"] = df.groupby("code")["amihud_1d"].transform(lambda s: s.rolling(20, min_periods=20).mean())
-    ret_vol_corr = (
-        df.groupby("code", group_keys=False)
-        .apply(lambda x: x["ret_1d"].rolling(20, min_periods=20).corr(x["vol_chg_1d"]))
-        .reset_index(level=0, drop=True)
-    )
-    df["ret_vol_corr_20"] = ret_vol_corr
+    # Rolling correlation via rolling moments.
+    # This avoids pandas rolling-corr pairwise/index edge cases and always returns 1D aligned output.
+    by_code = df["code"]
+    mean_r = df["ret_1d"].groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
+    mean_v = df["vol_chg_1d"].groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
+    mean_rv = (df["ret_1d"] * df["vol_chg_1d"]).groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
+    mean_r2 = (df["ret_1d"] * df["ret_1d"]).groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
+    mean_v2 = (df["vol_chg_1d"] * df["vol_chg_1d"]).groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
+    cov_rv = mean_rv - mean_r * mean_v
+    std_r = np.sqrt(np.clip(mean_r2 - mean_r * mean_r, a_min=0.0, a_max=None))
+    std_v = np.sqrt(np.clip(mean_v2 - mean_v * mean_v, a_min=0.0, a_max=None))
+    df["ret_vol_corr_20"] = cov_rv / (std_r * std_v + EPS)
     df["close_to_vwap_day"] = df["close"] / (df["vwap_day"] + EPS) - 1.0
     df["overnight_gap"] = df["open"] / (df["preclose"] + EPS) - 1.0
     df["px_daily_close"] = df["close"]

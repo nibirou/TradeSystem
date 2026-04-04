@@ -72,3 +72,25 @@ python Strategy7/run_strategy7.py \
 - `strategy7/plugins/custom_timing_model_template.py`
 - `strategy7/plugins/custom_portfolio_model_template.py`
 - `strategy7/plugins/custom_execution_model_template.py`
+
+## Factor Mining (New)
+
+`Strategy7` now includes a report-aligned factor mining subsystem:
+
+- `run_factor_mining.py` (CLI entry)
+- `strategy7/mining/` (formulas, NSGA-II/III, evaluation, catalog, custom expression)
+- `docs/factor_mining_framework.md`
+
+Quick start:
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --framework fundamental_multiobj \
+  --train-start 2021-01-01 --train-end 2023-12-31 \
+  --valid-start 2024-01-01 --valid-end 2024-12-31
+```
+
+After mining, admitted factors are written to `factor_mining/factor_catalog.json` and can be auto-loaded by `run_strategy7.py` via:
+
+- `--factor-catalog-path auto` (default)
+- `--disable-catalog-factors` (opt-out)

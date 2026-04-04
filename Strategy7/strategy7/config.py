@@ -25,6 +25,8 @@ class DataConfig:
     main_board_only: bool
     extra_factor_paths: List[str]
     extra_source_module: str | None
+    factor_catalog_path: str | None
+    auto_load_catalog_factors: bool
 
 
 @dataclass
@@ -189,6 +191,41 @@ def _resolve_path(value: str) -> str:
     return str(Path(value).expanduser())
 
 
+def _parse_bool(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    v = str(value).strip().lower()
+    if v in {"1", "true", "t", "yes", "y", "on"}:
+        return True
+    if v in {"0", "false", "f", "no", "n", "off"}:
+        return False
+    raise argparse.ArgumentTypeError(f"invalid boolean value: {value}")
+
+
+def _infer_data_baostock_root(data_root: str) -> Path:
+    p = Path(data_root).expanduser()
+    for cand in [p, *p.parents]:
+        if cand.name.lower() == "data_baostock":
+            return cand
+    # common shape: .../data_baostock/stock_hist/hs300
+    if p.name.lower() in {"hs300", "all", "zz500", "zz1000", "sz50"} and p.parent.name.lower() == "stock_hist":
+        return p.parent.parent
+    if p.name.lower() == "stock_hist":
+        return p.parent
+    return p
+
+
+def _resolve_factor_catalog_path(raw_value: str | None, data_root: str) -> str | None:
+    v = str(raw_value).strip() if raw_value is not None else "auto"
+    if v.lower() in {"", "none", "null"}:
+        return None
+    if v.lower() != "auto":
+        return _resolve_path(v)
+
+    base = _infer_data_baostock_root(data_root)
+    return str((base / "factor_mining" / "factor_catalog.json").resolve())
+
+
 def _short_alnum_token(text: str, max_len: int) -> str:
     raw = "".join(ch for ch in str(text).strip().lower() if ch.isalnum())
     if not raw:
@@ -263,6 +300,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--main-board-only", action="store_true")
     parser.add_argument("--extra-factor-paths", type=str, default="")
     parser.add_argument("--extra-source-module", type=str, default=None, help="custom source module with register_sources(registry)")
+    parser.add_argument(
+        "--factor-catalog-path",
+        type=str,
+        default="auto",
+        help=(
+            "mined factor catalog path (json). "
+            "Use 'auto' to resolve under data_baostock/factor_mining/factor_catalog.json; "
+            "use 'none' to disable."
+        ),
+    )
+    parser.add_argument(
+        "--disable-catalog-factors",
+        action="store_true",
+        help="disable auto loading of catalog factors into factor library",
+    )
 
     parser.add_argument("--train-start", type=str, default="2024-01-01")
     parser.add_argument("--train-end", type=str, default="2024-12-31")
@@ -359,7 +411,14 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--opt-tolerance", type=float, default=1e-6)
 
     parser.add_argument("--output-dir", type=str, default="auto")
-    parser.add_argument("--save-models", default=True)
+    parser.add_argument(
+        "--save-models",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="whether to persist trained models (true/false)",
+    )
 
     return parser.parse_args()
 
@@ -475,9 +534,11 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
 
     portfolio_mode = args.portfolio_weighting or args.portfolio_model_type
     extra_paths = [_resolve_path(x.strip()) for x in str(args.extra_factor_paths).split(",") if x.strip()]
+    data_root_resolved = _resolve_path(args.data_root)
+    factor_catalog_path = _resolve_factor_catalog_path(args.factor_catalog_path, data_root=data_root_resolved)
 
     data = DataConfig(
-        data_root=_resolve_path(args.data_root),
+        data_root=data_root_resolved,
         hs300_list_path=_resolve_path(args.hs300_list_path),
         index_root=_resolve_path(args.index_root),
         file_format=args.file_format,
@@ -485,6 +546,8 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         main_board_only=bool(args.main_board_only),
         extra_factor_paths=extra_paths,
         extra_source_module=_resolve_path(args.extra_source_module) if args.extra_source_module else None,
+        factor_catalog_path=factor_catalog_path,
+        auto_load_catalog_factors=not bool(args.disable_catalog_factors),
     )
     factors = FactorConfig(
         factor_freq=args.factor_freq,

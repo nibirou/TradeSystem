@@ -1,0 +1,42 @@
+﻿factor,freq,category,description
+amihud_20,D,liquidity,negative amihud20
+amount_ratio_20,D,liquidity,amount/amount_ma20
+atr_norm_14,D,volatility,atr14 norm negative
+body_ratio,D,price_action,body ratio
+breakout_20,D,trend,close/rolling high20 - 1
+close_pos,D,price_action,close position in range
+close_to_vwap_day,D,intraday_micro,close-vwap
+downside_vol_ratio_20,D,volatility,downside ratio negative
+fund_mo_170e470bf9,D,mined_factor,fundamental_multiobj admitted factor #4; profile=D_fundamental_nsga2_v1
+fund_mo_2ea9e16091,D,mined_factor,fundamental_multiobj admitted factor #1; profile=D_fundamental_nsga2_v1
+fund_mo_788f86a2af,D,mined_factor,fundamental_multiobj admitted factor #6; profile=D_fundamental_nsga2_v1
+fund_mo_80d7c020a0,D,mined_factor,fundamental_multiobj admitted factor #2; profile=D_fundamental_nsga2_v1
+fund_mo_94a07180d1,D,mined_factor,fundamental_multiobj admitted factor #3; profile=D_fundamental_nsga2_v1
+fund_mo_a420218040,D,mined_factor,fundamental_multiobj admitted factor #5; profile=D_fundamental_nsga2_v1
+intraday_range,D,volatility,intraday range negative
+jump_ratio_5m,D,intraday_micro,jump ratio negative
+last30_momentum,D,intraday_micro,last30 momentum
+ma_cross_5_20,D,trend,ma5/ma20 - 1
+ma_gap_10,D,trend,close/ma10 - 1
+ma_gap_20,D,trend,close/ma20 - 1
+ma_gap_5,D,trend,close/ma5 - 1
+minute_realized_vol_5m,D,intraday_micro,5m rv negative
+minute_ret_kurt_5m,D,intraday_micro,5m kurt negative
+minute_ret_skew_5m,D,intraday_micro,5m skew
+minute_up_ratio_5m,D,intraday_micro,5m up ratio
+mom_10,D,trend,10-day momentum
+mom_20,D,trend,20-day momentum
+mom_5,D,trend,5-day momentum
+morning_momentum_30m,D,intraday_micro,morning momentum
+open_to_close_intraday,D,intraday_micro,open-close momentum
+overnight_gap,D,overnight,overnight gap
+realized_vol_20,D,volatility,realized vol negative
+ret_vol_corr_20,D,flow,ret-volume corr20
+rev_1,D,reversal,1-day reversal
+rev_3,D,reversal,3-day reversal
+rsi14,D,oscillator,rsi14
+signed_vol_imbalance_5m,D,intraday_micro,signed volume imbalance
+turn_ratio_5,D,liquidity,turn/turn_ma5
+vol_ratio_20,D,liquidity,volume/vol_ma20
+vol_ratio_5,D,liquidity,volume/vol_ma5
+vwap30_vs_day,D,intraday_micro,vwap30-vwap day

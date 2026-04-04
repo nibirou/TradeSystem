@@ -32,6 +32,7 @@ from ..factors.base import FactorLibrary, compute_factor_panel, load_custom_fact
 from ..factors.defaults import DEFAULT_FACTOR_SET_BY_FREQ, register_default_factors
 from ..factors.labeling import add_labels, pick_target_column, split_train_test
 from ..models import build_execution_model, build_portfolio_model, build_stock_model, build_timing_model
+from ..mining.catalog import merge_catalog_factors, register_catalog_factors
 from .artifacts import build_run_tag, save_common_artifacts
 
 
@@ -80,6 +81,16 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     if base_df.empty:
         raise RuntimeError(f"base feature frame is empty for freq={factor_freq}")
 
+    # Merge admitted mined/custom factors from catalog (if enabled)
+    catalog_rows: Dict[str, int] = {}
+    catalog_entries: List[Dict[str, object]] = []
+    if cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path:
+        base_df, catalog_rows, catalog_entries = merge_catalog_factors(
+            base_panel=base_df,
+            catalog_path=cfg.data.factor_catalog_path,
+            factor_freq=factor_freq,
+        )
+
     # Merge external sources (fundamental / NLP / mined factors)
     source_registry = _build_external_source_registry(cfg)
     external_rows: Dict[str, int] = {}
@@ -95,6 +106,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
 
     factor_lib = FactorLibrary()
     register_default_factors(factor_lib)
+    if catalog_entries:
+        register_catalog_factors(factor_lib, catalog_entries)
     if cfg.factors.custom_factor_py:
         load_custom_factor_module(factor_lib, cfg.factors.custom_factor_py)
 
@@ -296,6 +309,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "trade_points": int(len(trades_df)),
             "position_count": int(len(positions_df)),
             "external_rows": external_rows,
+            "catalog_rows": catalog_rows,
         },
         "selected_factors": selected_factors,
         "model_metrics": model_metrics,
@@ -324,6 +338,9 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
                 "model files are saved only when --save-models is set;"
                 " otherwise no models directory/files are created."
             ),
+            "catalog_factors_enabled": bool(cfg.data.auto_load_catalog_factors),
+            "catalog_factor_count": int(len(catalog_entries)),
+            "factor_catalog_path": str(cfg.data.factor_catalog_path) if cfg.data.factor_catalog_path else "",
         },
     }
     summary_path = output_dir / f"summary_{run_tag}.json"

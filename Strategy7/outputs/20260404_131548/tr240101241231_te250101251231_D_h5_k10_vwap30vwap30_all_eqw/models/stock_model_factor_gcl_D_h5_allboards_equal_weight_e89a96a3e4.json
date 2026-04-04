@@ -1,0 +1,39 @@
+{
+  "model_type": "factor_gcl",
+  "target_col": "target_return",
+  "factor_count": 24,
+  "concept_count": 3,
+  "train_summary": {
+    "best_val_rank_ic": 0.016153449632382872,
+    "final_val_rank_ic": 0.014981415665102143,
+    "best_epoch": 3.0,
+    "epochs_trained": 5.0,
+    "avg_train_loss_last": 6.93832426071167,
+    "val_rank_ic_last": 0.012127295911446317,
+    "score_sign": 1.0,
+    "score_sign_ref_ic": 0.014981415665102143,
+    "device": "cpu"
+  },
+  "config": {
+    "seq_len": 30,
+    "future_look": 5,
+    "hidden_size": 64,
+    "num_layers": 1,
+    "num_factor": 24,
+    "gamma": 1.0,
+    "tau": 0.25,
+    "n_epochs": 5,
+    "lr": 9e-05,
+    "early_stop": 3,
+    "smooth_steps": 3,
+    "per_epoch_batch": 10,
+    "batch_size": -1,
+    "label_transform": "csranknorm",
+    "weight_decay": 0.0001,
+    "dropout": 0.0,
+    "random_state": 42,
+    "device_used": "cpu",
+    "target_col": "target_return",
+    "score_sign": 1.0
+  }
+}
