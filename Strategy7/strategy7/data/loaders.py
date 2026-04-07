@@ -14,6 +14,7 @@ from ..core.constants import EPS
 from ..core.time_utils import compute_load_window
 from ..core.types import FeatureBundle, MarketBundle
 from ..core.utils import (
+    log_progress,
     infer_board_type,
     infer_industry_bucket,
     is_main_board_symbol,
@@ -110,13 +111,21 @@ class HS300MarketDataLoader(MarketDataLoader):
 
         keys_all = list_symbol_keys(daily_dir, file_format=file_format)
         keys = keys_all
+        log_progress(
+            f"开始扫描股票文件：daily_dir={daily_dir}, minute_dir={minute_dir}, total_symbols={len(keys_all)}。",
+            module="loader",
+            level="debug",
+        )
         if hs300_list_path is not None:
             hs300_keys = set(load_hs300_constituent_keys(hs300_list_path))
             keys = [k for k in keys if k in hs300_keys]
+            log_progress(f"按 HS300 成分过滤后 symbols={len(keys)}。", module="loader", level="debug")
         if main_board_only:
             keys = [k for k in keys if is_main_board_symbol(k)]
+            log_progress(f"按主板过滤后 symbols={len(keys)}。", module="loader", level="debug")
         if max_files is not None:
             keys = keys[: int(max_files)]
+            log_progress(f"按 max_files 截断后 symbols={len(keys)}。", module="loader", level="debug")
 
         daily_cols = [
             "date",
@@ -135,10 +144,14 @@ class HS300MarketDataLoader(MarketDataLoader):
 
         daily_frames: List[pd.DataFrame] = []
         minute_frames: List[pd.DataFrame] = []
+        loaded = 0
+        skipped = 0
+        broken = 0
         for key in keys:
             daily_path = pick_existing_file(daily_dir, key, "d", file_format=file_format)
             minute_path = pick_existing_file(minute_dir, key, "5", file_format=file_format)
             if daily_path is None or minute_path is None:
+                skipped += 1
                 continue
 
             try:
@@ -146,8 +159,10 @@ class HS300MarketDataLoader(MarketDataLoader):
                 mdf = read_data_file(minute_path, minute_cols, start_date, end_date)
             except Exception:
                 # Skip broken files instead of failing the whole run.
+                broken += 1
                 continue
             if ddf.empty or mdf.empty:
+                skipped += 1
                 continue
 
             ddf["code"] = ddf["code"].astype(str).str.strip()
@@ -174,11 +189,23 @@ class HS300MarketDataLoader(MarketDataLoader):
 
             daily_frames.append(ddf)
             minute_frames.append(mdf)
+            loaded += 1
+            if loaded % 50 == 0:
+                log_progress(
+                    f"文件读取进度：loaded={loaded}/{len(keys)}，skipped={skipped}，broken={broken}。",
+                    module="loader",
+                    level="debug",
+                )
 
         if not daily_frames:
             raise RuntimeError("no daily market data loaded.")
         if not minute_frames:
             raise RuntimeError("no minute market data loaded.")
+        log_progress(
+            f"文件读取完成：loaded={loaded}, skipped={skipped}, broken={broken}, "
+            f"daily_parts={len(daily_frames)}, minute_parts={len(minute_frames)}。",
+            module="loader",
+        )
 
         daily_df = pd.concat(daily_frames, ignore_index=True).sort_values(["code", "date"]).reset_index(drop=True)
         minute_df = pd.concat(minute_frames, ignore_index=True).sort_values(["code", "datetime"]).reset_index(drop=True)
@@ -192,6 +219,11 @@ class HS300MarketDataLoader(MarketDataLoader):
             test_end=self.date_cfg.test_end,
             lookback_days=int(self.lookback_days),
             horizon=int(self.horizon),
+        )
+        log_progress(
+            f"计算加载窗口完成：start={load_start.date()}, end={load_end.date()}, "
+            f"lookback_days={self.lookback_days}, horizon={self.horizon}。",
+            module="loader",
         )
         daily_df, minute_df = self._load_market_frames(
             data_root=Path(self.data_cfg.data_root),
@@ -209,6 +241,10 @@ class HS300MarketDataLoader(MarketDataLoader):
             "main_board_only": str(self.data_cfg.main_board_only),
             "file_format": self.data_cfg.file_format,
         }
+        log_progress(
+            f"市场数据组装完成：daily_rows={len(daily_df)}, minute_rows={len(minute_df)}, codes={len(codes)}。",
+            module="loader",
+        )
         return MarketBundle(
             daily=daily_df,
             minute5=minute_df,
@@ -405,9 +441,14 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
 
 def build_feature_bundle(bundle: MarketBundle) -> FeatureBundle:
     """Generate daily and multi-frequency feature bases."""
+    log_progress("开始聚合分钟级日特征。", module="loader")
     minute_daily_feat = build_minute_daily_features(bundle.minute5)
+    log_progress(f"分钟级日特征完成：rows={len(minute_daily_feat)}。", module="loader")
+    log_progress("开始构建日频基础特征。", module="loader")
     daily_base = build_daily_feature_base(bundle.daily, minute_daily_feat)
+    log_progress(f"日频基础特征完成：rows={len(daily_base)}, cols={len(daily_base.columns)}。", module="loader")
 
+    log_progress("开始构建多频视图。", module="loader")
     views = build_frequency_views(daily_base, bundle.minute5)
     # convert non-daily views to generic features if needed
     for freq in ["5min", "15min", "30min", "60min", "120min"]:
@@ -420,6 +461,7 @@ def build_feature_bundle(bundle: MarketBundle) -> FeatureBundle:
 
     price_cols = ["code", "date", "px_open5", "px_vwap30", "px_twap_last30", "px_daily_close"]
     price_table = daily_base[price_cols].copy()
+    log_progress(f"特征视图构建完成：freqs={sorted(views.keys())}。", module="loader")
     return FeatureBundle(
         by_freq=views,
         price_table_daily=price_table,

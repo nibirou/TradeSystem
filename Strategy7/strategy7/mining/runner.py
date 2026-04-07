@@ -12,7 +12,7 @@ from typing import Any, Callable, Dict, Iterable, List, Sequence
 import numpy as np
 import pandas as pd
 
-from ..core.utils import dump_json, ensure_dir
+from ..core.utils import dump_json, ensure_dir, log_progress
 from .catalog import upsert_catalog_entries
 from .custom import CustomFactorSpec, evaluate_custom_specs
 from .evaluation import (
@@ -717,6 +717,13 @@ def run_factor_mining(
     - (optional) barra_size_proxy, industry_bucket
     """
     rng = _seed(cfg.random_state)
+    framework = str(cfg.framework).strip().lower()
+    log_progress(
+        f"挖掘启动：framework={framework}, factor_freq={cfg.factor_freq}, "
+        f"train={pd.Timestamp(cfg.train_start).date()}~{pd.Timestamp(cfg.train_end).date()}, "
+        f"valid={pd.Timestamp(cfg.valid_start).date()}~{pd.Timestamp(cfg.valid_end).date()}。",
+        module="mining",
+    )
 
     # 1) Normalize and validate base daily panel with future return labels.
     panel = daily_panel_with_label.copy()
@@ -741,8 +748,12 @@ def run_factor_mining(
         vm = _split_mask(frame, cfg.valid_start, cfg.valid_end, time_col="date")
         return frame.loc[tm], frame.loc[vm]
 
+    log_progress(
+        f"输入面板清洗完成：rows={len(panel)}, train_rows={int(train_mask.sum())}, valid_rows={int(valid_mask.sum())}。",
+        module="mining",
+    )
+
     # 2) Resolve admission standard (supports CLI threshold overrides).
-    framework = str(cfg.framework).strip().lower()
     standard = resolve_admission_standard(cfg.factor_freq, framework=framework)
     for attr in [
         "min_abs_ic_mean",
@@ -756,6 +767,11 @@ def run_factor_mining(
         v = getattr(cfg, attr, None)
         if v is not None and np.isfinite(float(v)):
             setattr(standard, attr, float(v))
+    log_progress(
+        f"准入标准已就绪：profile={standard.profile}, min_abs_ic_mean={standard.min_abs_ic_mean}, "
+        f"min_ic_win_rate={standard.min_ic_win_rate}, min_ic_ir={standard.min_ic_ir}。",
+        module="mining",
+    )
 
     # Candidate cache avoids repeated recomputation for duplicated specs in evolution.
     cache: Dict[str, Dict[str, object]] = {}
@@ -765,6 +781,7 @@ def run_factor_mining(
         specs = custom_specs or []
         if not specs:
             raise RuntimeError("custom framework requires at least one custom factor spec")
+        log_progress(f"开始评估 custom 因子：spec_count={len(specs)}。", module="mining")
 
         fac_df = evaluate_custom_specs(panel=panel, specs=specs, time_col="date", code_col="code")
         results: List[Dict[str, object]] = []
@@ -790,12 +807,18 @@ def run_factor_mining(
             }
             cache[key] = result
             results.append(result)
+        log_progress(f"custom 因子评估完成：candidate_count={len(results)}。", module="mining")
 
     elif framework == "fundamental_multiobj":
         # 3B) Fundamental framework: NSGA-II over parametric daily formulas.
         fields = _discover_daily_feature_pool(panel)
         if len(fields) < 2:
             raise RuntimeError("insufficient daily feature columns for fundamental mining")
+        log_progress(
+            f"开始基本面进化挖掘：feature_pool={len(fields)}, population={cfg.population_size}, "
+            f"generations={cfg.generations}。",
+            module="mining",
+        )
 
         def _evaluate(spec: FundamentalFormulaSpec) -> Dict[str, object]:
             key = _to_key(spec.to_dict())
@@ -842,10 +865,14 @@ def run_factor_mining(
             elites = sorted(res, key=lambda r: float(r["score"]), reverse=True)[: max(1, cfg.elite_size)]
 
             best = elites[0]
-            print(
-                f"[fundamental][gen={gen:02d}] best_score={best['score']:.4f} "
-                f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
-                f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f}"
+            log_progress(
+                (
+                    f"[fundamental][gen={gen:02d}] best_score={best['score']:.4f} "
+                    f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
+                    f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f}"
+                ),
+                module="mining",
+                level="debug",
             )
 
             new_pop: List[FundamentalFormulaSpec] = [copy.deepcopy(e["spec"]) for e in elites]
@@ -861,6 +888,7 @@ def run_factor_mining(
             pop = new_pop[: cfg.population_size]
 
         results = list(archive.values())
+        log_progress(f"基本面进化完成：candidate_count={len(results)}。", module="mining")
 
     elif framework in {"minute_parametric", "minute_parametric_plus"}:
         # 3C/3D) Minute framework family: NSGA-III over parametric minute operators.
@@ -878,6 +906,11 @@ def run_factor_mining(
         mutate_fn = _minute_plus_mutate if is_plus else _minute_mutate
         random_fn = _minute_plus_random_spec if is_plus else _minute_random_spec
         tag = "minute_plus" if is_plus else "minute"
+        log_progress(
+            f"开始分钟进化挖掘：framework={framework}, feature_pool={len(fields)}, "
+            f"population={pop_size}, generations={generations}。",
+            module="mining",
+        )
 
         daily_ctx = panel[[c for c in ["date", "code", "future_ret_n", "barra_size_proxy", "industry_bucket"] if c in panel.columns]].copy()
 
@@ -937,11 +970,15 @@ def run_factor_mining(
 
             best = elites[0]
             mean_penalty = float(np.mean(penalty)) if len(penalty) > 0 else float("nan")
-            print(
-                f"[{tag}][gen={gen:02d}] best_score={best['score']:.4f} "
-                f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
-                f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f} "
-                f"penalty={mean_penalty:.4f}"
+            log_progress(
+                (
+                    f"[{tag}][gen={gen:02d}] best_score={best['score']:.4f} "
+                    f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
+                    f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f} "
+                    f"penalty={mean_penalty:.4f}"
+                ),
+                module="mining",
+                level="debug",
             )
 
             new_pop: List[MinuteFormulaSpec] = [copy.deepcopy(e["spec"]) for e in elites]
@@ -957,6 +994,7 @@ def run_factor_mining(
             pop = new_pop[: pop_size]
 
         results = list(archive.values())
+        log_progress(f"分钟进化完成：candidate_count={len(results)}。", module="mining")
 
     elif framework == "ml_ensemble_alpha":
         # 3E) ML ensemble framework: model + feature-subset co-search.
@@ -975,6 +1013,12 @@ def run_factor_mining(
         feature_pool = fields_pref if len(fields_pref) >= 5 else fields_valid
         if len(feature_pool) < 5:
             raise RuntimeError("ml_ensemble_alpha prefiltered feature pool too small")
+        log_progress(
+            f"开始 ML 集成进化挖掘：raw_features={len(fields_all)}, valid_features={len(fields_valid)}, "
+            f"prefilter_features={len(feature_pool)}, population={max(8, int(cfg.ml_population_size))}, "
+            f"generations={max(1, int(cfg.ml_generations))}。",
+            module="mining",
+        )
 
         pop_size = max(8, int(cfg.ml_population_size))
         generations = max(1, int(cfg.ml_generations))
@@ -1026,12 +1070,16 @@ def run_factor_mining(
             elites = sorted(res, key=lambda r: float(r["score"]), reverse=True)[: max(1, int(cfg.elite_size))]
 
             best = elites[0]
-            print(
-                f"[ml_ensemble][gen={gen:02d}] best_score={best['score']:.4f} "
-                f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
-                f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f} "
-                f"featN={len(best['spec'].feature_cols)} "
-                f"model={best['spec'].model_name}"
+            log_progress(
+                (
+                    f"[ml_ensemble][gen={gen:02d}] best_score={best['score']:.4f} "
+                    f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
+                    f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f} "
+                    f"featN={len(best['spec'].feature_cols)} "
+                    f"model={best['spec'].model_name}"
+                ),
+                module="mining",
+                level="debug",
             )
 
             new_pop: List[MLEnsembleFormulaSpec] = [copy.deepcopy(e["spec"]) for e in elites]
@@ -1047,6 +1095,7 @@ def run_factor_mining(
             pop = new_pop[: pop_size]
 
         results = list(archive.values())
+        log_progress(f"ML 集成进化完成：candidate_count={len(results)}。", module="mining")
 
     else:
         raise ValueError(f"unsupported mining framework: {cfg.framework}")
@@ -1092,6 +1141,10 @@ def run_factor_mining(
         series_getter=_series_getter,
         top_n=int(cfg.top_n),
         corr_threshold=float(cfg.corr_threshold),
+    )
+    log_progress(
+        f"候选筛选完成：passed_count={len(ranked_passed)}, selected_count={len(selected)}, top_n={cfg.top_n}。",
+        module="mining",
     )
 
     # 5) Persist selected factors and update global catalog.
@@ -1158,6 +1211,11 @@ def run_factor_mining(
 
     catalog_path = Path(cfg.catalog_path)
     upsert_catalog_entries(catalog_path, catalog_entries)
+    log_progress(
+        f"因子落盘与 catalog 更新完成：factor_table={data_path}, catalog_path={catalog_path}, "
+        f"inserted_or_updated={len(catalog_entries)}。",
+        module="mining",
+    )
 
     summary = {
         "framework": framework,
@@ -1185,4 +1243,5 @@ def run_factor_mining(
 
     summary_path = run_root / "mining_summary.json"
     dump_json(summary_path, summary)
+    log_progress(f"挖掘流程结束，summary 写入：{summary_path}", module="mining")
     return summary

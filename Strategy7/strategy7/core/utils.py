@@ -11,6 +11,9 @@ from typing import Any, Dict, Optional, Tuple
 import pandas as pd
 
 
+_LOG_LEVEL = "normal"  # quiet | normal | verbose
+
+
 def parse_date(s: str) -> pd.Timestamp:
     return pd.to_datetime(s).normalize()
 
@@ -41,6 +44,43 @@ def to_jsonable_float(v: Any) -> float:
 
 def dump_json(path: Path, obj: Dict[str, Any]) -> None:
     path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def set_log_level(level: str = "normal", quiet: bool = False, verbose: bool = False) -> str:
+    """Configure progress-log level globally.
+
+    Priority:
+    1) quiet=True  -> quiet
+    2) verbose=True -> verbose
+    3) explicit level (quiet/normal/verbose)
+    """
+    global _LOG_LEVEL
+    if bool(quiet):
+        _LOG_LEVEL = "quiet"
+        return _LOG_LEVEL
+    if bool(verbose):
+        _LOG_LEVEL = "verbose"
+        return _LOG_LEVEL
+    lv = str(level).strip().lower()
+    if lv not in {"quiet", "normal", "verbose"}:
+        lv = "normal"
+    _LOG_LEVEL = lv
+    return _LOG_LEVEL
+
+
+def log_progress(message: str, module: str = "core", level: str = "info") -> None:
+    """Print a timestamped progress log line.
+
+    This is intentionally lightweight (stdout print) so it works in both
+    scripts and notebooks without extra logging dependencies.
+    """
+    lv = str(level).strip().lower()
+    if _LOG_LEVEL == "quiet":
+        return
+    if _LOG_LEVEL != "verbose" and lv in {"debug", "trace"}:
+        return
+    ts = pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y-%m-%d %H:%M:%S")
+    print(f"[{ts}][{module}] {message}")
 
 
 def symbol_key_from_filename(filename: str) -> Optional[str]:

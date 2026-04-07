@@ -9,6 +9,7 @@ from pathlib import Path
 import pandas as pd
 
 from strategy7.config import DataConfig, DateConfig
+from strategy7.core.utils import log_progress, set_log_level
 from strategy7.data.loaders import HS300MarketDataLoader, build_feature_bundle
 from strategy7.factors.labeling import add_labels
 from strategy7.mining.custom import load_custom_specs
@@ -207,11 +208,32 @@ def _parse_args() -> argparse.Namespace:
     g_adm.add_argument("--min-long-win-rate", type=float, default=None, help="覆盖默认阈值：多头胜率下限")
     g_adm.add_argument("--min-coverage", type=float, default=None, help="覆盖默认阈值：因子覆盖率下限")
 
+    g_out.add_argument(
+        "--log-level",
+        type=str,
+        choices=["quiet", "normal", "verbose"],
+        default="normal",
+        help="运行过程日志级别：quiet / normal / verbose",
+    )
+    g_out.add_argument(
+        "--quiet",
+        action="store_true",
+        help="等价于 --log-level quiet（优先级最高）",
+    )
+    g_out.add_argument(
+        "--verbose",
+        action="store_true",
+        help="等价于 --log-level verbose（当未开启 --quiet 时生效）",
+    )
+
     return parser.parse_args()
 
 
 def main() -> None:
     args = _parse_args()
+    effective_log_level = set_log_level(level=str(args.log_level), quiet=bool(args.quiet), verbose=bool(args.verbose))
+    log_progress(f"日志级别：{effective_log_level}", module="run_factor_mining")
+    log_progress("开始解析与校验挖掘参数。", module="run_factor_mining")
 
     train_start = _parse_date(args.train_start)
     train_end = _parse_date(args.train_end)
@@ -230,6 +252,11 @@ def main() -> None:
         raise ValueError("ml_train_sample_frac must be in (0,1]")
     if int(args.ml_max_train_rows) < 2000:
         raise ValueError("ml_max_train_rows must be >= 2000")
+    log_progress(
+        f"参数校验通过：framework={args.framework}, train={train_start.date()}~{train_end.date()}, "
+        f"valid={valid_start.date()}~{valid_end.date()}。",
+        module="run_factor_mining",
+    )
 
     data_root = str(Path(args.data_root).expanduser())
     data_cfg = DataConfig(
@@ -258,10 +285,21 @@ def main() -> None:
         lookback_days=160,
         horizon=int(args.horizon),
     )
+    log_progress("开始加载市场数据（日线+5分钟）。", module="run_factor_mining")
     market_bundle = loader.load()
+    log_progress(
+        f"市场数据加载完成：daily_rows={len(market_bundle.daily)}, minute_rows={len(market_bundle.minute5)}, "
+        f"codes={len(market_bundle.codes)}。",
+        module="run_factor_mining",
+    )
     feat_bundle = build_feature_bundle(market_bundle)
+    log_progress(
+        f"特征构建完成，可用频率={sorted(feat_bundle.by_freq.keys())}。",
+        module="run_factor_mining",
+    )
 
     daily_panel = feat_bundle.by_freq["D"].copy()
+    log_progress("开始生成挖掘标签 future_ret_n。", module="run_factor_mining")
     daily_panel = add_labels(
         panel=daily_panel,
         horizon=int(args.horizon),
@@ -269,14 +307,20 @@ def main() -> None:
         price_table_daily=feat_bundle.price_table_daily,
         factor_freq="D",
     )
+    log_progress(
+        f"标签生成完成：panel_rows={len(daily_panel)}。",
+        module="run_factor_mining",
+    )
 
     custom_specs = []
     if str(args.framework).lower() == "custom":
         if not str(args.custom_spec_json).strip():
             raise RuntimeError("framework=custom requires --custom-spec-json")
+        log_progress(f"开始加载 custom 规格：{args.custom_spec_json}", module="run_factor_mining")
         custom_specs = load_custom_specs(args.custom_spec_json)
         if not custom_specs:
             raise RuntimeError(f"no valid custom specs loaded from: {args.custom_spec_json}")
+        log_progress(f"custom 规格加载完成：{len(custom_specs)} 条。", module="run_factor_mining")
 
     store_root = str(args.factor_store_root).strip()
     if store_root.lower() in {"", "auto"}:
@@ -324,12 +368,19 @@ def main() -> None:
         ml_max_train_rows=int(args.ml_max_train_rows),
         ml_num_jobs=int(args.ml_num_jobs),
     )
+    log_progress("开始执行因子挖掘核心流程。", module="run_factor_mining")
 
     summary = run_factor_mining(
         cfg=mine_cfg,
         daily_panel_with_label=daily_panel,
         minute_df=market_bundle.minute5,
         custom_specs=custom_specs,
+    )
+    log_progress(
+        f"挖掘完成：candidate_count={summary.get('candidate_count', 0)}, "
+        f"selected_count={summary.get('selected_count', 0)}, "
+        f"factor_table={summary.get('factor_table_path', '')}",
+        module="run_factor_mining",
     )
 
     print("=== Factor Mining Summary ===")

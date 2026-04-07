@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # bash /workspace/Quant/TradeSystem/Strategy7/scripts/run_strategy7_04_factorgcl_daily.sh
 set -euo pipefail
 

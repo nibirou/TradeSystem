@@ -651,6 +651,24 @@ def parse_args() -> argparse.Namespace:
         help="是否保存模型文件（true/false）",
     )
 
+    g_out.add_argument(
+        "--log-level",
+        type=str,
+        choices=["quiet", "normal", "verbose"],
+        default="normal",
+        help="runtime progress log level: quiet / normal / verbose",
+    )
+    g_out.add_argument(
+        "--quiet",
+        action="store_true",
+        help="equivalent to --log-level quiet (highest priority)",
+    )
+    g_out.add_argument(
+        "--verbose",
+        action="store_true",
+        help="equivalent to --log-level verbose when --quiet is not set",
+    )
+
     return parser.parse_args()
 
 

@@ -19,7 +19,7 @@ from ..backtest.metrics import (
 from ..backtest.plotting import plot_backtest_curves
 from ..config import RunConfig
 from ..core.constants import INTRADAY_FREQS
-from ..core.utils import dump_json, ensure_dir
+from ..core.utils import dump_json, ensure_dir, log_progress
 from ..data.loaders import HS300MarketDataLoader, build_feature_bundle, load_index_benchmark_data
 from ..data.preprocess import (
     PreprocessOptions,
@@ -60,9 +60,16 @@ def _build_external_source_registry(cfg: RunConfig) -> DataSourceRegistry:
 
 
 def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
+    log_progress(
+        f"主流水线启动：factor_freq={cfg.factors.factor_freq}, "
+        f"train={cfg.dates.train_start.date()}~{cfg.dates.train_end.date()}, "
+        f"test={cfg.dates.test_start.date()}~{cfg.dates.test_end.date()}。",
+        module="pipeline",
+    )
     # Fast path: listing factors should not require loading market data.
     # This makes `--list-factors` usable even when local data folders are unavailable.
     if cfg.factors.list_factors:
+        log_progress("进入仅列出因子模式。", module="pipeline")
         factor_lib = FactorLibrary()
         register_default_factors(factor_lib)
         catalog_count = 0
@@ -74,6 +81,10 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         if cfg.factors.custom_factor_py:
             load_custom_factor_module(factor_lib, cfg.factors.custom_factor_py)
         print(factor_lib.metadata(freq=cfg.factors.factor_freq).to_string(index=False))
+        log_progress(
+            f"因子清单输出完成：freq={cfg.factors.factor_freq}, catalog_factor_count={catalog_count}。",
+            module="pipeline",
+        )
         return {
             "status": "listed_factors_only",
             "factor_freq": cfg.factors.factor_freq,
@@ -81,11 +92,14 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         }
 
     output_dir = ensure_dir(cfg.output_dir)
+    log_progress(f"输出目录已就绪：{output_dir}", module="pipeline")
     model_dir: Path | None = None
     if cfg.save_models:
         model_dir = ensure_dir(output_dir / "models")
+        log_progress(f"模型输出目录已就绪：{model_dir}", module="pipeline")
 
     # 1) Load raw market data and build feature bundle for all supported frequencies.
+    log_progress("步骤 1/13：开始加载市场数据。", module="pipeline")
     loader = HS300MarketDataLoader(
         data_cfg=cfg.data,
         date_cfg=cfg.dates,
@@ -93,7 +107,17 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         horizon=cfg.backtest.horizon,
     )
     market_bundle = loader.load()
+    log_progress(
+        f"市场数据加载完成：daily_rows={len(market_bundle.daily)}, minute_rows={len(market_bundle.minute5)}, "
+        f"codes={len(market_bundle.codes)}。",
+        module="pipeline",
+    )
+    log_progress("步骤 1/13：开始构建多频特征视图。", module="pipeline")
     feat_bundle = build_feature_bundle(market_bundle)
+    log_progress(
+        f"特征构建完成，可用频率={sorted(feat_bundle.by_freq.keys())}。",
+        module="pipeline",
+    )
 
     factor_freq = cfg.factors.factor_freq
     if factor_freq not in feat_bundle.by_freq:
@@ -101,9 +125,11 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     base_df = feat_bundle.by_freq[factor_freq].copy()
     if base_df.empty:
         raise RuntimeError(f"base feature frame is empty for freq={factor_freq}")
+    log_progress(f"基准面板就绪：freq={factor_freq}, rows={len(base_df)}。", module="pipeline")
 
     # 2) Merge admitted mined/custom factors from catalog (if enabled).
     # These factors are materialized values produced by the mining subsystem.
+    log_progress("步骤 2/13：开始合并 catalog 因子（若启用）。", module="pipeline")
     catalog_rows: Dict[str, int] = {}
     catalog_entries: List[Dict[str, object]] = []
     if cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path:
@@ -112,8 +138,13 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             catalog_path=cfg.data.factor_catalog_path,
             factor_freq=factor_freq,
         )
+    log_progress(
+        f"catalog 合并完成：entries={len(catalog_entries)}, merged_rows_meta={catalog_rows}。",
+        module="pipeline",
+    )
 
     # 3) Merge optional external sources (fundamental/NLP/custom tables).
+    log_progress("步骤 3/13：开始合并外部数据源（若配置）。", module="pipeline")
     source_registry = _build_external_source_registry(cfg)
     external_rows: Dict[str, int] = {}
     if source_registry.keys():
@@ -125,16 +156,20 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             trade_dates=trade_dates,
             code_universe=code_universe,
         )
+    log_progress(f"外部数据源合并完成：registry_size={len(source_registry.keys())}, rows_meta={external_rows}。", module="pipeline")
 
     # 4) Build factor registry (default + catalog + optional custom Python plugin).
+    log_progress("步骤 4/13：开始构建因子库（默认+catalog+自定义）。", module="pipeline")
     factor_lib = FactorLibrary()
     register_default_factors(factor_lib)
     if catalog_entries:
         register_catalog_factors(factor_lib, catalog_entries)
     if cfg.factors.custom_factor_py:
         load_custom_factor_module(factor_lib, cfg.factors.custom_factor_py)
+    log_progress("因子库构建完成。", module="pipeline")
 
     # 5) Resolve selected factors and compute the factor panel.
+    log_progress("步骤 5/13：解析因子清单并计算因子面板。", module="pipeline")
     default_set = DEFAULT_FACTOR_SET_BY_FREQ.get(factor_freq, [])
     selected_factors = resolve_selected_factors(
         library=factor_lib,
@@ -142,18 +177,23 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         factor_list_arg=cfg.factors.factor_list,
         default_set=default_set,
     )
+    log_progress(f"已选因子数量：{len(selected_factors)}。", module="pipeline")
 
     panel = compute_factor_panel(base_df=base_df, library=factor_lib, freq=factor_freq, selected_factors=selected_factors)
+    log_progress(f"因子面板计算完成：rows={len(panel)}, cols={len(panel.columns)}。", module="pipeline")
 
     # 6) Cross-sectional preprocessing (winsorize / zscore / optional neutralize).
+    log_progress("步骤 6/13：执行截面预处理。", module="pipeline")
     pp_opt = PreprocessOptions(winsorize_limit=0.01, do_zscore=True, neutralize=False, fill_method="median")
     group_col = "date" if factor_freq in {"D", "W", "M"} else "signal_date_proxy"
     if factor_freq in INTRADAY_FREQS:
         panel[group_col] = pd.to_datetime(panel["datetime"], errors="coerce").dt.normalize()
     panel = apply_cross_section_pipeline(panel, selected_factors, pp_opt, group_col=group_col)
+    log_progress("截面预处理完成。", module="pipeline")
 
     # 7) Labeling and strict time-split.
     # split_train_test enforces target-date boundaries to avoid look-ahead leakage.
+    log_progress("步骤 7/13：生成标签并按时间严格切分训练/测试集。", module="pipeline")
     panel = add_labels(
         panel=panel,
         horizon=cfg.backtest.horizon,
@@ -175,9 +215,11 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         raise RuntimeError("training set is empty.")
     if test_df.empty:
         raise RuntimeError("test set is empty.")
+    log_progress(f"样本切分完成：train_rows={len(train_df)}, test_rows={len(test_df)}。", module="pipeline")
 
     # 8) Train-fitted feature fill values are reused on test set.
     # This avoids using future-period statistics to fill missing values.
+    log_progress("步骤 8/13：按训练集统计进行缺失值填充。", module="pipeline")
     fill_values = fit_feature_fill_values(train_df, selected_factors)
     train_df = fill_feature_na_with_reference(
         train_df,
@@ -191,17 +233,21 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         method=pp_opt.fill_method,
         reference_fill_values=fill_values,
     )
+    log_progress("缺失值填充完成。", module="pipeline")
 
     target_col = pick_target_column(cfg.factors.label_task)
 
     # 9) Train pluggable models.
+    log_progress("步骤 9/13：开始训练模型（选股/择时/组合/执行）。", module="pipeline")
     stock_model = build_stock_model(cfg.stock_model)
     stock_model.fit(train_df=train_df, factor_cols=selected_factors, target_col=target_col)
     timing_model = build_timing_model(cfg.timing_model).fit(train_df)
     portfolio_model = build_portfolio_model(cfg.portfolio_opt)
     execution_model = build_execution_model(cfg.execution_model)
+    log_progress("模型训练与构建完成。", module="pipeline")
 
     # 10) Generate predictions and model-level metrics.
+    log_progress("步骤 10/13：生成测试集预测并计算模型指标。", module="pipeline")
     test_df = test_df.copy()
     test_df["pred_score"] = stock_model.predict_score(test_df, selected_factors)
     test_df["pred_up"] = (test_df["pred_score"] >= cfg.backtest.long_threshold).astype(int)
@@ -218,15 +264,19 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         pred_score=test_df["pred_score"],
         threshold=cfg.backtest.long_threshold,
     )
+    log_progress("模型指标计算完成。", module="pipeline")
 
+    log_progress("加载指数基准数据。", module="pipeline")
     index_benchmarks = load_index_benchmark_data(
         index_root=Path(cfg.data.index_root),
         start_date=market_bundle.start_date,
         end_date=market_bundle.end_date,
         file_format=cfg.data.file_format,
     )
+    log_progress("指数基准加载完成。", module="pipeline")
 
     # 11) Run backtest engine (timing + portfolio + execution).
+    log_progress("步骤 11/13：执行回测引擎。", module="pipeline")
     trades_df, positions_df, curve_df, bt_summary = run_backtest(
         pred_df=test_df,
         backtest_cfg=cfg.backtest,
@@ -236,8 +286,13 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         execution_model=execution_model,
         index_benchmarks=index_benchmarks,
     )
+    log_progress(
+        f"回测完成：trades={len(trades_df)}, positions={len(positions_df)}, curve_rows={len(curve_df)}。",
+        module="pipeline",
+    )
 
     # 12) Compute IC diagnostics for model score and raw factors.
+    log_progress("步骤 12/13：计算 IC 诊断与分层分位统计。", module="pipeline")
     ic_group_col = "signal_ts" if "signal_ts" in test_df.columns else ("date" if "date" in test_df.columns else "signal_ts")
     factor_ic_summary_df, factor_ic_series_df = compute_factor_ic_statistics(
         pred_df=test_df,
@@ -261,8 +316,10 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         quantiles=5,
         group_col=ic_group_col,
     )
+    log_progress("IC 诊断计算完成。", module="pipeline")
 
     # 13) Persist artifacts and summarize run.
+    log_progress("步骤 13/13：写出产物文件与 summary。", module="pipeline")
     board_tag = "mainboard" if cfg.data.main_board_only else "allboards"
     run_tag = build_run_tag(
         train_start=cfg.dates.train_start.strftime("%Y%m%d"),
@@ -307,6 +364,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         model_ic_series_df=model_ic_series_df,
         factor_meta_df=factor_lib.metadata(freq=factor_freq),
     )
+    log_progress("核心 CSV 产物已写出。", module="pipeline")
 
     plot_main_path = output_dir / f"backtest_curve_main_{run_tag}.png"
     plot_excess_path = output_dir / f"backtest_curve_excess_{run_tag}.png"
@@ -321,10 +379,12 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
 
     model_files: Dict[str, Dict[str, str]] = {}
     if cfg.save_models and model_dir is not None:
+        log_progress("开始保存模型文件。", module="pipeline")
         model_files["stock_model"] = stock_model.save(model_dir, run_tag)
         model_files["timing_model"] = timing_model.save(model_dir, run_tag)
         model_files["portfolio_model"] = portfolio_model.save(model_dir, run_tag)
         model_files["execution_model"] = execution_model.save(model_dir, run_tag)
+        log_progress(f"模型文件保存完成：{len(model_files)} 个组件。", module="pipeline")
 
     top_factors = factor_ic_summary_df.head(10).copy() if not factor_ic_summary_df.empty else pd.DataFrame()
     summary = {
@@ -374,4 +434,6 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     }
     summary_path = output_dir / f"summary_{run_tag}.json"
     dump_json(summary_path, summary)
+    summary["outputs"]["summary_json"] = str(summary_path)
+    log_progress(f"流水线结束，summary 写入：{summary_path}", module="pipeline")
     return summary

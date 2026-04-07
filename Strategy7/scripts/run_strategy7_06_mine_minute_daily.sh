@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # bash /workspace/Quant/TradeSystem/Strategy7/scripts/run_strategy7_06_mine_minute_daily.sh
 set -euo pipefail
 

@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env bash
+#!/usr/bin/env bash
 # bash /workspace/Quant/TradeSystem/Strategy7/scripts/run_strategy7_07_mine_fundamental_prod.sh
 set -euo pipefail
 

@@ -55,7 +55,14 @@ def compute_return_stats(
 
     periods = len(r)
     cum_return = float((1.0 + r).prod() - 1.0)
-    annualized_return = float((1.0 + cum_return) ** (ppy / periods) - 1.0)
+    terminal_wealth = 1.0 + cum_return
+    if terminal_wealth > 0:
+        annualized_return = float(terminal_wealth ** (ppy / periods) - 1.0)
+    else:
+        # If compounded wealth is non-positive (e.g. spread/excess return path),
+        # geometric annualization is undefined in real numbers. Fall back to
+        # arithmetic annualization to keep metrics stable and non-crashing.
+        annualized_return = float(r.mean() * ppy)
     std = float(r.std(ddof=1)) if periods > 1 else float("nan")
     annualized_vol = float(std * np.sqrt(ppy)) if periods > 1 else float("nan")
     sharpe = float((r.mean() / std) * np.sqrt(ppy)) if periods > 1 and std > 0 else float("nan")
