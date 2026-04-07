@@ -15,7 +15,7 @@
 `Strategy7` 是一个模块化量化研究引擎，核心特点：
 
 1. 数据、因子、模型、回测四层可插拔
-2. 同时支持传统树模型与 `FactorGCL` 深度模型
+2. 同时支持传统树模型与 `FactorGCL/DAFAT` 深度模型
 3. 支持因子挖掘、因子 catalog 入库、主流程自动加载
 4. 支持自定义因子表达式与自定义插件模型
 
@@ -47,7 +47,7 @@
 
 深度模型附加依赖：
 
-1. `torch`（`--stock-model-type factor_gcl` 必需）
+1. `torch`（`--stock-model-type factor_gcl` 或 `dafat` 必需）
 
 建议先验证解释器：
 
@@ -117,7 +117,26 @@ python Strategy7/run_strategy7.py `
   --fgcl-device auto
 ```
 
-### 5.3 仅列出因子（不加载市场数据）
+### 5.3 DAFAT 示例
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --label-task return `
+  --stock-model-type dafat `
+  --dafat-seq-len 40 `
+  --dafat-hidden-size 128 `
+  --dafat-num-layers 2 `
+  --dafat-num-heads 4 `
+  --dafat-local-window 20 `
+  --dafat-topk-ratio 0.30 `
+  --dafat-meso-scale 5 `
+  --dafat-macro-scale 20 `
+  --dafat-epochs 200 `
+  --dafat-lr 1e-4 `
+  --dafat-device auto
+```
+
+### 5.4 仅列出因子（不加载市场数据）
 
 ```powershell
 python Strategy7/run_strategy7.py --list-factors --factor-freq D
@@ -134,7 +153,7 @@ python Strategy7/run_strategy7.py --list-factors --factor-freq D
 2. 因子：
    `--factor-freq --factor-list --custom-factor-py --label-task --lookback-days`
 3. 选股模型：
-   `--stock-model-type`（`decision_tree`/`factor_gcl`）
+   `--stock-model-type`（`decision_tree`/`factor_gcl`/`dafat`）
 4. 择时模型：
    `--timing-model-type`（`none`/`volatility_regime`）
 5. 组合模型：
@@ -271,5 +290,6 @@ python Strategy7/run_factor_mining.py `
 ## 14. 推荐阅读
 
 1. [FactorGCL 说明](./factor_gcl.md)
-2. [因子挖掘框架说明](./factor_mining_framework.md)
+2. [DAFAT 复现与工程实现说明](./dafat_transformer.md)
+3. [因子挖掘框架说明](./factor_mining_framework.md)
 

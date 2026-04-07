@@ -64,6 +64,29 @@ class StockModelConfig:
     fgcl_weight_decay: float
     fgcl_dropout: float
     fgcl_device: str
+    dafat_seq_len: int
+    dafat_hidden_size: int
+    dafat_num_layers: int
+    dafat_num_heads: int
+    dafat_ffn_mult: int
+    dafat_dropout: float
+    dafat_local_window: int
+    dafat_topk_ratio: float
+    dafat_vol_quantile: float
+    dafat_meso_scale: int
+    dafat_macro_scale: int
+    dafat_epochs: int
+    dafat_lr: float
+    dafat_weight_decay: float
+    dafat_early_stop: int
+    dafat_per_epoch_batch: int
+    dafat_batch_size: int
+    dafat_label_transform: str
+    dafat_mse_weight: float
+    dafat_use_dpe: bool
+    dafat_use_sparse_attn: bool
+    dafat_use_multiscale: bool
+    dafat_device: str
 
 
 @dataclass
@@ -435,7 +458,7 @@ def parse_args() -> argparse.Namespace:
         "--stock-model-type",
         type=str,
         default="decision_tree",
-        help="选股模型类型：decision_tree / factor_gcl / 自定义插件",
+        help="选股模型类型：decision_tree / factor_gcl / dafat / 自定义插件",
     )
     g_stock.add_argument(
         "--custom-stock-model-py",
@@ -474,6 +497,49 @@ def parse_args() -> argparse.Namespace:
     g_stock.add_argument("--fgcl-weight-decay", type=float, default=1e-4, help="FactorGCL L2 正则强度")
     g_stock.add_argument("--fgcl-dropout", type=float, default=0.0, help="FactorGCL GRU dropout 概率")
     g_stock.add_argument("--fgcl-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="FactorGCL 训练设备")
+    g_stock.add_argument("--dafat-seq-len", type=int, default=40, help="DAFAT 时序长度")
+    g_stock.add_argument("--dafat-hidden-size", type=int, default=128, help="DAFAT 隐层维度")
+    g_stock.add_argument("--dafat-num-layers", type=int, default=2, help="DAFAT Transformer 层数")
+    g_stock.add_argument("--dafat-num-heads", type=int, default=4, help="DAFAT 多头注意力头数")
+    g_stock.add_argument("--dafat-ffn-mult", type=int, default=4, help="DAFAT 前馈层扩展倍数")
+    g_stock.add_argument("--dafat-dropout", type=float, default=0.10, help="DAFAT dropout 概率")
+    g_stock.add_argument("--dafat-local-window", type=int, default=20, help="DAFAT 稀疏注意力局部窗口")
+    g_stock.add_argument("--dafat-topk-ratio", type=float, default=0.30, help="DAFAT TopK 稀疏保留比例")
+    g_stock.add_argument("--dafat-vol-quantile", type=float, default=0.40, help="DAFAT 波动率门控分位点")
+    g_stock.add_argument("--dafat-meso-scale", type=int, default=5, help="DAFAT 多尺度中观池化尺度")
+    g_stock.add_argument("--dafat-macro-scale", type=int, default=20, help="DAFAT 多尺度宏观池化尺度")
+    g_stock.add_argument("--dafat-epochs", type=int, default=200, help="DAFAT 最大训练轮数")
+    g_stock.add_argument("--dafat-lr", type=float, default=1e-4, help="DAFAT 学习率")
+    g_stock.add_argument("--dafat-weight-decay", type=float, default=1e-4, help="DAFAT L2 正则强度")
+    g_stock.add_argument("--dafat-early-stop", type=int, default=20, help="DAFAT 早停耐心轮数")
+    g_stock.add_argument("--dafat-per-epoch-batch", type=int, default=120, help="DAFAT 每轮抽取交易日切片数")
+    g_stock.add_argument("--dafat-batch-size", type=int, default=-1, help="DAFAT 单日截面采样数，-1=全量")
+    g_stock.add_argument(
+        "--dafat-label-transform",
+        type=str,
+        choices=["raw", "csrank", "cszscore", "csranknorm"],
+        default="csranknorm",
+        help="DAFAT 训练标签变换方式（截面排序/标准化）",
+    )
+    g_stock.add_argument("--dafat-mse-weight", type=float, default=0.05, help="DAFAT 损失函数中 MSE 权重")
+    g_stock.add_argument("--dafat-use-dpe", type=_parse_bool, nargs="?", const=True, default=True, help="是否启用 DPE 模块")
+    g_stock.add_argument(
+        "--dafat-use-sparse-attn",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="是否启用稀疏注意力模块",
+    )
+    g_stock.add_argument(
+        "--dafat-use-multiscale",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="是否启用多尺度融合模块",
+    )
+    g_stock.add_argument("--dafat-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="DAFAT 训练设备")
 
     # =========================
     # 择时模型参数
@@ -670,6 +736,44 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("fgcl_weight_decay must be non-negative.")
     if not (0.0 <= float(args.fgcl_dropout) < 1.0):
         raise ValueError("fgcl_dropout must be in [0, 1).")
+    if int(args.dafat_seq_len) <= 1:
+        raise ValueError("dafat_seq_len must be greater than 1.")
+    if int(args.dafat_hidden_size) <= 0:
+        raise ValueError("dafat_hidden_size must be positive.")
+    if int(args.dafat_num_layers) <= 0:
+        raise ValueError("dafat_num_layers must be positive.")
+    if int(args.dafat_num_heads) <= 0:
+        raise ValueError("dafat_num_heads must be positive.")
+    if int(args.dafat_hidden_size) % int(args.dafat_num_heads) != 0:
+        raise ValueError("dafat_hidden_size must be divisible by dafat_num_heads.")
+    if int(args.dafat_ffn_mult) <= 0:
+        raise ValueError("dafat_ffn_mult must be positive.")
+    if not (0.0 <= float(args.dafat_dropout) < 1.0):
+        raise ValueError("dafat_dropout must be in [0, 1).")
+    if int(args.dafat_local_window) <= 0:
+        raise ValueError("dafat_local_window must be positive.")
+    if not (0.0 < float(args.dafat_topk_ratio) <= 1.0):
+        raise ValueError("dafat_topk_ratio must be in (0, 1].")
+    if not (0.0 <= float(args.dafat_vol_quantile) <= 1.0):
+        raise ValueError("dafat_vol_quantile must be in [0, 1].")
+    if int(args.dafat_meso_scale) <= 0:
+        raise ValueError("dafat_meso_scale must be positive.")
+    if int(args.dafat_macro_scale) <= 0:
+        raise ValueError("dafat_macro_scale must be positive.")
+    if int(args.dafat_epochs) <= 0:
+        raise ValueError("dafat_epochs must be positive.")
+    if float(args.dafat_lr) <= 0.0:
+        raise ValueError("dafat_lr must be positive.")
+    if float(args.dafat_weight_decay) < 0.0:
+        raise ValueError("dafat_weight_decay must be non-negative.")
+    if int(args.dafat_early_stop) <= 0:
+        raise ValueError("dafat_early_stop must be positive.")
+    if int(args.dafat_per_epoch_batch) <= 0:
+        raise ValueError("dafat_per_epoch_batch must be positive.")
+    if int(args.dafat_batch_size) == 0 or int(args.dafat_batch_size) < -1:
+        raise ValueError("dafat_batch_size must be -1 or positive.")
+    if float(args.dafat_mse_weight) < 0.0:
+        raise ValueError("dafat_mse_weight must be non-negative.")
     if not (0.0 < float(args.max_participation_rate) <= 1.0):
         raise ValueError("max_participation_rate must be in (0,1].")
     if not (0.0 <= float(args.base_fill_rate) <= 1.0):
@@ -747,6 +851,29 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         fgcl_weight_decay=float(args.fgcl_weight_decay),
         fgcl_dropout=float(args.fgcl_dropout),
         fgcl_device=str(args.fgcl_device),
+        dafat_seq_len=int(args.dafat_seq_len),
+        dafat_hidden_size=int(args.dafat_hidden_size),
+        dafat_num_layers=int(args.dafat_num_layers),
+        dafat_num_heads=int(args.dafat_num_heads),
+        dafat_ffn_mult=int(args.dafat_ffn_mult),
+        dafat_dropout=float(args.dafat_dropout),
+        dafat_local_window=int(args.dafat_local_window),
+        dafat_topk_ratio=float(args.dafat_topk_ratio),
+        dafat_vol_quantile=float(args.dafat_vol_quantile),
+        dafat_meso_scale=int(args.dafat_meso_scale),
+        dafat_macro_scale=int(args.dafat_macro_scale),
+        dafat_epochs=int(args.dafat_epochs),
+        dafat_lr=float(args.dafat_lr),
+        dafat_weight_decay=float(args.dafat_weight_decay),
+        dafat_early_stop=int(args.dafat_early_stop),
+        dafat_per_epoch_batch=int(args.dafat_per_epoch_batch),
+        dafat_batch_size=int(args.dafat_batch_size),
+        dafat_label_transform=str(args.dafat_label_transform),
+        dafat_mse_weight=float(args.dafat_mse_weight),
+        dafat_use_dpe=bool(args.dafat_use_dpe),
+        dafat_use_sparse_attn=bool(args.dafat_use_sparse_attn),
+        dafat_use_multiscale=bool(args.dafat_use_multiscale),
+        dafat_device=str(args.dafat_device),
     )
     timing = TimingModelConfig(
         model_type=args.timing_model_type,

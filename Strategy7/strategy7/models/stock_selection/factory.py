@@ -46,4 +46,33 @@ def build_stock_model(cfg: StockModelConfig) -> StockSelectionModel:
             random_state=cfg.random_state,
             device=cfg.fgcl_device,
         )
+    if cfg.model_type in {"dafat", "dafat_transformer", "transformer_dafat"}:
+        from .dafat_transformer_model import DAFATStockModel
+
+        return DAFATStockModel(
+            seq_len=cfg.dafat_seq_len,
+            hidden_size=cfg.dafat_hidden_size,
+            num_layers=cfg.dafat_num_layers,
+            num_heads=cfg.dafat_num_heads,
+            ffn_mult=cfg.dafat_ffn_mult,
+            dropout=cfg.dafat_dropout,
+            local_window=cfg.dafat_local_window,
+            topk_ratio=cfg.dafat_topk_ratio,
+            vol_quantile=cfg.dafat_vol_quantile,
+            meso_scale=cfg.dafat_meso_scale,
+            macro_scale=cfg.dafat_macro_scale,
+            n_epochs=cfg.dafat_epochs,
+            lr=cfg.dafat_lr,
+            weight_decay=cfg.dafat_weight_decay,
+            early_stop=cfg.dafat_early_stop,
+            per_epoch_batch=cfg.dafat_per_epoch_batch,
+            batch_size=cfg.dafat_batch_size,
+            label_transform=cfg.dafat_label_transform,
+            mse_weight=cfg.dafat_mse_weight,
+            use_dpe=cfg.dafat_use_dpe,
+            use_sparse_attn=cfg.dafat_use_sparse_attn,
+            use_multiscale=cfg.dafat_use_multiscale,
+            random_state=cfg.random_state,
+            device=cfg.dafat_device,
+        )
     raise ValueError(f"unsupported stock model type: {cfg.model_type}")

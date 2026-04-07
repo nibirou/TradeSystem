@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# bash /workspace/Quant/TradeSystem/Strategy7/scripts/run_strategy7_12_dafat_daily.sh
+set -euo pipefail
+
+cd /workspace/Quant/TradeSystem
+
+python3 ./Strategy7/run_strategy7.py \
+  --data-root /workspace/Quant/data_baostock/stock_hist/hs300 \
+  --hs300-list-path /workspace/Quant/data_baostock/metadata/stock_list_hs300.csv \
+  --index-root /workspace/Quant/data_baostock/ak_index \
+  --train-start 2024-01-01 \
+  --train-end 2024-12-31 \
+  --test-start 2025-01-01 \
+  --test-end 2025-12-31 \
+  --factor-freq D \
+  --label-task return \
+  --stock-model-type dafat \
+  --dafat-seq-len 40 \
+  --dafat-hidden-size 128 \
+  --dafat-num-layers 2 \
+  --dafat-num-heads 4 \
+  --dafat-ffn-mult 4 \
+  --dafat-dropout 0.10 \
+  --dafat-local-window 20 \
+  --dafat-topk-ratio 0.30 \
+  --dafat-vol-quantile 0.40 \
+  --dafat-meso-scale 5 \
+  --dafat-macro-scale 20 \
+  --dafat-epochs 200 \
+  --dafat-lr 1e-4 \
+  --dafat-weight-decay 1e-4 \
+  --dafat-early-stop 20 \
+  --dafat-per-epoch-batch 120 \
+  --dafat-batch-size -1 \
+  --dafat-label-transform csranknorm \
+  --dafat-mse-weight 0.05 \
+  --dafat-use-dpe true \
+  --dafat-use-sparse-attn true \
+  --dafat-use-multiscale true \
+  --dafat-device auto \
+  --timing-model-type none \
+  --portfolio-model-type equal_weight \
+  --execution-model-type ideal_fill \
+  --execution-scheme vwap30_vwap30 \
+  --horizon 20 \
+  --top-k 10 \
+  --long-threshold 0.50 \
+  --fee-bps 1.5 \
+  --slippage-bps 1.5 \
+  --save-models True \
+  --output-dir auto

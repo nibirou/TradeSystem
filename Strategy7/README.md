@@ -34,6 +34,12 @@ python Strategy7/run_strategy7.py --list-factors --factor-freq D
 python Strategy7/run_strategy7.py --stock-model-type factor_gcl --label-task return
 ```
 
+运行 DAFAT（Transformer 自适应方案）：
+
+```bash
+python Strategy7/run_strategy7.py --stock-model-type dafat --label-task return
+```
+
 运行因子挖掘：
 
 ```bash
@@ -45,7 +51,8 @@ python Strategy7/run_factor_mining.py --framework fundamental_multiobj
 1. [完整使用指南](./docs/usage_guide.md)
 2. [代码阅读地图](./docs/code_reading_map.md)
 3. [FactorGCL 说明](./docs/factor_gcl.md)
-4. [因子挖掘框架说明](./docs/factor_mining_framework.md)
+4. [DAFAT 复现与工程实现说明](./docs/dafat_transformer.md)
+5. [因子挖掘框架说明](./docs/factor_mining_framework.md)
 
 ## 脚本
 
