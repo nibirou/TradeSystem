@@ -9,14 +9,14 @@ python3 ./Strategy7/run_factor_mining.py \
   --data-root /workspace/Quant/data_baostock/stock_hist/hs300 \
   --hs300-list-path /workspace/Quant/data_baostock/metadata/stock_list_hs300.csv \
   --index-root /workspace/Quant/data_baostock/ak_index \
-  --train-start 2021-01-01 \
-  --train-end 2023-12-31 \
-  --valid-start 2024-01-01 \
-  --valid-end 2024-12-31 \
-  --factor-freq D \
-  --horizon 5 \
+  --train-start 2025-11-01 \
+  --train-end 2025-11-30 \
+  --valid-start 2025-12-01 \
+  --valid-end 2025-12-31 \
+  --factor-freq 5min \
+  --horizon 15 \
   --population-size 128 \
-  --generations 20 \
+  --generations 5 \
   --elite-size 12 \
   --mutation-rate 0.25 \
   --crossover-rate 0.70 \
@@ -27,4 +27,4 @@ python3 ./Strategy7/run_factor_mining.py \
   --random-state 42 \
   --factor-store-root /workspace/Quant/data_baostock \
   --catalog-path auto \
-  --save-format parquet
+  --save-format csv
