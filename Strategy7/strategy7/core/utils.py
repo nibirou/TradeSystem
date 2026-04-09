@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import math
+import numbers
 import re
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
@@ -43,7 +45,37 @@ def to_jsonable_float(v: Any) -> float:
 
 
 def dump_json(path: Path, obj: Dict[str, Any]) -> None:
-    path.write_text(json.dumps(obj, ensure_ascii=False, indent=2), encoding="utf-8")
+    def _sanitize(v: Any) -> Any:
+        if v is None:
+            return None
+        if isinstance(v, (str, bool)):
+            return v
+        if isinstance(v, Path):
+            return str(v)
+        if isinstance(v, pd.Timestamp):
+            return v.isoformat()
+        if isinstance(v, pd.Series):
+            return _sanitize(v.to_dict())
+        if isinstance(v, pd.DataFrame):
+            return _sanitize(v.to_dict(orient="records"))
+        if isinstance(v, numbers.Integral):
+            return int(v)
+        if isinstance(v, numbers.Real):
+            fv = float(v)
+            return fv if math.isfinite(fv) else None
+        if hasattr(v, "tolist"):
+            try:
+                return _sanitize(v.tolist())
+            except Exception:
+                pass
+        if isinstance(v, dict):
+            return {str(k): _sanitize(val) for k, val in v.items()}
+        if isinstance(v, (list, tuple, set)):
+            return [_sanitize(x) for x in v]
+        return v
+
+    safe_obj = _sanitize(obj)
+    path.write_text(json.dumps(safe_obj, ensure_ascii=False, indent=2, allow_nan=False), encoding="utf-8")
 
 
 def set_log_level(level: str = "normal", quiet: bool = False, verbose: bool = False) -> str:

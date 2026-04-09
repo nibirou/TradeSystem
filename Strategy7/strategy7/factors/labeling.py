@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
 import numpy as np
 import pandas as pd
@@ -144,3 +144,103 @@ def split_train_test(
     test_mask = test_mask & (target_anchor <= test_end)
 
     return out[train_mask].copy(), out[test_mask].copy()
+
+
+def validate_label_frequency_alignment(
+    panel: pd.DataFrame,
+    factor_freq: str,
+    horizon: int | None = None,
+    *,
+    strict: bool = True,
+) -> Dict[str, float]:
+    """Validate that labels are aligned with the configured frequency/horizon."""
+    freq = str(factor_freq)
+    time_col = "datetime" if freq in INTRADAY_FREQS else "date"
+
+    out = panel.copy()
+    missing: List[str] = []
+    for c in [time_col, "signal_ts", "entry_ts", "exit_ts"]:
+        if c not in out.columns:
+            missing.append(c)
+
+    if missing:
+        msg = f"label alignment missing required columns for freq={freq}: {missing}"
+        if strict:
+            raise ValueError(msg)
+        return {
+            "rows": float(len(out)),
+            "missing_required_cols": float(len(missing)),
+        }
+
+    out[time_col] = pd.to_datetime(out[time_col], errors="coerce")
+    if time_col == "date":
+        out[time_col] = out[time_col].dt.normalize()
+
+    signal_ts = pd.to_datetime(out["signal_ts"], errors="coerce")
+    entry_ts = pd.to_datetime(out["entry_ts"], errors="coerce")
+    exit_ts = pd.to_datetime(out["exit_ts"], errors="coerce")
+
+    signal_cmp = signal_ts if time_col == "datetime" else signal_ts.dt.normalize()
+    entry_cmp = entry_ts if time_col == "datetime" else entry_ts.dt.normalize()
+    exit_cmp = exit_ts if time_col == "datetime" else exit_ts.dt.normalize()
+
+    bad_signal_time = int(
+        (
+            signal_cmp.notna()
+            & out[time_col].notna()
+            & (signal_cmp != out[time_col])
+        ).sum()
+    )
+
+    time_order_mask = signal_cmp.notna() & entry_cmp.notna() & exit_cmp.notna()
+    bad_time_order = int(
+        (
+            (entry_cmp <= signal_cmp) | (exit_cmp < entry_cmp)
+        )[time_order_mask].sum()
+    ) if bool(time_order_mask.any()) else 0
+
+    bad_freq_tag = 0
+    if "time_freq" in out.columns:
+        tags = out["time_freq"].astype(str).str.strip()
+        tags = tags[tags != ""]
+        bad_freq_tag = int((tags != freq).sum()) if not tags.empty else 0
+
+    # Optional strict horizon-bar consistency check against shift pattern.
+    bad_entry_shift = 0
+    bad_exit_shift = 0
+    if horizon is not None and int(horizon) > 0:
+        chk = out[["code", time_col, "entry_ts", "exit_ts"]].copy()
+        chk["code"] = chk["code"].astype(str).str.strip()
+        chk = chk.dropna(subset=["code", time_col]).sort_values(["code", time_col])
+        g = chk.groupby("code", sort=False)
+
+        exp_entry = pd.to_datetime(g[time_col].shift(-1), errors="coerce")
+        exp_exit = pd.to_datetime(g[time_col].shift(-(int(horizon) + 1)), errors="coerce")
+        got_entry = pd.to_datetime(chk["entry_ts"], errors="coerce")
+        got_exit = pd.to_datetime(chk["exit_ts"], errors="coerce")
+
+        if time_col == "date":
+            exp_entry = exp_entry.dt.normalize()
+            exp_exit = exp_exit.dt.normalize()
+            got_entry = got_entry.dt.normalize()
+            got_exit = got_exit.dt.normalize()
+
+        bad_entry_shift = int(((got_entry.notna() & exp_entry.notna()) & (got_entry != exp_entry)).sum())
+        bad_exit_shift = int(((got_exit.notna() & exp_exit.notna()) & (got_exit != exp_exit)).sum())
+
+    metrics = {
+        "rows": float(len(out)),
+        "missing_required_cols": 0.0,
+        "bad_signal_time": float(bad_signal_time),
+        "bad_freq_tag": float(bad_freq_tag),
+        "bad_time_order": float(bad_time_order),
+        "bad_entry_shift": float(bad_entry_shift),
+        "bad_exit_shift": float(bad_exit_shift),
+    }
+    violated = [k for k in ["bad_signal_time", "bad_freq_tag", "bad_time_order", "bad_entry_shift", "bad_exit_shift"] if metrics[k] > 0]
+    if strict and violated:
+        raise ValueError(
+            f"label alignment check failed for freq={freq}: "
+            + ", ".join(f"{k}={int(metrics[k])}" for k in violated)
+        )
+    return metrics

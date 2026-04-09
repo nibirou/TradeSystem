@@ -10,6 +10,7 @@ import pandas as pd
 
 from ..backtest.metrics import compute_return_stats
 from ..core.constants import EPS
+from ..core.time_utils import infer_periods_per_year
 
 
 @dataclass
@@ -25,25 +26,8 @@ class FactorAdmissionStandard:
 
 
 def periods_per_year_from_freq(freq: str, horizon: int) -> float:
-    f = str(freq).strip().lower()
-    h = max(int(horizon), 1)
-    if f == "d":
-        return float(252 / h)
-    if f == "w":
-        return float(52 / h)
-    if f == "m":
-        return float(12 / h)
-    if f == "5min":
-        return float((252 * 48) / h)
-    if f == "15min":
-        return float((252 * 16) / h)
-    if f == "30min":
-        return float((252 * 8) / h)
-    if f == "60min":
-        return float((252 * 4) / h)
-    if f == "120min":
-        return float((252 * 2) / h)
-    return float(252 / h)
+    # Mining evaluates horizon-ahead return labels per signal, so stride=horizon.
+    return infer_periods_per_year(factor_freq=str(freq), stride=max(int(horizon), 1))
 
 
 def _ndcg(scores: np.ndarray, labels: np.ndarray, k: int) -> float:
@@ -74,12 +58,15 @@ def evaluate_factor_panel(
     min_cross_section: int = 30,
     periods_per_year: float = 252.0,
 ) -> Dict[str, float]:
+    def _s(v: float) -> float:
+        return float(v) if np.isfinite(v) else 0.0
+
     base = panel[[group_col, factor_col, ret_col]].copy()
     base = base.replace([np.inf, -np.inf], np.nan)
 
     total_rows = int(len(base))
     covered_rows = int(base[factor_col].notna().sum())
-    coverage = float(covered_rows / total_rows) if total_rows > 0 else float("nan")
+    coverage = float(covered_rows / total_rows) if total_rows > 0 else 0.0
 
     ic_list: List[float] = []
     rank_ic_list: List[float] = []
@@ -125,31 +112,31 @@ def evaluate_factor_panel(
     long_ret_ts = pd.Series(long_ret_list, dtype=float)
     long_excess_ts = pd.Series(long_excess_list, dtype=float)
 
-    rank_ic_mean = float(rank_ic_ts.mean()) if not rank_ic_ts.empty else float("nan")
+    rank_ic_mean = float(rank_ic_ts.mean()) if not rank_ic_ts.empty else 0.0
     sign = 1.0 if not np.isfinite(rank_ic_mean) or rank_ic_mean >= 0.0 else -1.0
     oriented_rank_ic = rank_ic_ts * sign
 
     ic_std = float(oriented_rank_ic.std(ddof=1)) if len(oriented_rank_ic) > 1 else float("nan")
-    ic_ir = float(oriented_rank_ic.mean() / ic_std * np.sqrt(periods_per_year)) if np.isfinite(ic_std) and ic_std > 0 else float("nan")
+    ic_ir = float(oriented_rank_ic.mean() / ic_std * np.sqrt(periods_per_year)) if np.isfinite(ic_std) and ic_std > 0 else 0.0
 
     long_stats = compute_return_stats(long_ret_ts, horizon=1, periods_per_year=periods_per_year)
     excess_stats = compute_return_stats(long_excess_ts, horizon=1, periods_per_year=periods_per_year)
 
     out = {
         "obs": float(len(rank_ic_ts)),
-        "coverage": coverage,
-        "ic_mean": float(ic_ts.mean()) if not ic_ts.empty else float("nan"),
-        "rank_ic_mean": rank_ic_mean,
-        "abs_ic_mean": float(abs(rank_ic_mean)) if np.isfinite(rank_ic_mean) else float("nan"),
-        "ic_win_rate": float((oriented_rank_ic > 0).mean()) if not oriented_rank_ic.empty else float("nan"),
-        "ic_ir": ic_ir,
-        "ndcg_k": float(np.mean(ndcg_list)) if ndcg_list else float("nan"),
-        "long_ret_mean": float(long_ret_ts.mean()) if not long_ret_ts.empty else float("nan"),
-        "long_ret_annualized": float(long_stats.get("annualized_return", float("nan"))),
-        "long_sharpe": float(long_stats.get("sharpe", float("nan"))),
-        "long_win_rate": float(np.mean(long_win_flags)) if long_win_flags else float("nan"),
-        "long_excess_mean": float(long_excess_ts.mean()) if not long_excess_ts.empty else float("nan"),
-        "long_excess_annualized": float(excess_stats.get("annualized_return", float("nan"))),
+        "coverage": _s(coverage),
+        "ic_mean": _s(float(ic_ts.mean()) if not ic_ts.empty else 0.0),
+        "rank_ic_mean": _s(rank_ic_mean),
+        "abs_ic_mean": _s(float(abs(rank_ic_mean))),
+        "ic_win_rate": _s(float((oriented_rank_ic > 0).mean()) if not oriented_rank_ic.empty else 0.0),
+        "ic_ir": _s(ic_ir),
+        "ndcg_k": _s(float(np.mean(ndcg_list)) if ndcg_list else 0.0),
+        "long_ret_mean": _s(float(long_ret_ts.mean()) if not long_ret_ts.empty else 0.0),
+        "long_ret_annualized": _s(float(long_stats.get("annualized_return", 0.0))),
+        "long_sharpe": _s(float(long_stats.get("sharpe", 0.0))),
+        "long_win_rate": _s(float(np.mean(long_win_flags)) if long_win_flags else 0.0),
+        "long_excess_mean": _s(float(long_excess_ts.mean()) if not long_excess_ts.empty else 0.0),
+        "long_excess_annualized": _s(float(excess_stats.get("annualized_return", 0.0))),
     }
     return out
 

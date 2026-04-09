@@ -1,0 +1,45 @@
+{
+  "framework": "custom",
+  "factor_freq": "15min",
+  "train_period": [
+    "2024-01-02",
+    "2024-01-05"
+  ],
+  "valid_period": [
+    "2024-01-08",
+    "2024-01-12"
+  ],
+  "population_size": 8,
+  "generations": 1,
+  "candidate_count": 1,
+  "selected_count": 1,
+  "catalog_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\catalog.json",
+  "factor_table_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_mining\\custom\\20260408_144737\\factor_values_15min.csv",
+  "selected_factors": [
+    "fac_close"
+  ],
+  "admission_profile": "15MIN_custom_default_v1",
+  "top_candidates": [
+    {
+      "name": "fac_close",
+      "score": 6.089659187986537,
+      "passed": true,
+      "metrics_valid": {
+        "obs": 80.0,
+        "coverage": 1.0,
+        "ic_mean": 0.03769481319039066,
+        "rank_ic_mean": 0.03263602251407131,
+        "abs_ic_mean": 0.03263602251407131,
+        "ic_win_rate": 0.55,
+        "ic_ir": 6.089659187986537,
+        "ndcg_k": 0.5782709512340146,
+        "long_ret_mean": 0.0020130860437214417,
+        "long_ret_annualized": 4.026836889882854,
+        "long_sharpe": 13.686120933224677,
+        "long_win_rate": 0.7,
+        "long_excess_mean": 0.0011977218549031653,
+        "long_excess_annualized": 1.608610164537998
+      }
+    }
+  ]
+}

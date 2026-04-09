@@ -8,32 +8,27 @@ import numpy as np
 import pandas as pd
 
 from ..config import BacktestConfig
-from ..core.constants import EPS, TRADING_DAYS_PER_YEAR
+from ..core.constants import EPS
+from ..core.time_utils import infer_periods_per_year
 from ..data.loaders import lookup_index_period_return
 from ..models.base import ExecutionModel, PortfolioModel, TimingModel
 from .metrics import calc_trade_return, compute_return_stats
 
 
 def _infer_periods_per_year(factor_freq: str, rebalance_stride: int) -> float:
-    stride = max(int(rebalance_stride), 1)
-    intraday_bars_per_day = {
-        "5min": 48.0,
-        "15min": 16.0,
-        "30min": 8.0,
-        "60min": 4.0,
-        "120min": 2.0,
-    }
-    if factor_freq == "D":
-        base = float(TRADING_DAYS_PER_YEAR)
-    elif factor_freq == "W":
-        base = 52.0
-    elif factor_freq == "M":
-        base = 12.0
-    elif factor_freq in intraday_bars_per_day:
-        base = float(TRADING_DAYS_PER_YEAR) * intraday_bars_per_day[factor_freq]
-    else:
-        base = float(TRADING_DAYS_PER_YEAR)
-    return max(base / stride, 1e-9)
+    return infer_periods_per_year(factor_freq=factor_freq, stride=rebalance_stride)
+
+
+def _supports_index_benchmark(factor_freq: str) -> bool:
+    return str(factor_freq).strip().upper() in {"D", "W", "M"}
+
+
+def _mean_or_zero(series: pd.Series) -> float:
+    s = pd.to_numeric(series, errors="coerce").dropna()
+    if s.empty:
+        return 0.0
+    v = float(s.mean())
+    return v if np.isfinite(v) else 0.0
 
 
 def run_backtest(
@@ -73,6 +68,7 @@ def run_backtest(
         factor_freq=factor_freq,
         rebalance_stride=backtest_cfg.rebalance_stride,
     )
+    index_benchmark_enabled = _supports_index_benchmark(factor_freq)
     rebalance_points = sorted(pd.to_datetime(data[signal_col].dropna().unique()))
     trade_records: List[Dict[str, object]] = []
     position_records: List[Dict[str, object]] = []
@@ -101,8 +97,8 @@ def run_backtest(
         benchmark_pool_ret = float(day_all["net_trade_ret"].mean()) if not day_all.empty else 0.0
         bench_size = int(len(day_all))
 
-        # benchmark index only for daily mode
-        if factor_freq == "D":
+        # Index benchmark comparison is enabled only for D/W/M research frequencies.
+        if index_benchmark_enabled:
             benchmark_hs300_ret = lookup_index_period_return(index_benchmarks.get("hs300", pd.DataFrame()), entry_ts, exit_ts)
             benchmark_zz500_ret = lookup_index_period_return(index_benchmarks.get("zz500", pd.DataFrame()), entry_ts, exit_ts)
             benchmark_zz1000_ret = lookup_index_period_return(index_benchmarks.get("zz1000", pd.DataFrame()), entry_ts, exit_ts)
@@ -231,52 +227,85 @@ def run_backtest(
     trades_df = pd.DataFrame(trade_records)
     positions_df = pd.DataFrame(position_records)
     if trades_df.empty:
+        empty_stats = compute_return_stats(pd.Series(dtype=float), horizon=backtest_cfg.horizon, periods_per_year=periods_per_year)
+        bench_hs300 = dict(empty_stats, enabled=bool(index_benchmark_enabled))
+        bench_zz500 = dict(empty_stats, enabled=bool(index_benchmark_enabled))
+        bench_zz1000 = dict(empty_stats, enabled=bool(index_benchmark_enabled))
+        excess_hs300 = dict(empty_stats, enabled=bool(index_benchmark_enabled))
+        excess_zz500 = dict(empty_stats, enabled=bool(index_benchmark_enabled))
+        excess_zz1000 = dict(empty_stats, enabled=bool(index_benchmark_enabled))
         summary = {
-            "strategy": compute_return_stats(pd.Series(dtype=float), horizon=backtest_cfg.horizon, periods_per_year=periods_per_year),
-            "benchmark_pool": compute_return_stats(
-                pd.Series(dtype=float),
-                horizon=backtest_cfg.horizon,
-                periods_per_year=periods_per_year,
-            ),
-            "excess_vs_pool": compute_return_stats(
-                pd.Series(dtype=float),
-                horizon=backtest_cfg.horizon,
-                periods_per_year=periods_per_year,
-            ),
+            "strategy": empty_stats,
+            "benchmark": empty_stats,
+            "excess": empty_stats,
+            "benchmark_pool": empty_stats,
+            "benchmark_hs300": bench_hs300,
+            "benchmark_zz500": bench_zz500,
+            "benchmark_zz1000": bench_zz1000,
+            "excess_vs_pool": empty_stats,
+            "excess_vs_hs300": excess_hs300,
+            "excess_vs_zz500": excess_zz500,
+            "excess_vs_zz1000": excess_zz1000,
             "annualization_periods_per_year": periods_per_year,
             "rebalance_overlap_possible": float(overlap_possible),
+            "active_trade_ratio": 0.0,
             "portfolio_weighting_mode": backtest_cfg.portfolio_mode,
+            "portfolio_avg_turnover": 0.0,
+            "portfolio_avg_concentration": 0.0,
+            "portfolio_avg_entropy": 0.0,
+            "timing_avg_exposure": 0.0,
+            "execution_avg_fill": 0.0,
+            "index_benchmark_enabled": bool(index_benchmark_enabled),
         }
         return trades_df, positions_df, pd.DataFrame(), summary
 
     trades_df = trades_df.sort_values("trade_date").reset_index(drop=True)
-    for tag in ["pool", "hs300", "zz500", "zz1000"]:
-        c = f"benchmark_{tag}_ret"
-        trades_df[c] = pd.to_numeric(trades_df[c], errors="coerce").fillna(0.0)
     trades_df["strategy_ret"] = pd.to_numeric(trades_df["strategy_ret"], errors="coerce").fillna(0.0)
+    trades_df["benchmark_pool_ret"] = pd.to_numeric(trades_df["benchmark_pool_ret"], errors="coerce").fillna(0.0)
+    for tag in ["hs300", "zz500", "zz1000"]:
+        c = f"benchmark_{tag}_ret"
+        trades_df[c] = pd.to_numeric(trades_df[c], errors="coerce")
+        if index_benchmark_enabled:
+            trades_df[c] = trades_df[c].fillna(0.0)
 
     trades_df["strategy_net"] = (1.0 + trades_df["strategy_ret"]).cumprod()
     trades_df["strategy_cum_return"] = trades_df["strategy_net"] - 1.0
     trades_df["strategy_cum_ret"] = trades_df["strategy_cum_return"]
 
-    for tag in ["pool", "hs300", "zz500", "zz1000"]:
+    # Pool benchmark always enabled.
+    trades_df["benchmark_pool_net"] = (1.0 + trades_df["benchmark_pool_ret"]).cumprod()
+    trades_df["benchmark_pool_cum_return"] = trades_df["benchmark_pool_net"] - 1.0
+    trades_df["benchmark_pool_cum_ret"] = trades_df["benchmark_pool_cum_return"]
+    trades_df["excess_vs_pool_ret"] = trades_df["strategy_ret"] - trades_df["benchmark_pool_ret"]
+    trades_df["excess_vs_pool_net"] = (1.0 + trades_df["excess_vs_pool_ret"]).cumprod()
+    trades_df["excess_vs_pool_cum_return"] = trades_df["excess_vs_pool_net"] - 1.0
+    trades_df["excess_vs_pool_cum_ret"] = trades_df["excess_vs_pool_cum_return"]
+
+    for tag in ["hs300", "zz500", "zz1000"]:
         rc = f"benchmark_{tag}_ret"
         nc = f"benchmark_{tag}_net"
         cc = f"benchmark_{tag}_cum_return"
         c2 = f"benchmark_{tag}_cum_ret"
-        trades_df[nc] = (1.0 + trades_df[rc]).cumprod()
-        trades_df[cc] = trades_df[nc] - 1.0
-        trades_df[c2] = trades_df[cc]
-
-    for tag in ["pool", "hs300", "zz500", "zz1000"]:
         ex_ret = f"excess_vs_{tag}_ret"
         ex_net = f"excess_vs_{tag}_net"
         ex_cum = f"excess_vs_{tag}_cum_return"
         ex_cum_ret = f"excess_vs_{tag}_cum_ret"
-        trades_df[ex_ret] = trades_df["strategy_ret"] - trades_df[f"benchmark_{tag}_ret"]
-        trades_df[ex_net] = (1.0 + trades_df[ex_ret]).cumprod()
-        trades_df[ex_cum] = trades_df[ex_net] - 1.0
-        trades_df[ex_cum_ret] = trades_df[ex_cum]
+        if index_benchmark_enabled:
+            trades_df[nc] = (1.0 + trades_df[rc]).cumprod()
+            trades_df[cc] = trades_df[nc] - 1.0
+            trades_df[c2] = trades_df[cc]
+            trades_df[ex_ret] = trades_df["strategy_ret"] - trades_df[rc]
+            trades_df[ex_net] = (1.0 + trades_df[ex_ret]).cumprod()
+            trades_df[ex_cum] = trades_df[ex_net] - 1.0
+            trades_df[ex_cum_ret] = trades_df[ex_cum]
+        else:
+            trades_df[nc] = np.nan
+            trades_df[cc] = np.nan
+            trades_df[c2] = np.nan
+            trades_df[ex_ret] = np.nan
+            trades_df[ex_net] = np.nan
+            trades_df[ex_cum] = np.nan
+            trades_df[ex_cum_ret] = np.nan
 
     trades_df["benchmark_ret"] = trades_df["benchmark_pool_ret"]
     trades_df["benchmark_net"] = trades_df["benchmark_pool_net"]
@@ -293,42 +322,57 @@ def run_backtest(
         horizon=backtest_cfg.horizon,
         periods_per_year=periods_per_year,
     )
-    benchmark_hs300_stats = compute_return_stats(
-        trades_df["benchmark_hs300_ret"],
-        horizon=backtest_cfg.horizon,
-        periods_per_year=periods_per_year,
-    )
-    benchmark_zz500_stats = compute_return_stats(
-        trades_df["benchmark_zz500_ret"],
-        horizon=backtest_cfg.horizon,
-        periods_per_year=periods_per_year,
-    )
-    benchmark_zz1000_stats = compute_return_stats(
-        trades_df["benchmark_zz1000_ret"],
-        horizon=backtest_cfg.horizon,
-        periods_per_year=periods_per_year,
-    )
-
     excess_pool_stats = compute_return_stats(
         trades_df["excess_vs_pool_ret"],
         horizon=backtest_cfg.horizon,
         periods_per_year=periods_per_year,
     )
-    excess_hs300_stats = compute_return_stats(
-        trades_df["excess_vs_hs300_ret"],
-        horizon=backtest_cfg.horizon,
-        periods_per_year=periods_per_year,
-    )
-    excess_zz500_stats = compute_return_stats(
-        trades_df["excess_vs_zz500_ret"],
-        horizon=backtest_cfg.horizon,
-        periods_per_year=periods_per_year,
-    )
-    excess_zz1000_stats = compute_return_stats(
-        trades_df["excess_vs_zz1000_ret"],
-        horizon=backtest_cfg.horizon,
-        periods_per_year=periods_per_year,
-    )
+
+    if index_benchmark_enabled:
+        benchmark_hs300_stats = compute_return_stats(
+            trades_df["benchmark_hs300_ret"],
+            horizon=backtest_cfg.horizon,
+            periods_per_year=periods_per_year,
+        )
+        benchmark_zz500_stats = compute_return_stats(
+            trades_df["benchmark_zz500_ret"],
+            horizon=backtest_cfg.horizon,
+            periods_per_year=periods_per_year,
+        )
+        benchmark_zz1000_stats = compute_return_stats(
+            trades_df["benchmark_zz1000_ret"],
+            horizon=backtest_cfg.horizon,
+            periods_per_year=periods_per_year,
+        )
+        excess_hs300_stats = compute_return_stats(
+            trades_df["excess_vs_hs300_ret"],
+            horizon=backtest_cfg.horizon,
+            periods_per_year=periods_per_year,
+        )
+        excess_zz500_stats = compute_return_stats(
+            trades_df["excess_vs_zz500_ret"],
+            horizon=backtest_cfg.horizon,
+            periods_per_year=periods_per_year,
+        )
+        excess_zz1000_stats = compute_return_stats(
+            trades_df["excess_vs_zz1000_ret"],
+            horizon=backtest_cfg.horizon,
+            periods_per_year=periods_per_year,
+        )
+        benchmark_hs300_stats["enabled"] = True
+        benchmark_zz500_stats["enabled"] = True
+        benchmark_zz1000_stats["enabled"] = True
+        excess_hs300_stats["enabled"] = True
+        excess_zz500_stats["enabled"] = True
+        excess_zz1000_stats["enabled"] = True
+    else:
+        disabled_stats = compute_return_stats(pd.Series(dtype=float), horizon=backtest_cfg.horizon, periods_per_year=periods_per_year)
+        benchmark_hs300_stats = dict(disabled_stats, enabled=False)
+        benchmark_zz500_stats = dict(disabled_stats, enabled=False)
+        benchmark_zz1000_stats = dict(disabled_stats, enabled=False)
+        excess_hs300_stats = dict(disabled_stats, enabled=False)
+        excess_zz500_stats = dict(disabled_stats, enabled=False)
+        excess_zz1000_stats = dict(disabled_stats, enabled=False)
 
     summary = {
         "strategy": strategy_stats,
@@ -346,11 +390,12 @@ def run_backtest(
         "rebalance_overlap_possible": float(overlap_possible),
         "active_trade_ratio": float((trades_df["active_stocks"] > 0).mean()),
         "portfolio_weighting_mode": backtest_cfg.portfolio_mode,
-        "portfolio_avg_turnover": float(pd.to_numeric(trades_df["portfolio_turnover"], errors="coerce").dropna().mean()),
-        "portfolio_avg_concentration": float(pd.to_numeric(trades_df["portfolio_concentration"], errors="coerce").dropna().mean()),
-        "portfolio_avg_entropy": float(pd.to_numeric(trades_df["portfolio_weight_entropy"], errors="coerce").dropna().mean()),
-        "timing_avg_exposure": float(pd.to_numeric(trades_df["timing_exposure"], errors="coerce").dropna().mean()),
-        "execution_avg_fill": float(pd.to_numeric(trades_df.get("avg_fill_ratio", pd.Series(dtype=float)), errors="coerce").dropna().mean()),
+        "portfolio_avg_turnover": _mean_or_zero(trades_df["portfolio_turnover"]),
+        "portfolio_avg_concentration": _mean_or_zero(trades_df["portfolio_concentration"]),
+        "portfolio_avg_entropy": _mean_or_zero(trades_df["portfolio_weight_entropy"]),
+        "timing_avg_exposure": _mean_or_zero(trades_df["timing_exposure"]),
+        "execution_avg_fill": _mean_or_zero(trades_df.get("avg_fill_ratio", pd.Series(dtype=float))),
+        "index_benchmark_enabled": bool(index_benchmark_enabled),
     }
     curve_df = trades_df.copy()
     return trades_df, positions_df, curve_df, summary

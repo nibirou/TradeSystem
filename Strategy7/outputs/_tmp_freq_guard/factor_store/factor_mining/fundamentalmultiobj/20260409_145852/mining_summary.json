@@ -1,0 +1,21 @@
+{
+  "framework": "fundamental_multiobj",
+  "factor_freq": "W",
+  "train_period": [
+    "2023-01-01",
+    "2024-06-30"
+  ],
+  "valid_period": [
+    "2024-07-01",
+    "2024-12-31"
+  ],
+  "population_size": 8,
+  "generations": 1,
+  "candidate_count": 8,
+  "selected_count": 0,
+  "catalog_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_store\\factor_catalog.json",
+  "factor_table_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_store\\factor_mining\\fundamentalmultiobj\\20260409_145852\\factor_values_W.parquet",
+  "selected_factors": [],
+  "admission_profile": "W_fundamental_nsga2_v1",
+  "top_candidates": []
+}

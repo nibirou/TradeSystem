@@ -1,0 +1,21 @@
+{
+  "framework": "fundamental_multiobj",
+  "factor_freq": "15min",
+  "train_period": [
+    "2025-01-01",
+    "2025-01-02"
+  ],
+  "valid_period": [
+    "2025-01-03",
+    "2025-01-04"
+  ],
+  "population_size": 6,
+  "generations": 1,
+  "candidate_count": 6,
+  "selected_count": 0,
+  "catalog_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_mining_freq_smoke\\catalog.json",
+  "factor_table_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_mining_freq_smoke\\factor_mining\\fundamentalmultiobj\\20260408_111821\\factor_values_15min.csv",
+  "selected_factors": [],
+  "admission_profile": "15MIN_fundamental_nsga2_v1",
+  "top_candidates": []
+}

@@ -42,6 +42,9 @@ class FactorLibrary:
             raise KeyError(f"factor not found: {name} @ {freq}")
         return self._factors[k]
 
+    def has(self, freq: str, name: str) -> bool:
+        return self._key(freq, name) in self._factors
+
     def metadata(self, freq: str | None = None) -> pd.DataFrame:
         rows = []
         for fd in self._factors.values():
@@ -96,3 +99,50 @@ def compute_factor_panel(base_df: pd.DataFrame, library: FactorLibrary, freq: st
             aligned.index = panel.index
         panel[fac] = pd.to_numeric(aligned, errors="coerce")
     return panel
+
+
+def register_passthrough_panel_factors(
+    library: FactorLibrary,
+    base_df: pd.DataFrame,
+    freq: str,
+    *,
+    category: str = "auto_panel",
+    description_prefix: str = "auto passthrough",
+) -> List[str]:
+    """Register numeric panel columns as direct-usage factors for the target frequency."""
+    if base_df.empty:
+        return []
+
+    exclude = {
+        "date",
+        "datetime",
+        "code",
+        "entry_date",
+        "exit_date",
+        "entry_ts",
+        "exit_ts",
+        "target_date",
+        "future_ret_n",
+        "target_up",
+        "target_return",
+        "target_volatility",
+        "signal_ts",
+        "time_freq",
+    }
+    registered: List[str] = []
+    for c in base_df.columns:
+        if c in exclude:
+            continue
+        if not pd.api.types.is_numeric_dtype(base_df[c]):
+            continue
+        if library.has(freq, c):
+            continue
+        library.register(
+            name=str(c),
+            category=category,
+            description=f"{description_prefix}: {c}",
+            func=lambda d, col=c: pd.to_numeric(d[col], errors="coerce"),
+            freq=freq,
+        )
+        registered.append(str(c))
+    return sorted(registered)

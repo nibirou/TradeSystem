@@ -21,7 +21,7 @@ from ..core.utils import (
     symbol_key_from_filename,
 )
 from .base import MarketDataLoader
-from .frequency import add_generic_micro_structure_features, build_frequency_views
+from .frequency import add_generic_micro_structure_features, add_multifreq_bridge_features, build_frequency_views
 
 
 def list_symbol_keys(daily_dir: Path, file_format: str = "auto") -> List[str]:
@@ -93,6 +93,7 @@ class HS300MarketDataLoader(MarketDataLoader):
     date_cfg: DateConfig
     lookback_days: int
     horizon: int
+    factor_freq: str = "D"
 
     def _load_market_frames(
         self,
@@ -219,10 +220,11 @@ class HS300MarketDataLoader(MarketDataLoader):
             test_end=self.date_cfg.test_end,
             lookback_days=int(self.lookback_days),
             horizon=int(self.horizon),
+            factor_freq=str(self.factor_freq),
         )
         log_progress(
             f"计算加载窗口完成：start={load_start.date()}, end={load_end.date()}, "
-            f"lookback_days={self.lookback_days}, horizon={self.horizon}。",
+            f"lookback_days={self.lookback_days}, horizon={self.horizon}, factor_freq={self.factor_freq}。",
             module="loader",
         )
         daily_df, minute_df = self._load_market_frames(
@@ -439,6 +441,83 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
     return df
 
 
+def _merge_daily_context_into_panel(panel: pd.DataFrame, daily_base: pd.DataFrame, time_col: str) -> pd.DataFrame:
+    """Attach selected daily-context fields onto non-daily panels by [date, code]."""
+    if panel.empty:
+        return panel.copy()
+
+    out = panel.copy()
+    if "code" not in out.columns:
+        return out
+    out["code"] = out["code"].astype(str).str.strip()
+
+    if "date" not in out.columns:
+        if time_col == "datetime" and "datetime" in out.columns:
+            out["date"] = pd.to_datetime(out["datetime"], errors="coerce").dt.normalize()
+        else:
+            return out
+    else:
+        out["date"] = pd.to_datetime(out["date"], errors="coerce").dt.normalize()
+
+    ctx_candidates = [
+        "ret_1d",
+        "ret_3d",
+        "ret_5d",
+        "ret_10d",
+        "ret_20d",
+        "vol_chg_1d",
+        "ma_gap_5",
+        "ma_gap_10",
+        "ma_gap_20",
+        "ma_cross_5_20",
+        "breakout_20",
+        "vol_ratio_5",
+        "vol_ratio_20",
+        "amount_ratio_20",
+        "turn_ratio_5",
+        "amount_ma20",
+        "turn_ma5",
+        "atr_norm_14",
+        "realized_vol_20",
+        "downside_vol_ratio_20",
+        "amihud_20",
+        "ret_vol_corr_20",
+        "close_to_vwap_day",
+        "morning_momentum_30m",
+        "last30_momentum",
+        "open_to_close_intraday",
+        "vwap30_vs_day",
+        "minute_up_ratio_5m",
+        "minute_ret_skew_5m",
+        "minute_ret_kurt_5m",
+        "signed_vol_imbalance_5m",
+        "jump_ratio_5m",
+        "px_open5",
+        "px_vwap30",
+        "px_twap_last30",
+        "px_daily_close",
+        "barra_size_proxy",
+        "barra_momentum_proxy",
+        "barra_volatility_proxy",
+        "barra_liquidity_proxy",
+        "barra_beta_proxy",
+        "crowding_proxy_raw",
+        "industry_bucket",
+        "board_type",
+    ]
+    ctx_cols = [c for c in ctx_candidates if c in daily_base.columns and c not in out.columns]
+    if not ctx_cols:
+        return out
+
+    ctx = daily_base[["date", "code", *ctx_cols]].copy()
+    ctx["date"] = pd.to_datetime(ctx["date"], errors="coerce").dt.normalize()
+    ctx["code"] = ctx["code"].astype(str).str.strip()
+    ctx = ctx.dropna(subset=["date", "code"]).drop_duplicates(["date", "code"], keep="last")
+
+    out = out.merge(ctx, on=["date", "code"], how="left")
+    return out
+
+
 def build_feature_bundle(bundle: MarketBundle) -> FeatureBundle:
     """Generate daily and multi-frequency feature bases."""
     log_progress("开始聚合分钟级日特征。", module="loader")
@@ -453,11 +532,18 @@ def build_feature_bundle(bundle: MarketBundle) -> FeatureBundle:
     # convert non-daily views to generic features if needed
     for freq in ["5min", "15min", "30min", "60min", "120min"]:
         if freq in views and not views[freq].empty:
-            views[freq] = add_generic_micro_structure_features(views[freq], time_col="datetime")
+            v = add_generic_micro_structure_features(views[freq], time_col="datetime")
+            views[freq] = _merge_daily_context_into_panel(v, daily_base=daily_base, time_col="datetime")
     if "W" in views and not views["W"].empty:
-        views["W"] = add_generic_micro_structure_features(views["W"], time_col="date")
+        v = add_generic_micro_structure_features(views["W"], time_col="date")
+        views["W"] = _merge_daily_context_into_panel(v, daily_base=daily_base, time_col="date")
     if "M" in views and not views["M"].empty:
-        views["M"] = add_generic_micro_structure_features(views["M"], time_col="date")
+        v = add_generic_micro_structure_features(views["M"], time_col="date")
+        views["M"] = _merge_daily_context_into_panel(v, daily_base=daily_base, time_col="date")
+
+    # Add explicit finer->coarser bridge features, so factors on target frequency can
+    # directly consume transformed information from higher-frequency source views.
+    views = add_multifreq_bridge_features(views)
 
     price_cols = ["code", "date", "px_open5", "px_vwap30", "px_twap_last30", "px_daily_close"]
     price_table = daily_base[price_cols].copy()

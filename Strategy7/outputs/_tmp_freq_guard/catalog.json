@@ -1,0 +1,62 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "name": "fac_close",
+      "freq": "15min",
+      "category": "custom_factor",
+      "description": "custom admitted factor #1; profile=15MIN_custom_default_v1",
+      "source": "custom",
+      "framework": "custom",
+      "status": "active",
+      "table_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_mining\\custom\\20260408_144737\\factor_values_15min.csv",
+      "value_col": "fac_close",
+      "score_sign": 1.0,
+      "metrics_train": {
+        "obs": 64.0,
+        "coverage": 1.0,
+        "ic_mean": 6.643307270473315e-05,
+        "rank_ic_mean": 0.006768878986866789,
+        "abs_ic_mean": 0.006768878986866789,
+        "ic_win_rate": 0.390625,
+        "ic_ir": 1.0626150717498948,
+        "ndcg_k": 0.4752809252684539,
+        "long_ret_mean": -0.001283374063253451,
+        "long_ret_annualized": -0.6495489117570883,
+        "long_sharpe": -6.38257977583163,
+        "long_win_rate": 0.375,
+        "long_excess_mean": -0.0015833515789970105,
+        "long_excess_annualized": -0.7240348593783756
+      },
+      "metrics_valid": {
+        "obs": 80.0,
+        "coverage": 1.0,
+        "ic_mean": 0.03769481319039066,
+        "rank_ic_mean": 0.03263602251407131,
+        "abs_ic_mean": 0.03263602251407131,
+        "ic_win_rate": 0.55,
+        "ic_ir": 6.089659187986537,
+        "ndcg_k": 0.5782709512340146,
+        "long_ret_mean": 0.0020130860437214417,
+        "long_ret_annualized": 4.026836889882854,
+        "long_sharpe": 13.686120933224677,
+        "long_win_rate": 0.7,
+        "long_excess_mean": 0.0011977218549031653,
+        "long_excess_annualized": 1.608610164537998
+      },
+      "admission": {
+        "profile": "15MIN_custom_default_v1",
+        "passed": true,
+        "failures": {}
+      },
+      "formula": {
+        "name": "fac_close",
+        "expression": "close",
+        "freq": "15min",
+        "category": "custom_factor",
+        "description": ""
+      },
+      "created_at": "2026-04-08T14:47:37.593718+08:00"
+    }
+  ]
+}

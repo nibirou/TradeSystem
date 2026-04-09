@@ -9,9 +9,10 @@ from pathlib import Path
 import pandas as pd
 
 from strategy7.config import DataConfig, DateConfig
+from strategy7.core.constants import INTRADAY_FREQS, SUPPORTED_FREQS
 from strategy7.core.utils import log_progress, set_log_level
 from strategy7.data.loaders import HS300MarketDataLoader, build_feature_bundle
-from strategy7.factors.labeling import add_labels
+from strategy7.factors.labeling import add_labels, validate_label_frequency_alignment
 from strategy7.mining.custom import load_custom_specs
 from strategy7.mining.runner import FactorMiningConfig, run_factor_mining
 
@@ -103,8 +104,9 @@ def _parse_args() -> argparse.Namespace:
     g_date.add_argument(
         "--factor-freq",
         type=str,
+        choices=SUPPORTED_FREQS,
         default="D",
-        help="因子频率标签（写入 catalog 时使用，默认 D）",
+        help="研究主频率（标签生成、挖掘评估与因子落盘均使用该频率）",
     )
     g_date.add_argument(
         "--horizon",
@@ -284,6 +286,7 @@ def main() -> None:
         date_cfg=date_cfg,
         lookback_days=160,
         horizon=int(args.horizon),
+        factor_freq=str(args.factor_freq),
     )
     log_progress("开始加载市场数据（日线+5分钟）。", module="run_factor_mining")
     market_bundle = loader.load()
@@ -298,17 +301,38 @@ def main() -> None:
         module="run_factor_mining",
     )
 
-    daily_panel = feat_bundle.by_freq["D"].copy()
-    log_progress("开始生成挖掘标签 future_ret_n。", module="run_factor_mining")
-    daily_panel = add_labels(
-        panel=daily_panel,
+    factor_freq = str(args.factor_freq)
+    if factor_freq not in feat_bundle.by_freq:
+        raise RuntimeError(f"feature bundle missing factor_freq={factor_freq}")
+    panel = feat_bundle.by_freq[factor_freq].copy()
+    if panel.empty:
+        raise RuntimeError(f"base feature panel is empty for factor_freq={factor_freq}")
+    time_col = "datetime" if factor_freq in INTRADAY_FREQS else "date"
+    log_progress(
+        f"选择研究主频率面板：freq={factor_freq}, rows={len(panel)}, time_col={time_col}。",
+        module="run_factor_mining",
+    )
+
+    log_progress(f"开始生成挖掘标签 future_ret_n（freq={factor_freq}）。", module="run_factor_mining")
+    panel = add_labels(
+        panel=panel,
         horizon=int(args.horizon),
         execution_scheme=str(args.execution_scheme),
         price_table_daily=feat_bundle.price_table_daily,
-        factor_freq="D",
+        factor_freq=factor_freq,
+    )
+    label_align = validate_label_frequency_alignment(
+        panel=panel,
+        factor_freq=factor_freq,
+        horizon=int(args.horizon),
+        strict=True,
     )
     log_progress(
-        f"标签生成完成：panel_rows={len(daily_panel)}。",
+        (
+            f"标签生成完成：panel_rows={len(panel)}, time_col={time_col}, "
+            f"bad_entry_shift={int(label_align.get('bad_entry_shift', 0))}, "
+            f"bad_exit_shift={int(label_align.get('bad_exit_shift', 0))}。"
+        ),
         module="run_factor_mining",
     )
 
@@ -372,7 +396,7 @@ def main() -> None:
 
     summary = run_factor_mining(
         cfg=mine_cfg,
-        daily_panel_with_label=daily_panel,
+        panel_with_label=panel,
         minute_df=market_bundle.minute5,
         custom_specs=custom_specs,
     )

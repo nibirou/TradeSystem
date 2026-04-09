@@ -1,9 +1,10 @@
 ﻿Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
+# & conda activate env_quant
 Set-Location "D:\PythonProject\Quant\TradeSystem"
 
-python .\Strategy7\run_factor_mining.py `
+"D:\miniforge3\envs\env_quant\python.exe" .\Strategy7\run_factor_mining.py `
   --framework fundamental_multiobj `
   --data-root D:/PythonProject/Quant/data_baostock/stock_hist/hs300 `
   --hs300-list-path D:/PythonProject/Quant/data_baostock/metadata/stock_list_hs300.csv `

@@ -19,6 +19,7 @@ from ..backtest.metrics import (
 from ..backtest.plotting import plot_backtest_curves
 from ..config import RunConfig
 from ..core.constants import INTRADAY_FREQS
+from ..core.time_utils import infer_periods_per_year
 from ..core.utils import dump_json, ensure_dir, log_progress
 from ..data.loaders import HS300MarketDataLoader, build_feature_bundle, load_index_benchmark_data
 from ..data.preprocess import (
@@ -28,9 +29,15 @@ from ..data.preprocess import (
     fit_feature_fill_values,
 )
 from ..data.sources import DataSourceRegistry, TableFileSource, load_custom_source_module, merge_external_sources
-from ..factors.base import FactorLibrary, compute_factor_panel, load_custom_factor_module, resolve_selected_factors
+from ..factors.base import (
+    FactorLibrary,
+    compute_factor_panel,
+    load_custom_factor_module,
+    register_passthrough_panel_factors,
+    resolve_selected_factors,
+)
 from ..factors.defaults import DEFAULT_FACTOR_SET_BY_FREQ, register_default_factors
-from ..factors.labeling import add_labels, pick_target_column, split_train_test
+from ..factors.labeling import add_labels, pick_target_column, split_train_test, validate_label_frequency_alignment
 from ..models import build_execution_model, build_portfolio_model, build_stock_model, build_timing_model
 from ..mining.catalog import load_active_catalog_entries, merge_catalog_factors, register_catalog_factors
 from .artifacts import build_run_tag, save_common_artifacts
@@ -60,6 +67,7 @@ def _build_external_source_registry(cfg: RunConfig) -> DataSourceRegistry:
 
 
 def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
+    factor_freq = cfg.factors.factor_freq
     log_progress(
         f"主流水线启动：factor_freq={cfg.factors.factor_freq}, "
         f"train={cfg.dates.train_start.date()}~{cfg.dates.train_end.date()}, "
@@ -105,6 +113,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         date_cfg=cfg.dates,
         lookback_days=cfg.factors.lookback_days,
         horizon=cfg.backtest.horizon,
+        factor_freq=factor_freq,
     )
     market_bundle = loader.load()
     log_progress(
@@ -119,7 +128,6 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         module="pipeline",
     )
 
-    factor_freq = cfg.factors.factor_freq
     if factor_freq not in feat_bundle.by_freq:
         raise ValueError(f"feature bundle missing freq={factor_freq}")
     base_df = feat_bundle.by_freq[factor_freq].copy()
@@ -166,6 +174,17 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         register_catalog_factors(factor_lib, catalog_entries)
     if cfg.factors.custom_factor_py:
         load_custom_factor_module(factor_lib, cfg.factors.custom_factor_py)
+    auto_panel_factors = register_passthrough_panel_factors(
+        factor_lib,
+        base_df=base_df,
+        freq=factor_freq,
+    )
+    if auto_panel_factors:
+        log_progress(
+            f"auto passthrough factors registered: {len(auto_panel_factors)}",
+            module="pipeline",
+            level="debug",
+        )
     log_progress("因子库构建完成。", module="pipeline")
 
     # 5) Resolve selected factors and compute the factor panel.
@@ -185,9 +204,9 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     # 6) Cross-sectional preprocessing (winsorize / zscore / optional neutralize).
     log_progress("步骤 6/13：执行截面预处理。", module="pipeline")
     pp_opt = PreprocessOptions(winsorize_limit=0.01, do_zscore=True, neutralize=False, fill_method="median")
-    group_col = "date" if factor_freq in {"D", "W", "M"} else "signal_date_proxy"
-    if factor_freq in INTRADAY_FREQS:
-        panel[group_col] = pd.to_datetime(panel["datetime"], errors="coerce").dt.normalize()
+    group_col = "date" if factor_freq in {"D", "W", "M"} else "datetime"
+    if factor_freq in INTRADAY_FREQS and "datetime" in panel.columns:
+        panel["datetime"] = pd.to_datetime(panel["datetime"], errors="coerce")
     panel = apply_cross_section_pipeline(panel, selected_factors, pp_opt, group_col=group_col)
     log_progress("截面预处理完成。", module="pipeline")
 
@@ -200,6 +219,23 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         execution_scheme=cfg.backtest.execution_scheme,
         price_table_daily=feat_bundle.price_table_daily,
         factor_freq=factor_freq,
+    )
+    label_align = validate_label_frequency_alignment(
+        panel=panel,
+        factor_freq=factor_freq,
+        horizon=int(cfg.backtest.horizon),
+        strict=True,
+    )
+    log_progress(
+        (
+            "标签频率/持有期对齐校验通过："
+            f"bad_signal_time={int(label_align.get('bad_signal_time', 0))}, "
+            f"bad_time_order={int(label_align.get('bad_time_order', 0))}, "
+            f"bad_entry_shift={int(label_align.get('bad_entry_shift', 0))}, "
+            f"bad_exit_shift={int(label_align.get('bad_exit_shift', 0))}。"
+        ),
+        module="pipeline",
+        level="debug",
     )
 
     train_df, test_df = split_train_test(
@@ -294,27 +330,54 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     # 12) Compute IC diagnostics for model score and raw factors.
     log_progress("步骤 12/13：计算 IC 诊断与分层分位统计。", module="pipeline")
     ic_group_col = "signal_ts" if "signal_ts" in test_df.columns else ("date" if "date" in test_df.columns else "signal_ts")
+    eval_mode = str(getattr(cfg.backtest, "ic_eval_mode", "strict_horizon")).strip().lower()
+    if eval_mode not in {"strict_horizon", "per_bar"}:
+        eval_mode = "strict_horizon"
+    eval_stride = int(cfg.backtest.rebalance_stride) if eval_mode == "strict_horizon" else 1
+    eval_stride = max(eval_stride, 1)
+    ic_periods_per_year = infer_periods_per_year(factor_freq=factor_freq, stride=eval_stride)
+
+    cs_counts = pd.Series(dtype=float)
+    if ic_group_col in test_df.columns and "code" in test_df.columns and not test_df.empty:
+        cs_counts = test_df.groupby(ic_group_col)["code"].nunique().astype(float)
+    requested_min_cs = max(int(cfg.factors.min_ic_cross_section), 2)
+    max_cs = int(cs_counts.max()) if not cs_counts.empty else 0
+    effective_min_cs = max(2, min(requested_min_cs, max_cs)) if max_cs >= 2 else requested_min_cs
+
     factor_ic_summary_df, factor_ic_series_df = compute_factor_ic_statistics(
         pred_df=test_df,
         factor_cols=selected_factors,
         ret_col="future_ret_n",
-        min_cross_section=cfg.factors.min_ic_cross_section,
+        min_cross_section=effective_min_cs,
         group_col=ic_group_col,
+        periods_per_year=ic_periods_per_year,
+        eval_stride=eval_stride,
+        constant_as_zero=True,
     )
     model_ic_series_df = calc_ic_for_column(
         test_df,
         score_col="pred_score",
         ret_col="future_ret_n",
-        min_cross_section=cfg.factors.min_ic_cross_section,
+        min_cross_section=effective_min_cs,
         group_col=ic_group_col,
+        eval_stride=eval_stride,
+        constant_as_zero=True,
     )
-    model_ic_summary = summarize_ic(model_ic_series_df)
+    model_ic_summary = summarize_ic(model_ic_series_df, periods_per_year=ic_periods_per_year)
+    model_ic_summary["eval_mode"] = eval_mode
+    model_ic_summary["eval_stride"] = float(eval_stride)
+    model_ic_summary["min_cross_section_requested"] = float(requested_min_cs)
+    model_ic_summary["min_cross_section_effective"] = float(effective_min_cs)
+    model_ic_summary["group_count_total"] = float(len(cs_counts))
+    model_ic_summary["group_count_used"] = float(len(model_ic_series_df))
     score_spread = compute_score_spread(
         test_df,
         score_col="pred_score",
         ret_col="future_ret_n",
         quantiles=5,
         group_col=ic_group_col,
+        periods_per_year=ic_periods_per_year,
+        eval_stride=eval_stride,
     )
     log_progress("IC 诊断计算完成。", module="pipeline")
 
@@ -430,6 +493,13 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "catalog_factors_enabled": bool(cfg.data.auto_load_catalog_factors),
             "catalog_factor_count": int(len(catalog_entries)),
             "factor_catalog_path": str(cfg.data.factor_catalog_path) if cfg.data.factor_catalog_path else "",
+            "ic_eval_mode": eval_mode,
+            "ic_eval_stride": int(eval_stride),
+            "ic_periods_per_year": float(ic_periods_per_year),
+            "ic_min_cross_section_requested": int(requested_min_cs),
+            "ic_min_cross_section_effective": int(effective_min_cs),
+            "ic_group_count_total": int(len(cs_counts)),
+            "ic_group_count_used": int(len(model_ic_series_df)),
         },
     }
     summary_path = output_dir / f"summary_{run_tag}.json"

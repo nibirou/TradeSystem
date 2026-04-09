@@ -1,0 +1,21 @@
+{
+  "framework": "minute_parametric_plus",
+  "factor_freq": "15min",
+  "train_period": [
+    "2025-01-02",
+    "2025-01-02"
+  ],
+  "valid_period": [
+    "2025-01-03",
+    "2025-01-03"
+  ],
+  "population_size": 4,
+  "generations": 1,
+  "candidate_count": 4,
+  "selected_count": 0,
+  "catalog_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_mining_freq_smoke3\\catalog.json",
+  "factor_table_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_mining_freq_smoke3\\factor_mining\\minuteparametricplus\\20260408_142620\\factor_values_15min.csv",
+  "selected_factors": [],
+  "admission_profile": "15MIN_minute_nsga3_plus_v1",
+  "top_candidates": []
+}

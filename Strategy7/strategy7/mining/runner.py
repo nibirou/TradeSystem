@@ -12,7 +12,9 @@ from typing import Any, Callable, Dict, Iterable, List, Sequence
 import numpy as np
 import pandas as pd
 
+from ..core.constants import INTRADAY_FREQS
 from ..core.utils import dump_json, ensure_dir, log_progress
+from ..factors.labeling import validate_label_frequency_alignment
 from .catalog import upsert_catalog_entries
 from .custom import CustomFactorSpec, evaluate_custom_specs
 from .evaluation import (
@@ -29,6 +31,7 @@ from .formulas import (
     cs_zscore,
     compute_fundamental_factor,
     compute_minute_factor_daily,
+    compute_minute_factor_panel,
     neutralize_series,
     winsorize_mad_cs,
 )
@@ -136,6 +139,29 @@ def _split_mask(df: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp, time_c
     return (t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end))
 
 
+def _primary_time_col(freq: str) -> str:
+    return "datetime" if str(freq).lower() in INTRADAY_FREQS else "date"
+
+
+def _time_anchor(ts: pd.Series, freq: str) -> pd.Series:
+    out = pd.to_datetime(ts, errors="coerce")
+    if str(freq).lower() in INTRADAY_FREQS:
+        return out.dt.normalize()
+    return out
+
+
+def _split_mask_by_freq(
+    df: pd.DataFrame,
+    start: pd.Timestamp,
+    end: pd.Timestamp,
+    *,
+    time_col: str,
+    freq: str,
+) -> pd.Series:
+    t = _time_anchor(df[time_col], freq=freq)
+    return (t >= pd.Timestamp(start)) & (t <= pd.Timestamp(end))
+
+
 def _discover_daily_feature_pool(panel: pd.DataFrame) -> List[str]:
     exclude = {
         "date",
@@ -169,7 +195,22 @@ def _discover_daily_feature_pool(panel: pd.DataFrame) -> List[str]:
 
 
 def _discover_minute_feature_pool(minute_feat: pd.DataFrame) -> List[str]:
-    exclude = {"date", "datetime", "code"}
+    exclude = {
+        "date",
+        "datetime",
+        "code",
+        "entry_date",
+        "exit_date",
+        "entry_ts",
+        "exit_ts",
+        "target_date",
+        "future_ret_n",
+        "target_up",
+        "target_return",
+        "target_volatility",
+        "signal_ts",
+        "time_freq",
+    }
     cols = [c for c in minute_feat.columns if c not in exclude and pd.api.types.is_numeric_dtype(minute_feat[c])]
     return sorted(cols)
 
@@ -543,6 +584,8 @@ def _fit_ml_factor_series(
     train_mask: pd.Series,
     spec: MLEnsembleFormulaSpec,
     cfg: FactorMiningConfig,
+    *,
+    group_col: str,
 ) -> pd.Series:
     from sklearn.ensemble import ExtraTreesRegressor, HistGradientBoostingRegressor, RandomForestRegressor
 
@@ -618,16 +661,19 @@ def _fit_ml_factor_series(
     except Exception:
         return pd.Series(np.nan, index=panel.index, dtype=float)
 
+    if group_col not in panel.columns:
+        return pd.Series(np.nan, index=panel.index, dtype=float)
+
     fac = pd.Series(pred, index=panel.index, dtype=float)
-    fac = winsorize_mad_cs(fac, group=panel["date"], limit=3.0)
+    fac = winsorize_mad_cs(fac, group=panel[group_col], limit=3.0)
     fac = neutralize_series(
         fac,
         panel,
-        group_col="date",
+        group_col=group_col,
         size_col="barra_size_proxy",
         industry_col="industry_bucket" if "industry_bucket" in panel.columns else None,
     )
-    fac = cs_zscore(fac, group=panel["date"])
+    fac = cs_zscore(fac, group=panel[group_col])
     return pd.to_numeric(fac, errors="coerce")
 
 
@@ -636,13 +682,15 @@ def _collect_metrics(
     factor_col: str,
     cfg: FactorMiningConfig,
     framework: str,
+    *,
+    group_col: str,
 ) -> Dict[str, float]:
     ppy = periods_per_year_from_freq(cfg.factor_freq, cfg.horizon)
     return evaluate_factor_panel(
         panel=df,
         factor_col=factor_col,
         ret_col="future_ret_n",
-        group_col="date",
+        group_col=group_col,
         top_frac=cfg.top_frac,
         min_cross_section=cfg.min_cross_section,
         periods_per_year=ppy,
@@ -705,19 +753,22 @@ def _make_run_root(cfg: FactorMiningConfig) -> Path:
 
 def run_factor_mining(
     cfg: FactorMiningConfig,
-    daily_panel_with_label: pd.DataFrame,
+    panel_with_label: pd.DataFrame,
     minute_df: pd.DataFrame | None = None,
     custom_specs: List[CustomFactorSpec] | None = None,
 ) -> Dict[str, object]:
     """Run mining and persist admitted factors into factor catalog.
 
-    Required columns in daily_panel_with_label:
-    - date, code
+    Required columns in panel_with_label:
+    - code
+    - primary time key: datetime (intraday) / date (D/W/M)
     - future_ret_n
     - (optional) barra_size_proxy, industry_bucket
     """
     rng = _seed(cfg.random_state)
     framework = str(cfg.framework).strip().lower()
+    factor_freq = str(cfg.factor_freq)
+    time_col = _primary_time_col(factor_freq)
     log_progress(
         f"挖掘启动：framework={framework}, factor_freq={cfg.factor_freq}, "
         f"train={pd.Timestamp(cfg.train_start).date()}~{pd.Timestamp(cfg.train_end).date()}, "
@@ -725,14 +776,46 @@ def run_factor_mining(
         module="mining",
     )
 
-    # 1) Normalize and validate base daily panel with future return labels.
-    panel = daily_panel_with_label.copy()
-    panel["date"] = pd.to_datetime(panel["date"], errors="coerce").dt.normalize()
+    # 1) Normalize and validate panel with frequency-aligned future return labels.
+    panel = panel_with_label.copy()
+    if time_col not in panel.columns:
+        raise RuntimeError(f"panel missing required time column: {time_col} (factor_freq={factor_freq})")
+    panel[time_col] = pd.to_datetime(panel[time_col], errors="coerce")
+    if "date" in panel.columns:
+        panel["date"] = pd.to_datetime(panel["date"], errors="coerce").dt.normalize()
+    elif time_col == "datetime":
+        panel["date"] = panel["datetime"].dt.normalize()
+    else:
+        panel["date"] = pd.to_datetime(panel[time_col], errors="coerce").dt.normalize()
     panel["code"] = panel["code"].astype(str).str.strip()
-    panel = panel.dropna(subset=["date", "code", "future_ret_n"]).sort_values(["date", "code"]).reset_index(drop=True)
+    panel = panel.dropna(subset=[time_col, "code", "future_ret_n"]).sort_values([time_col, "code"]).reset_index(drop=True)
+    align = validate_label_frequency_alignment(
+        panel=panel,
+        factor_freq=factor_freq,
+        horizon=int(cfg.horizon),
+        strict=True,
+    )
 
-    train_mask = _split_mask(panel, cfg.train_start, cfg.train_end, time_col="date")
-    valid_mask = _split_mask(panel, cfg.valid_start, cfg.valid_end, time_col="date")
+    def _target_anchor(frame: pd.DataFrame) -> pd.Series:
+        if "target_date" in frame.columns:
+            raw = pd.to_datetime(frame["target_date"], errors="coerce")
+        elif "exit_ts" in frame.columns:
+            raw = pd.to_datetime(frame["exit_ts"], errors="coerce")
+        elif "exit_date" in frame.columns:
+            raw = pd.to_datetime(frame["exit_date"], errors="coerce")
+        else:
+            raw = pd.Series(pd.NaT, index=frame.index, dtype="datetime64[ns]")
+        return _time_anchor(raw, freq=factor_freq)
+
+    def _build_split_mask(frame: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp) -> pd.Series:
+        sig = _split_mask_by_freq(frame, start, end, time_col=time_col, freq=factor_freq)
+        tgt = _target_anchor(frame)
+        if tgt.notna().any():
+            sig = sig & (tgt <= pd.Timestamp(end))
+        return sig
+
+    train_mask = _build_split_mask(panel, cfg.train_start, cfg.train_end)
+    valid_mask = _build_split_mask(panel, cfg.valid_start, cfg.valid_end)
     if int(train_mask.sum()) <= 0:
         raise RuntimeError("factor mining train set is empty")
     if int(valid_mask.sum()) <= 0:
@@ -744,12 +827,14 @@ def run_factor_mining(
         We intentionally avoid reusing outer boolean masks by index alignment because
         some candidate-evaluation paths (e.g. merge/join) may rebuild indexes.
         """
-        tm = _split_mask(frame, cfg.train_start, cfg.train_end, time_col="date")
-        vm = _split_mask(frame, cfg.valid_start, cfg.valid_end, time_col="date")
+        tm = _build_split_mask(frame, cfg.train_start, cfg.train_end)
+        vm = _build_split_mask(frame, cfg.valid_start, cfg.valid_end)
         return frame.loc[tm], frame.loc[vm]
 
     log_progress(
-        f"输入面板清洗完成：rows={len(panel)}, train_rows={int(train_mask.sum())}, valid_rows={int(valid_mask.sum())}。",
+        f"输入面板清洗完成：rows={len(panel)}, time_col={time_col}, "
+        f"train_rows={int(train_mask.sum())}, valid_rows={int(valid_mask.sum())}, "
+        f"bad_entry_shift={int(align.get('bad_entry_shift', 0))}, bad_exit_shift={int(align.get('bad_exit_shift', 0))}。",
         module="mining",
     )
 
@@ -775,6 +860,8 @@ def run_factor_mining(
 
     # Candidate cache avoids repeated recomputation for duplicated specs in evolution.
     cache: Dict[str, Dict[str, object]] = {}
+    eval_group_col = time_col
+    minute_panel_mode = False
 
     if framework == "custom":
         # 3A) Custom framework: evaluate user-provided expressions directly.
@@ -783,15 +870,15 @@ def run_factor_mining(
             raise RuntimeError("custom framework requires at least one custom factor spec")
         log_progress(f"开始评估 custom 因子：spec_count={len(specs)}。", module="mining")
 
-        fac_df = evaluate_custom_specs(panel=panel, specs=specs, time_col="date", code_col="code")
+        fac_df = evaluate_custom_specs(panel=panel, specs=specs, time_col=time_col, code_col="code")
         results: List[Dict[str, object]] = []
         for spec in specs:
             factor_col = spec.name
-            tmp = panel[["date", "code", "future_ret_n"]].copy()
+            tmp = panel[[time_col, "code", "future_ret_n"]].copy()
             tmp[factor_col] = pd.to_numeric(fac_df[factor_col], errors="coerce")
             tmp_tr, tmp_va = _split_train_valid(tmp)
-            m_tr = _collect_metrics(tmp_tr, factor_col=factor_col, cfg=cfg, framework=framework)
-            m_va = _collect_metrics(tmp_va, factor_col=factor_col, cfg=cfg, framework=framework)
+            m_tr = _collect_metrics(tmp_tr, factor_col=factor_col, cfg=cfg, framework=framework, group_col=eval_group_col)
+            m_va = _collect_metrics(tmp_va, factor_col=factor_col, cfg=cfg, framework=framework, group_col=eval_group_col)
             passed, admission = check_admission(m_va, standard)
             key = _to_key(spec.to_dict())
             result = {
@@ -825,13 +912,13 @@ def run_factor_mining(
             if key in cache:
                 return cache[key]
 
-            fac = compute_fundamental_factor(panel, spec)
-            tmp = panel[["date", "code", "future_ret_n"]].copy()
+            fac = compute_fundamental_factor(panel, spec, group_col=eval_group_col)
+            tmp = panel[[time_col, "code", "future_ret_n"]].copy()
             tmp["_factor"] = pd.to_numeric(fac, errors="coerce")
 
             tmp_tr, tmp_va = _split_train_valid(tmp)
-            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework)
-            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework)
+            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework, group_col=eval_group_col)
+            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework, group_col=eval_group_col)
             obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
 
             passed, admission = check_admission(m_va, standard)
@@ -892,10 +979,18 @@ def run_factor_mining(
 
     elif framework in {"minute_parametric", "minute_parametric_plus"}:
         # 3C/3D) Minute framework family: NSGA-III over parametric minute operators.
-        if minute_df is None or minute_df.empty:
-            raise RuntimeError(f"{framework} framework requires minute_df")
+        minute_panel_mode = str(factor_freq).upper() != "D"
+        if minute_panel_mode:
+            # Intraday/period frequency: evaluate formulas directly on target-frequency panel.
+            minute_feat = panel.copy()
+            metric_group_col = eval_group_col
+        else:
+            # Daily frequency: derive one factor value per [date, code] from minute bars.
+            if minute_df is None or minute_df.empty:
+                raise RuntimeError(f"{framework} framework requires minute_df")
+            minute_feat = build_minute_feature_matrix(minute_df)
+            metric_group_col = "date"
 
-        minute_feat = build_minute_feature_matrix(minute_df)
         fields = _discover_minute_feature_pool(minute_feat)
         if len(fields) < 2:
             raise RuntimeError(f"insufficient minute feature columns for {framework}")
@@ -908,7 +1003,7 @@ def run_factor_mining(
         tag = "minute_plus" if is_plus else "minute"
         log_progress(
             f"开始分钟进化挖掘：framework={framework}, feature_pool={len(fields)}, "
-            f"population={pop_size}, generations={generations}。",
+            f"population={pop_size}, generations={generations}, panel_mode={int(minute_panel_mode)}。",
             module="mining",
         )
 
@@ -919,13 +1014,23 @@ def run_factor_mining(
             if key in cache:
                 return cache[key]
 
-            fac = compute_minute_factor_daily(minute_feature_df=minute_feat, daily_context_df=daily_ctx, spec=spec)
-            fac_df = fac.rename("_factor").reset_index()
-            tmp = daily_ctx[["date", "code", "future_ret_n"]].merge(fac_df, on=["date", "code"], how="left")
+            if minute_panel_mode:
+                fac = compute_minute_factor_panel(
+                    panel_feature_df=minute_feat,
+                    spec=spec,
+                    time_col=time_col,
+                    session_col="date" if time_col == "datetime" else None,
+                )
+                tmp = panel[[time_col, "code", "future_ret_n"]].copy()
+                tmp["_factor"] = pd.to_numeric(fac, errors="coerce")
+            else:
+                fac = compute_minute_factor_daily(minute_feature_df=minute_feat, daily_context_df=daily_ctx, spec=spec)
+                fac_df = fac.rename("_factor").reset_index()
+                tmp = daily_ctx[["date", "code", "future_ret_n"]].merge(fac_df, on=["date", "code"], how="left")
 
             tmp_tr, tmp_va = _split_train_valid(tmp)
-            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework)
-            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework)
+            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework, group_col=metric_group_col)
+            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework, group_col=metric_group_col)
 
             base_obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
             if is_plus:
@@ -1029,13 +1134,19 @@ def run_factor_mining(
             if key in cache:
                 return cache[key]
 
-            fac = _fit_ml_factor_series(panel=panel, train_mask=train_mask, spec=spec, cfg=cfg)
-            tmp = panel[["date", "code", "future_ret_n"]].copy()
+            fac = _fit_ml_factor_series(
+                panel=panel,
+                train_mask=train_mask,
+                spec=spec,
+                cfg=cfg,
+                group_col=eval_group_col,
+            )
+            tmp = panel[[time_col, "code", "future_ret_n"]].copy()
             tmp["_factor"] = pd.to_numeric(fac, errors="coerce")
 
             tmp_tr, tmp_va = _split_train_valid(tmp)
-            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework)
-            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework)
+            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework, group_col=eval_group_col)
+            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework, group_col=eval_group_col)
             obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
 
             passed, admission = check_admission(m_va, standard)
@@ -1043,8 +1154,8 @@ def run_factor_mining(
             result = {
                 "key": key,
                 "spec": spec,
-                "series": pd.DataFrame({"date": panel["date"], "code": panel["code"], "v": fac})
-                .set_index(["date", "code"])["v"]
+                "series": pd.DataFrame({time_col: panel[time_col], "code": panel["code"], "v": fac})
+                .set_index([time_col, "code"])["v"]
                 .sort_index(),
                 "metrics_train": m_tr,
                 "metrics_valid": m_va,
@@ -1104,11 +1215,15 @@ def run_factor_mining(
     # Rule: admitted first, then higher validation ICIR, then low pairwise correlation.
     ranked = sorted(results, key=lambda r: (int(bool(r.get("passed", False))), float(r.get("score", -1e9))), reverse=True)
     minute_frameworks = {"minute_parametric", "minute_parametric_plus"}
-    minute_feat_cached = (
-        build_minute_feature_matrix(minute_df)
-        if framework in minute_frameworks and minute_df is not None
-        else None
-    )
+    if framework in minute_frameworks:
+        if minute_panel_mode:
+            minute_feat_cached = panel.copy()
+        elif minute_df is not None:
+            minute_feat_cached = build_minute_feature_matrix(minute_df)
+        else:
+            minute_feat_cached = None
+    else:
+        minute_feat_cached = None
 
     def _series_getter(cand: Dict[str, object]) -> pd.Series:
         spec = cand["spec"]
@@ -1116,10 +1231,21 @@ def run_factor_mining(
         sign = -1.0 if np.isfinite(sign_ref) and sign_ref < 0.0 else 1.0
 
         if framework == "fundamental_multiobj":
-            s = compute_fundamental_factor(panel, spec)
-            fac = pd.DataFrame({"date": panel["date"], "code": panel["code"], "v": s * sign})
-            return fac.set_index(["date", "code"])["v"].sort_index()
+            s = compute_fundamental_factor(panel, spec, group_col=eval_group_col)
+            fac = pd.DataFrame({time_col: panel[time_col], "code": panel["code"], "v": s * sign})
+            return fac.set_index([time_col, "code"])["v"].sort_index()
         if framework in minute_frameworks:
+            if minute_panel_mode:
+                minute_feat = minute_feat_cached if isinstance(minute_feat_cached, pd.DataFrame) else panel
+                s2 = compute_minute_factor_panel(
+                    panel_feature_df=minute_feat,
+                    spec=spec,
+                    time_col=time_col,
+                    session_col="date" if time_col == "datetime" else None,
+                )
+                fac = pd.DataFrame({time_col: panel[time_col], "code": panel["code"], "v": s2 * sign})
+                return fac.set_index([time_col, "code"])["v"].sort_index()
+
             minute_feat = minute_feat_cached if minute_feat_cached is not None else pd.DataFrame()
             daily_ctx = panel[[c for c in ["date", "code", "future_ret_n", "barra_size_proxy", "industry_bucket"] if c in panel.columns]].copy()
             s2 = compute_minute_factor_daily(minute_feature_df=minute_feat, daily_context_df=daily_ctx, spec=spec)
@@ -1131,9 +1257,9 @@ def run_factor_mining(
             return pd.Series(dtype=float)
 
         # custom
-        fac_df = evaluate_custom_specs(panel=panel, specs=[spec], time_col="date", code_col="code")
-        fac = pd.DataFrame({"date": panel["date"], "code": panel["code"], "v": fac_df[spec.name] * sign})
-        return fac.set_index(["date", "code"])["v"].sort_index()
+        fac_df = evaluate_custom_specs(panel=panel, specs=[spec], time_col=time_col, code_col="code")
+        fac = pd.DataFrame({time_col: panel[time_col], "code": panel["code"], "v": fac_df[spec.name] * sign})
+        return fac.set_index([time_col, "code"])["v"].sort_index()
 
     ranked_passed = [r for r in ranked if bool(r.get("passed", False))]
     selected = _greedy_low_corr_select(
@@ -1151,7 +1277,16 @@ def run_factor_mining(
     run_root = _make_run_root(cfg)
 
     # build factor value table
-    base_tbl = panel[["date", "code"]].drop_duplicates(["date", "code"]).sort_values(["date", "code"]).reset_index(drop=True)
+    merge_keys = [time_col, "code"]
+    base_cols = [time_col, "code"]
+    if time_col == "datetime" and "date" in panel.columns:
+        base_cols = ["datetime", "date", "code"]
+    base_tbl = (
+        panel[base_cols]
+        .drop_duplicates(merge_keys)
+        .sort_values(merge_keys)
+        .reset_index(drop=True)
+    )
     catalog_entries: List[Dict[str, object]] = []
 
     for i, cand in enumerate(selected, start=1):
@@ -1174,7 +1309,7 @@ def run_factor_mining(
 
         s = _series_getter(cand)
         fac_df = s.rename(fac_name).reset_index()
-        base_tbl = base_tbl.merge(fac_df, on=["date", "code"], how="left")
+        base_tbl = base_tbl.merge(fac_df, on=merge_keys, how="left")
 
         catalog_entries.append(
             {

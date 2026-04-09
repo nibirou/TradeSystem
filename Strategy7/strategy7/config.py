@@ -134,6 +134,7 @@ class BacktestConfig:
     slippage_bps: float
     portfolio_mode: str
     rebalance_stride: int
+    ic_eval_mode: str
 
 
 @dataclass
@@ -599,6 +600,16 @@ def parse_args() -> argparse.Namespace:
     g_bt.add_argument("--fee-bps", type=float, default=1.5, help="单边交易费率（bps）")
     g_bt.add_argument("--slippage-bps", type=float, default=1.5, help="单边滑点（bps）")
     g_bt.add_argument("--rebalance-stride", type=int, default=0, help="调仓间隔（0 表示使用 horizon）")
+    g_bt.add_argument(
+        "--ic-eval-mode",
+        type=str,
+        choices=["strict_horizon", "per_bar"],
+        default="strict_horizon",
+        help=(
+            "IC/分层评估模式：strict_horizon=按调仓步长(默认=H)抽样评估；"
+            "per_bar=每个主频bar评估（等价H=1）。"
+        ),
+    )
 
     # =========================
     # 组合优化参数
@@ -931,6 +942,7 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         slippage_bps=float(args.slippage_bps),
         portfolio_mode=portfolio_mode,
         rebalance_stride=int(args.rebalance_stride) if int(args.rebalance_stride) > 0 else int(args.horizon),
+        ic_eval_mode=str(args.ic_eval_mode),
     )
     return RunConfig(
         data=data,
