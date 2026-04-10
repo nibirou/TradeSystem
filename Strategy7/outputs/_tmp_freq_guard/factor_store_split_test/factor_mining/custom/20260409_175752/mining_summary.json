@@ -1,0 +1,21 @@
+{
+  "framework": "custom",
+  "factor_freq": "W",
+  "train_period": [
+    "2023-01-01",
+    "2024-06-30"
+  ],
+  "valid_period": [
+    "2024-07-01",
+    "2024-12-31"
+  ],
+  "population_size": 128,
+  "generations": 20,
+  "candidate_count": 1,
+  "selected_count": 0,
+  "catalog_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_store_split_test\\factor_catalog.json",
+  "factor_table_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_store_split_test\\factor_mining\\custom\\20260409_175752\\factor_values_W.parquet",
+  "selected_factors": [],
+  "admission_profile": "W_custom_default_v1",
+  "top_candidates": []
+}

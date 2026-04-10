@@ -12,6 +12,12 @@ from strategy7.config import DataConfig, DateConfig
 from strategy7.core.constants import INTRADAY_FREQS, SUPPORTED_FREQS
 from strategy7.core.utils import log_progress, set_log_level
 from strategy7.data.loaders import HS300MarketDataLoader, build_feature_bundle
+from strategy7.factors.base import FactorLibrary, compute_factor_panel
+from strategy7.factors.defaults import (
+    list_default_factor_packages,
+    register_default_factors,
+    resolve_default_factor_set,
+)
 from strategy7.factors.labeling import add_labels, validate_label_frequency_alignment
 from strategy7.mining.custom import load_custom_specs
 from strategy7.mining.runner import FactorMiningConfig, run_factor_mining
@@ -35,12 +41,19 @@ def _infer_data_baostock_root(data_root: str) -> Path:
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Strategy7 因子挖掘入口（基本面/分钟参数化/ML集成/自定义表达式）"
+        description="Strategy7 因子挖掘入口（基本面/分钟参数化/ML集成/GP符号遗传/自定义表达式）"
     )
     parser.add_argument(
         "--framework",
         type=str,
-        choices=["fundamental_multiobj", "minute_parametric", "minute_parametric_plus", "ml_ensemble_alpha", "custom"],
+        choices=[
+            "fundamental_multiobj",
+            "minute_parametric",
+            "minute_parametric_plus",
+            "ml_ensemble_alpha",
+            "gplearn_symbolic_alpha",
+            "custom",
+        ],
         default="fundamental_multiobj",
         help=(
             "挖掘框架类型："
@@ -48,6 +61,7 @@ def _parse_args() -> argparse.Namespace:
             "minute_parametric=分钟参数化+NSGA-III；"
             "minute_parametric_plus=分钟增强参数化+NSGA-III；"
             "ml_ensemble_alpha=集成学习因子挖掘；"
+            "gplearn_symbolic_alpha=基于 gplearn 的符号遗传规划挖掘；"
             "custom=用户自定义表达式。"
         ),
     )
@@ -109,6 +123,17 @@ def _parse_args() -> argparse.Namespace:
         help="研究主频率（标签生成、挖掘评估与因子落盘均使用该频率）",
     )
     g_date.add_argument(
+        "--factor-packages",
+        type=str,
+        default="",
+        help="默认因子库素材包过滤（逗号分隔；空=该频率全部默认包）",
+    )
+    g_date.add_argument(
+        "--disable-default-factor-materials",
+        action="store_true",
+        help="关闭默认因子库素材注入（默认开启）",
+    )
+    g_date.add_argument(
         "--horizon",
         type=int,
         default=5,
@@ -154,6 +179,37 @@ def _parse_args() -> argparse.Namespace:
     g_ml.add_argument("--ml-train-sample-frac", type=float, default=0.40, help="训练样本抽样比例（控制训练耗时）")
     g_ml.add_argument("--ml-max-train-rows", type=int, default=220000, help="训练样本最大行数上限")
     g_ml.add_argument("--ml-num-jobs", type=int, default=-1, help="并行线程数（RF/ET 生效，-1 表示尽量使用全部核）")
+
+    # =========================
+    # GP 库框架参数
+    # =========================
+    g_gp = parser.add_argument_group("GP-Library 框架配置（framework=gplearn_symbolic_alpha 时）")
+    g_gp.add_argument("--gp-population-size", type=int, default=400, help="gplearn 每代种群规模")
+    g_gp.add_argument("--gp-generations", type=int, default=12, help="gplearn 进化代数")
+    g_gp.add_argument("--gp-num-runs", type=int, default=3, help="独立随机种子运行次数（结果合并）")
+    g_gp.add_argument("--gp-n-components", type=int, default=24, help="每次运行输出候选表达式数量")
+    g_gp.add_argument("--gp-hall-of-fame", type=int, default=64, help="每次运行保留精英表达式数量")
+    g_gp.add_argument("--gp-tournament-size", type=int, default=20, help="锦标赛选择规模")
+    g_gp.add_argument("--gp-parsimony", type=float, default=0.001, help="复杂度惩罚系数（越大越偏好简单表达式）")
+    g_gp.add_argument(
+        "--gp-metric",
+        type=str,
+        choices=["spearman", "pearson"],
+        default="spearman",
+        help="gplearn 内部适应度指标",
+    )
+    g_gp.add_argument(
+        "--gp-function-set",
+        type=str,
+        default="add,sub,mul,div,sqrt,log,abs,neg,max,min",
+        help="函数集合（逗号分隔，支持 add/sub/mul/div/sqrt/log/abs/neg/inv/max/min）",
+    )
+    g_gp.add_argument("--gp-prefilter-topk", type=int, default=80, help="训练期 IC 预筛后保留特征数")
+    g_gp.add_argument("--gp-train-sample-frac", type=float, default=0.40, help="gplearn 训练样本抽样比例")
+    g_gp.add_argument("--gp-max-train-rows", type=int, default=220000, help="gplearn 训练样本最大行数")
+    g_gp.add_argument("--gp-max-depth", type=int, default=5, help="表达式初始最大深度")
+    g_gp.add_argument("--gp-max-samples", type=float, default=0.90, help="每棵树可见样本比例")
+    g_gp.add_argument("--gp-num-jobs", type=int, default=-1, help="并行线程数（-1 表示尽量使用全部核）")
 
     # =========================
     # 自定义表达式参数
@@ -254,6 +310,28 @@ def main() -> None:
         raise ValueError("ml_train_sample_frac must be in (0,1]")
     if int(args.ml_max_train_rows) < 2000:
         raise ValueError("ml_max_train_rows must be >= 2000")
+    if int(args.gp_population_size) <= 0 or int(args.gp_generations) <= 0:
+        raise ValueError("gp_population_size and gp_generations must be positive")
+    if int(args.gp_num_runs) <= 0:
+        raise ValueError("gp_num_runs must be positive")
+    if int(args.gp_n_components) <= 0 or int(args.gp_hall_of_fame) <= 0:
+        raise ValueError("gp_n_components and gp_hall_of_fame must be positive")
+    if int(args.gp_tournament_size) <= 1:
+        raise ValueError("gp_tournament_size must be > 1")
+    if int(args.gp_prefilter_topk) <= 0:
+        raise ValueError("gp_prefilter_topk must be positive")
+    if float(args.gp_parsimony) < 0.0:
+        raise ValueError("gp_parsimony must be >= 0")
+    if int(args.gp_num_jobs) == 0:
+        raise ValueError("gp_num_jobs cannot be 0; use -1 or a positive integer")
+    if not (0.0 < float(args.gp_train_sample_frac) <= 1.0):
+        raise ValueError("gp_train_sample_frac must be in (0,1]")
+    if int(args.gp_max_train_rows) < 3000:
+        raise ValueError("gp_max_train_rows must be >= 3000")
+    if int(args.gp_max_depth) < 2:
+        raise ValueError("gp_max_depth must be >= 2")
+    if not (0.0 < float(args.gp_max_samples) <= 1.0):
+        raise ValueError("gp_max_samples must be in (0,1]")
     log_progress(
         f"参数校验通过：framework={args.framework}, train={train_start.date()}~{train_end.date()}, "
         f"valid={valid_start.date()}~{valid_end.date()}。",
@@ -312,6 +390,39 @@ def main() -> None:
         f"选择研究主频率面板：freq={factor_freq}, rows={len(panel)}, time_col={time_col}。",
         module="run_factor_mining",
     )
+    default_material_cols: list[str] = []
+    if not bool(args.disable_default_factor_materials):
+        fac_lib = FactorLibrary()
+        register_default_factors(fac_lib)
+        avail_packages = list_default_factor_packages(factor_freq)
+        if avail_packages:
+            log_progress(
+                f"默认因子素材包@{factor_freq}: {avail_packages}",
+                module="run_factor_mining",
+                level="debug",
+            )
+        default_material_cols = resolve_default_factor_set(
+            freq=factor_freq,
+            package_expr=str(args.factor_packages),
+        )
+        log_progress(
+            f"开始注入默认因子库素材：freq={factor_freq}, selected={len(default_material_cols)}。",
+            module="run_factor_mining",
+        )
+        before_cols = set(panel.columns)
+        panel = compute_factor_panel(
+            base_df=panel,
+            library=fac_lib,
+            freq=factor_freq,
+            selected_factors=default_material_cols,
+        )
+        added_cols = [c for c in default_material_cols if c not in before_cols]
+        log_progress(
+            f"默认因子素材注入完成：added={len(added_cols)}, panel_cols={len(panel.columns)}。",
+            module="run_factor_mining",
+        )
+    else:
+        log_progress("已关闭默认因子库素材注入。", module="run_factor_mining")
 
     log_progress(f"开始生成挖掘标签 future_ret_n（freq={factor_freq}）。", module="run_factor_mining")
     panel = add_labels(
@@ -391,6 +502,24 @@ def main() -> None:
         ml_train_sample_frac=float(args.ml_train_sample_frac),
         ml_max_train_rows=int(args.ml_max_train_rows),
         ml_num_jobs=int(args.ml_num_jobs),
+        gp_population_size=int(args.gp_population_size),
+        gp_generations=int(args.gp_generations),
+        gp_num_runs=int(args.gp_num_runs),
+        gp_n_components=int(args.gp_n_components),
+        gp_hall_of_fame=int(args.gp_hall_of_fame),
+        gp_tournament_size=int(args.gp_tournament_size),
+        gp_parsimony=float(args.gp_parsimony),
+        gp_metric=str(args.gp_metric),
+        gp_function_set=str(args.gp_function_set),
+        gp_prefilter_topk=int(args.gp_prefilter_topk),
+        gp_train_sample_frac=float(args.gp_train_sample_frac),
+        gp_max_train_rows=int(args.gp_max_train_rows),
+        gp_max_depth=int(args.gp_max_depth),
+        gp_max_samples=float(args.gp_max_samples),
+        gp_num_jobs=int(args.gp_num_jobs),
+        include_default_factor_materials=not bool(args.disable_default_factor_materials),
+        factor_packages=str(args.factor_packages),
+        material_factor_count=int(len(default_material_cols)),
     )
     log_progress("开始执行因子挖掘核心流程。", module="run_factor_mining")
 

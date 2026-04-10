@@ -1,0 +1,68 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "name": "fund_mo_cf916e1ce7",
+      "freq": "D",
+      "category": "mined_factor",
+      "description": "fundamental_multiobj admitted factor #1; profile=D_fundamental_nsga2_v1",
+      "source": "mined",
+      "framework": "fundamental_multiobj",
+      "status": "active",
+      "table_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_smoke\\factor_mining\\fundamentalmultiobj\\20260410_104626\\factor_values_D.csv",
+      "value_col": "fund_mo_cf916e1ce7",
+      "score_sign": 1.0,
+      "metrics_train": {
+        "obs": 20.0,
+        "coverage": 1.0,
+        "ic_mean": 0.1022073266286411,
+        "rank_ic_mean": 0.00999999999999999,
+        "abs_ic_mean": 0.00999999999999999,
+        "ic_win_rate": 0.55,
+        "ic_ir": 0.2133790524105105,
+        "ndcg_k": 0.5118503633149978,
+        "long_ret_mean": -0.0027245237249304,
+        "long_ret_annualized": -0.3058410124327279,
+        "long_sharpe": -1.6142694692589488,
+        "long_win_rate": 0.3,
+        "long_excess_mean": 0.0020210864459279353,
+        "long_excess_annualized": 0.2632728422102293
+      },
+      "metrics_valid": {
+        "obs": 15.0,
+        "coverage": 1.0,
+        "ic_mean": 0.16891685975626133,
+        "rank_ic_mean": 0.2733333333333333,
+        "abs_ic_mean": 0.2733333333333333,
+        "ic_win_rate": 0.6,
+        "ic_ir": 5.733315029759159,
+        "ndcg_k": 0.7402535847736151,
+        "long_ret_mean": 0.06778753713909243,
+        "long_ret_annualized": 2745.698911586198,
+        "long_sharpe": 9.107190382359354,
+        "long_win_rate": 0.7333333333333333,
+        "long_excess_mean": 0.053466617121929384,
+        "long_excess_annualized": 557.0406430197816
+      },
+      "admission": {
+        "profile": "D_fundamental_nsga2_v1",
+        "passed": true,
+        "failures": {}
+      },
+      "formula": {
+        "y_field": "hf_120min_to_D_mean_open",
+        "x_field": "hf_5min_to_D_mean_open",
+        "y_log": true,
+        "x_log": false,
+        "y_tr": true,
+        "x_tr": false,
+        "y_tr_period": "qoq",
+        "x_tr_period": "qoq",
+        "y_tr_form": "std",
+        "x_tr_form": "diff",
+        "mode": "diff"
+      },
+      "created_at": "2026-04-10T10:46:27.215439+08:00"
+    }
+  ]
+}

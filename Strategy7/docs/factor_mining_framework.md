@@ -6,8 +6,9 @@
 2. 分钟级特征参数化多目标挖掘（对应 2026-03-31 华泰报告）
 3. 分钟级增强参数化挖掘（`minute_parametric_plus`）
 4. 集成学习因子挖掘（`ml_ensemble_alpha`，基于 `scikit-learn`）
-5. 用户自定义因子表达式挖掘、评估、入库
-6. 因子 catalog 入库与主回测框架自动适配
+5. 符号遗传规划挖掘（`gplearn_symbolic_alpha`，基于 `gplearn`）
+6. 用户自定义因子表达式挖掘、评估、入库
+7. 因子 catalog 入库与主回测框架自动适配
 
 ## 1. 模块结构
 
@@ -30,6 +31,9 @@
 - `strategy7/mining/runner.py`
   - 挖掘全流程（进化、评估、筛选、入库）
   - `MLEnsembleFormulaSpec`（模型结构 + 特征子集参数化）
+- `strategy7/mining/models/gplearn_symbolic_alpha_model.py`
+  - `GPLearnProgramSpec`
+  - `SymbolicTransformer` 多轮符号进化 + 稳定性/简洁性约束
 - `run_factor_mining.py`
   - 挖掘 CLI 入口
 
@@ -90,6 +94,32 @@
   - `long_excess_annualized`
   - `long_sharpe`
 
+### 2.5 符号遗传规划框架（`gplearn_symbolic_alpha`）
+
+- 底层库：
+  - `gplearn.genetic.SymbolicTransformer`
+- 核心流程：
+  - 训练期特征预筛（IC Top-K）
+  - 多随机种子进化搜索（`gp_num_runs`）
+  - 每次输出多个表达式组件（`gp_n_components`）
+  - 表达式输出统一走去极值/中性化/标准化
+  - 训练/验证双样本评估后再入候选池
+- 目标函数（7 维）：
+  - 与 `ml_ensemble_alpha` 相同的 5 维效果目标
+  - 稳定性目标：`-|abs_ic_train - abs_ic_valid|`
+  - 简洁性目标：`-log(1+program_length)`（抑制表达式膨胀）
+
+### 2.6 默认因子库素材注入（新）
+
+- 挖掘入口 `run_factor_mining.py` 默认会按 `--factor-freq` 调用主因子库（`strategy7/factors/defaults.py`）。
+- 注入后，默认因子会并入挖掘面板，与原始特征一起成为挖掘素材。
+- 素材包可用参数：
+  - `--factor-packages`：逗号分隔，控制注入哪些默认包（空=全部）
+  - `--disable-default-factor-materials`：关闭默认因子素材注入
+- 对分钟框架：
+  - 当 `factor_freq` 为分钟频时，注入因子直接进入分钟面板素材池
+  - 当 `factor_freq=D` 且使用分钟框架时，日频素材会作为“日内常量字段”参与分钟表达式计算
+
 ## 3. 入库标准（频率分层）
 
 `strategy7/mining/evaluation.py` 中内置频率+框架标准：
@@ -121,6 +151,13 @@
   - `ic_ir >= 0.16`
   - `long_excess_annualized >= 0.02`
   - `long_sharpe >= 0.70`
+  - `coverage >= 0.90`
+- GP 符号挖掘（`*_gplearn_symbolic_v1`）
+  - `abs_ic_mean >= 0.020`
+  - `ic_win_rate >= 0.54`
+  - `ic_ir >= 0.18`
+  - `long_excess_annualized >= 0.02`
+  - `long_sharpe >= 0.80`
   - `coverage >= 0.90`
 
 仅通过准入标准的因子才会以 `status=active` 入 catalog。
@@ -186,6 +223,8 @@ python Strategy7/run_factor_mining.py \
 ```bash
 python Strategy7/run_factor_mining.py \
   --framework minute_parametric \
+  --factor-freq 15min \
+  --factor-packages trend,liquidity,bridge \
   --train-start 2021-01-01 --train-end 2023-12-31 \
   --valid-start 2024-01-01 --valid-end 2024-12-31 \
   --population-size 96 --generations 16 --top-n 20
@@ -216,12 +255,32 @@ python Strategy7/run_factor_mining.py \
 ```bash
 python Strategy7/run_factor_mining.py \
   --framework ml_ensemble_alpha \
+  --factor-freq D \
+  --factor-packages legacy_core,trend,reversal,liquidity \
   --train-start 2021-01-01 --train-end 2023-12-31 \
   --valid-start 2024-01-01 --valid-end 2024-12-31 \
   --ml-population-size 48 --ml-generations 10 \
   --ml-model-pool rf,et,hgbt \
   --ml-prefilter-topk 80 --ml-feature-min 10 --ml-feature-max 36
 ```
+
+### 6.6 GP 符号遗传规划因子挖掘
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --framework gplearn_symbolic_alpha \
+  --train-start 2021-01-01 --train-end 2023-12-31 \
+  --valid-start 2024-01-01 --valid-end 2024-12-31 \
+  --gp-population-size 400 --gp-generations 12 \
+  --gp-num-runs 3 --gp-n-components 24 \
+  --gp-function-set add,sub,mul,div,sqrt,log,abs,neg,max,min \
+  --gp-prefilter-topk 80
+```
+
+依赖说明：
+
+- 该框架需要 `gplearn`，请先在运行环境安装：
+  - `pip install gplearn`
 
 ## 7. 说明
 
@@ -236,6 +295,7 @@ You can override built-in admission thresholds from CLI, for example:
 ```bash
 python Strategy7/run_factor_mining.py \
   --framework fundamental_multiobj \
+  --factor-packages trend,context \
   --min-abs-ic-mean 0.015 \
   --min-ic-win-rate 0.53 \
   --min-long-excess-annualized 0.015

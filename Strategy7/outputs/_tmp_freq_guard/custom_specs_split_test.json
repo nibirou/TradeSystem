@@ -1,0 +1,9 @@
+﻿[
+  {
+    "name": "cust_ret1_z",
+    "expression": "cs_z(ret_1)",
+    "freq": "W",
+    "category": "custom_factor",
+    "description": "split test"
+  }
+]

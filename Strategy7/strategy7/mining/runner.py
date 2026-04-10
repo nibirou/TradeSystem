@@ -14,6 +14,7 @@ import pandas as pd
 
 from ..core.constants import INTRADAY_FREQS
 from ..core.utils import dump_json, ensure_dir, log_progress
+from ..factors.defaults import DEFAULT_FACTOR_SET_BY_FREQ
 from ..factors.labeling import validate_label_frequency_alignment
 from .catalog import upsert_catalog_entries
 from .custom import CustomFactorSpec, evaluate_custom_specs
@@ -35,7 +36,21 @@ from .formulas import (
     neutralize_series,
     winsorize_mad_cs,
 )
+from .models import (
+    run_custom_model,
+    run_fundamental_multiobj_model,
+    run_minute_parametric_model,
+    run_minute_parametric_plus_model,
+    run_ml_ensemble_alpha_model,
+    run_gplearn_symbolic_alpha_model,
+)
 from .nsga import apply_dynamic_shortboard_penalty, nsga2_select, nsga3_select
+
+_DEFAULT_FACTOR_NAME_UNIVERSE = frozenset(
+    x
+    for _, vals in DEFAULT_FACTOR_SET_BY_FREQ.items()
+    for x in vals
+)
 
 
 @dataclass
@@ -93,6 +108,26 @@ class FactorMiningConfig:
     ml_train_sample_frac: float = 0.40
     ml_max_train_rows: int = 220000
     ml_num_jobs: int = -1
+    # gplearn_symbolic_alpha 专用参数（仅该框架读取，不影响旧框架）
+    gp_population_size: int = 400
+    gp_generations: int = 12
+    gp_num_runs: int = 3
+    gp_n_components: int = 24
+    gp_hall_of_fame: int = 64
+    gp_tournament_size: int = 20
+    gp_parsimony: float = 0.001
+    gp_metric: str = "spearman"
+    gp_function_set: str = "add,sub,mul,div,sqrt,log,abs,neg,max,min"
+    gp_prefilter_topk: int = 80
+    gp_train_sample_frac: float = 0.40
+    gp_max_train_rows: int = 220000
+    gp_max_depth: int = 5
+    gp_max_samples: float = 0.90
+    gp_num_jobs: int = -1
+    # 素材池控制参数（run_factor_mining.py 注入默认因子后透传记录）
+    include_default_factor_materials: bool = True
+    factor_packages: str = ""
+    material_factor_count: int = 0
 
 
 def _seed(seed: int) -> np.random.Generator:
@@ -189,9 +224,17 @@ def _discover_daily_feature_pool(panel: pd.DataFrame) -> List[str]:
             numeric_cols.append(c)
 
     preferred = [c for c in numeric_cols if any(k in c.lower() for k in prefer_contains)]
-    if len(preferred) >= 12:
-        return sorted(preferred)
-    return sorted(numeric_cols)
+    factor_like = [
+        c
+        for c in numeric_cols
+        if c in _DEFAULT_FACTOR_NAME_UNIVERSE
+        or c.startswith("g_")
+        or c.startswith("bridge_")
+        or c.startswith("ms_")
+        or c.startswith("hf_")
+    ]
+    core = preferred if len(preferred) >= 12 else numeric_cols
+    return sorted(set(core) | set(factor_like))
 
 
 def _discover_minute_feature_pool(minute_feat: pd.DataFrame) -> List[str]:
@@ -837,6 +880,14 @@ def run_factor_mining(
         f"bad_entry_shift={int(align.get('bad_entry_shift', 0))}, bad_exit_shift={int(align.get('bad_exit_shift', 0))}。",
         module="mining",
     )
+    log_progress(
+        "素材池配置："
+        f"include_default_factor_materials={int(bool(cfg.include_default_factor_materials))}, "
+        f"factor_packages='{cfg.factor_packages}', "
+        f"material_factor_count={int(cfg.material_factor_count)}。",
+        module="mining",
+        level="debug",
+    )
 
     # 2) Resolve admission standard (supports CLI threshold overrides).
     standard = resolve_admission_standard(cfg.factor_freq, framework=framework)
@@ -864,349 +915,180 @@ def run_factor_mining(
     minute_panel_mode = False
 
     if framework == "custom":
-        # 3A) Custom framework: evaluate user-provided expressions directly.
-        specs = custom_specs or []
-        if not specs:
-            raise RuntimeError("custom framework requires at least one custom factor spec")
-        log_progress(f"开始评估 custom 因子：spec_count={len(specs)}。", module="mining")
-
-        fac_df = evaluate_custom_specs(panel=panel, specs=specs, time_col=time_col, code_col="code")
-        results: List[Dict[str, object]] = []
-        for spec in specs:
-            factor_col = spec.name
-            tmp = panel[[time_col, "code", "future_ret_n"]].copy()
-            tmp[factor_col] = pd.to_numeric(fac_df[factor_col], errors="coerce")
-            tmp_tr, tmp_va = _split_train_valid(tmp)
-            m_tr = _collect_metrics(tmp_tr, factor_col=factor_col, cfg=cfg, framework=framework, group_col=eval_group_col)
-            m_va = _collect_metrics(tmp_va, factor_col=factor_col, cfg=cfg, framework=framework, group_col=eval_group_col)
-            passed, admission = check_admission(m_va, standard)
-            key = _to_key(spec.to_dict())
-            result = {
-                "key": key,
-                "spec": spec,
-                "name": factor_col,
-                "metrics_train": m_tr,
-                "metrics_valid": m_va,
-                "objectives": objectives_from_metrics(m_va, framework=framework),
-                "score": _ic_score(m_va),
-                "passed": bool(passed),
-                "admission": admission,
-            }
-            cache[key] = result
-            results.append(result)
-        log_progress(f"custom 因子评估完成：candidate_count={len(results)}。", module="mining")
+        results = run_custom_model(
+            panel=panel,
+            specs=custom_specs or [],
+            time_col=time_col,
+            framework=framework,
+            eval_group_col=eval_group_col,
+            cache=cache,
+            standard=standard,
+            evaluate_custom_specs=evaluate_custom_specs,
+            split_train_valid=_split_train_valid,
+            collect_metrics=lambda df, factor_col, group_col: _collect_metrics(
+                df, factor_col=factor_col, cfg=cfg, framework=framework, group_col=group_col
+            ),
+            check_admission=check_admission,
+            objectives_from_metrics=objectives_from_metrics,
+            to_key=_to_key,
+            ic_score=_ic_score,
+            log_progress=log_progress,
+        )
 
     elif framework == "fundamental_multiobj":
-        # 3B) Fundamental framework: NSGA-II over parametric daily formulas.
         fields = _discover_daily_feature_pool(panel)
-        if len(fields) < 2:
-            raise RuntimeError("insufficient daily feature columns for fundamental mining")
-        log_progress(
-            f"开始基本面进化挖掘：feature_pool={len(fields)}, population={cfg.population_size}, "
-            f"generations={cfg.generations}。",
-            module="mining",
+        results = run_fundamental_multiobj_model(
+            panel=panel,
+            fields=fields,
+            cfg=cfg,
+            rng=rng,
+            framework=framework,
+            eval_group_col=eval_group_col,
+            cache=cache,
+            standard=standard,
+            compute_fundamental_factor=compute_fundamental_factor,
+            split_train_valid=_split_train_valid,
+            collect_metrics=lambda df, factor_col, group_col: _collect_metrics(
+                df, factor_col=factor_col, cfg=cfg, framework=framework, group_col=group_col
+            ),
+            objectives_from_metrics=objectives_from_metrics,
+            safe_obj=_safe_obj,
+            check_admission=check_admission,
+            to_key=_to_key,
+            ic_score=_ic_score,
+            nsga2_select=nsga2_select,
+            random_spec_fn=_fundamental_random_spec,
+            mutate_spec_fn=_fundamental_mutate,
+            crossover_spec_fn=_fundamental_crossover,
+            log_progress=log_progress,
         )
 
-        def _evaluate(spec: FundamentalFormulaSpec) -> Dict[str, object]:
-            key = _to_key(spec.to_dict())
-            if key in cache:
-                return cache[key]
-
-            fac = compute_fundamental_factor(panel, spec, group_col=eval_group_col)
-            tmp = panel[[time_col, "code", "future_ret_n"]].copy()
-            tmp["_factor"] = pd.to_numeric(fac, errors="coerce")
-
-            tmp_tr, tmp_va = _split_train_valid(tmp)
-            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework, group_col=eval_group_col)
-            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework, group_col=eval_group_col)
-            obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
-
-            passed, admission = check_admission(m_va, standard)
-            score = _ic_score(m_va)
-            result = {
-                "key": key,
-                "spec": spec,
-                "metrics_train": m_tr,
-                "metrics_valid": m_va,
-                "objectives": obj.tolist(),
-                "score": score,
-                "passed": bool(passed),
-                "admission": admission,
-            }
-            cache[key] = result
-            return result
-
-        pop: List[FundamentalFormulaSpec] = [_fundamental_random_spec(rng, fields) for _ in range(cfg.population_size)]
-        archive: Dict[str, Dict[str, object]] = {}
-
-        for gen in range(cfg.generations):
-            res = [_evaluate(s) for s in pop]
-            for r in res:
-                k = str(r["key"])
-                if k not in archive or float(r["score"]) > float(archive[k]["score"]):
-                    archive[k] = r
-
-            objs = [r["objectives"] for r in res]
-            parent_idx = nsga2_select(objs, n_select=max(8, cfg.population_size // 2))
-            parent_pool = [pop[i] for i in parent_idx]
-            elites = sorted(res, key=lambda r: float(r["score"]), reverse=True)[: max(1, cfg.elite_size)]
-
-            best = elites[0]
-            log_progress(
-                (
-                    f"[fundamental][gen={gen:02d}] best_score={best['score']:.4f} "
-                    f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
-                    f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f}"
-                ),
-                module="mining",
-                level="debug",
-            )
-
-            new_pop: List[FundamentalFormulaSpec] = [copy.deepcopy(e["spec"]) for e in elites]
-            while len(new_pop) < cfg.population_size:
-                p1 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
-                child = p1
-                if rng.random() < cfg.crossover_rate and len(parent_pool) > 1:
-                    p2 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
-                    child = _fundamental_crossover(p1, p2, rng)
-                if rng.random() < cfg.mutation_rate:
-                    child = _fundamental_mutate(child, rng, fields)
-                new_pop.append(child)
-            pop = new_pop[: cfg.population_size]
-
-        results = list(archive.values())
-        log_progress(f"基本面进化完成：candidate_count={len(results)}。", module="mining")
-
-    elif framework in {"minute_parametric", "minute_parametric_plus"}:
-        # 3C/3D) Minute framework family: NSGA-III over parametric minute operators.
-        minute_panel_mode = str(factor_freq).upper() != "D"
-        if minute_panel_mode:
-            # Intraday/period frequency: evaluate formulas directly on target-frequency panel.
-            minute_feat = panel.copy()
-            metric_group_col = eval_group_col
-        else:
-            # Daily frequency: derive one factor value per [date, code] from minute bars.
-            if minute_df is None or minute_df.empty:
-                raise RuntimeError(f"{framework} framework requires minute_df")
-            minute_feat = build_minute_feature_matrix(minute_df)
-            metric_group_col = "date"
-
-        fields = _discover_minute_feature_pool(minute_feat)
-        if len(fields) < 2:
-            raise RuntimeError(f"insufficient minute feature columns for {framework}")
-
-        is_plus = framework == "minute_parametric_plus"
-        pop_size = int(cfg.population_size)
-        generations = int(cfg.generations)
-        mutate_fn = _minute_plus_mutate if is_plus else _minute_mutate
-        random_fn = _minute_plus_random_spec if is_plus else _minute_random_spec
-        tag = "minute_plus" if is_plus else "minute"
-        log_progress(
-            f"开始分钟进化挖掘：framework={framework}, feature_pool={len(fields)}, "
-            f"population={pop_size}, generations={generations}, panel_mode={int(minute_panel_mode)}。",
-            module="mining",
+    elif framework == "minute_parametric":
+        results, minute_panel_mode = run_minute_parametric_model(
+            panel=panel,
+            minute_df=minute_df,
+            factor_freq=factor_freq,
+            time_col=time_col,
+            framework=framework,
+            eval_group_col=eval_group_col,
+            cfg=cfg,
+            rng=rng,
+            cache=cache,
+            standard=standard,
+            build_minute_feature_matrix=build_minute_feature_matrix,
+            discover_minute_feature_pool=_discover_minute_feature_pool,
+            discover_daily_feature_pool=_discover_daily_feature_pool,
+            compute_minute_factor_panel=compute_minute_factor_panel,
+            compute_minute_factor_daily=compute_minute_factor_daily,
+            split_train_valid=_split_train_valid,
+            collect_metrics=lambda df, factor_col, group_col: _collect_metrics(
+                df, factor_col=factor_col, cfg=cfg, framework=framework, group_col=group_col
+            ),
+            objectives_from_metrics=objectives_from_metrics,
+            safe_obj=_safe_obj,
+            check_admission=check_admission,
+            to_key=_to_key,
+            ic_score=_ic_score,
+            nsga3_select=nsga3_select,
+            apply_dynamic_shortboard_penalty=apply_dynamic_shortboard_penalty,
+            random_spec_fn=_minute_random_spec,
+            mutate_spec_fn=_minute_mutate,
+            crossover_spec_fn=_minute_crossover,
+            log_progress=log_progress,
         )
 
-        daily_ctx = panel[[c for c in ["date", "code", "future_ret_n", "barra_size_proxy", "industry_bucket"] if c in panel.columns]].copy()
-
-        def _evaluate(spec: MinuteFormulaSpec) -> Dict[str, object]:
-            key = _to_key(spec.to_dict())
-            if key in cache:
-                return cache[key]
-
-            if minute_panel_mode:
-                fac = compute_minute_factor_panel(
-                    panel_feature_df=minute_feat,
-                    spec=spec,
-                    time_col=time_col,
-                    session_col="date" if time_col == "datetime" else None,
-                )
-                tmp = panel[[time_col, "code", "future_ret_n"]].copy()
-                tmp["_factor"] = pd.to_numeric(fac, errors="coerce")
-            else:
-                fac = compute_minute_factor_daily(minute_feature_df=minute_feat, daily_context_df=daily_ctx, spec=spec)
-                fac_df = fac.rename("_factor").reset_index()
-                tmp = daily_ctx[["date", "code", "future_ret_n"]].merge(fac_df, on=["date", "code"], how="left")
-
-            tmp_tr, tmp_va = _split_train_valid(tmp)
-            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework, group_col=metric_group_col)
-            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework, group_col=metric_group_col)
-
-            base_obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
-            if is_plus:
-                # 稳定性目标：训练/验证 absIC 差异越小越好
-                tr_ic = float(m_tr.get("abs_ic_mean", float("nan")))
-                va_ic = float(m_va.get("abs_ic_mean", float("nan")))
-                stability = -abs(tr_ic - va_ic) if np.isfinite(tr_ic) and np.isfinite(va_ic) else -1.0
-                obj = np.concatenate([base_obj, np.asarray([stability], dtype=float)], axis=0)
-            else:
-                obj = base_obj
-
-            passed, admission = check_admission(m_va, standard)
-            score = _ic_score(m_va)
-            result = {
-                "key": key,
-                "spec": spec,
-                "metrics_train": m_tr,
-                "metrics_valid": m_va,
-                "objectives": obj.tolist(),
-                "score": score,
-                "passed": bool(passed),
-                "admission": admission,
-            }
-            cache[key] = result
-            return result
-
-        pop: List[MinuteFormulaSpec] = [random_fn(rng, fields) for _ in range(pop_size)]
-        archive: Dict[str, Dict[str, object]] = {}
-
-        for gen in range(generations):
-            res = [_evaluate(s) for s in pop]
-            for r in res:
-                k = str(r["key"])
-                if k not in archive or float(r["score"]) > float(archive[k]["score"]):
-                    archive[k] = r
-
-            raw_obj = np.asarray([r["objectives"] for r in res], dtype=float)
-            penalized_obj, penalty = apply_dynamic_shortboard_penalty(raw_obj, floor_quantile=0.30, penalty_strength=0.20)
-            parent_idx = nsga3_select(penalized_obj, n_select=max(8, pop_size // 2), ref_divisions=8)
-            parent_pool = [pop[i] for i in parent_idx]
-            elites = sorted(res, key=lambda r: float(r["score"]), reverse=True)[: max(1, int(cfg.elite_size))]
-
-            best = elites[0]
-            mean_penalty = float(np.mean(penalty)) if len(penalty) > 0 else float("nan")
-            log_progress(
-                (
-                    f"[{tag}][gen={gen:02d}] best_score={best['score']:.4f} "
-                    f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
-                    f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f} "
-                    f"penalty={mean_penalty:.4f}"
-                ),
-                module="mining",
-                level="debug",
-            )
-
-            new_pop: List[MinuteFormulaSpec] = [copy.deepcopy(e["spec"]) for e in elites]
-            while len(new_pop) < pop_size:
-                p1 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
-                child = p1
-                if rng.random() < cfg.crossover_rate and len(parent_pool) > 1:
-                    p2 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
-                    child = _minute_crossover(p1, p2, rng)
-                if rng.random() < cfg.mutation_rate:
-                    child = mutate_fn(child, rng, fields)
-                new_pop.append(child)
-            pop = new_pop[: pop_size]
-
-        results = list(archive.values())
-        log_progress(f"分钟进化完成：candidate_count={len(results)}。", module="mining")
+    elif framework == "minute_parametric_plus":
+        results, minute_panel_mode = run_minute_parametric_plus_model(
+            panel=panel,
+            minute_df=minute_df,
+            factor_freq=factor_freq,
+            time_col=time_col,
+            framework=framework,
+            eval_group_col=eval_group_col,
+            cfg=cfg,
+            rng=rng,
+            cache=cache,
+            standard=standard,
+            build_minute_feature_matrix=build_minute_feature_matrix,
+            discover_minute_feature_pool=_discover_minute_feature_pool,
+            discover_daily_feature_pool=_discover_daily_feature_pool,
+            compute_minute_factor_panel=compute_minute_factor_panel,
+            compute_minute_factor_daily=compute_minute_factor_daily,
+            split_train_valid=_split_train_valid,
+            collect_metrics=lambda df, factor_col, group_col: _collect_metrics(
+                df, factor_col=factor_col, cfg=cfg, framework=framework, group_col=group_col
+            ),
+            objectives_from_metrics=objectives_from_metrics,
+            safe_obj=_safe_obj,
+            check_admission=check_admission,
+            to_key=_to_key,
+            ic_score=_ic_score,
+            nsga3_select=nsga3_select,
+            apply_dynamic_shortboard_penalty=apply_dynamic_shortboard_penalty,
+            random_spec_fn=_minute_plus_random_spec,
+            mutate_spec_fn=_minute_plus_mutate,
+            crossover_spec_fn=_minute_crossover,
+            log_progress=log_progress,
+        )
 
     elif framework == "ml_ensemble_alpha":
-        # 3E) ML ensemble framework: model + feature-subset co-search.
-        fields_all = _discover_daily_feature_pool(panel)
-        train_frame = panel.loc[train_mask].copy()
-        fields_valid = _valid_nonconstant_features(train_frame, fields_all)
-        if len(fields_valid) < 5:
-            raise RuntimeError("insufficient daily features for ml_ensemble_alpha")
-
-        fields_pref = _prefilter_features_by_ic(
-            train_frame=train_frame,
-            candidate_cols=fields_valid,
-            target_col="future_ret_n",
-            topk=int(cfg.ml_prefilter_topk),
+        results = run_ml_ensemble_alpha_model(
+            panel=panel,
+            train_mask=train_mask,
+            time_col=time_col,
+            eval_group_col=eval_group_col,
+            framework=framework,
+            cfg=cfg,
+            rng=rng,
+            cache=cache,
+            standard=standard,
+            discover_daily_feature_pool=_discover_daily_feature_pool,
+            valid_nonconstant_features=_valid_nonconstant_features,
+            prefilter_features_by_ic=_prefilter_features_by_ic,
+            fit_ml_factor_series=_fit_ml_factor_series,
+            split_train_valid=_split_train_valid,
+            collect_metrics=lambda df, factor_col, group_col: _collect_metrics(
+                df, factor_col=factor_col, cfg=cfg, framework=framework, group_col=group_col
+            ),
+            objectives_from_metrics=objectives_from_metrics,
+            safe_obj=_safe_obj,
+            check_admission=check_admission,
+            to_key=_to_key,
+            ic_score=_ic_score,
+            nsga2_select=nsga2_select,
+            random_spec_fn=_ml_random_spec,
+            mutate_spec_fn=_ml_mutate,
+            crossover_spec_fn=_ml_crossover,
+            log_progress=log_progress,
         )
-        feature_pool = fields_pref if len(fields_pref) >= 5 else fields_valid
-        if len(feature_pool) < 5:
-            raise RuntimeError("ml_ensemble_alpha prefiltered feature pool too small")
-        log_progress(
-            f"开始 ML 集成进化挖掘：raw_features={len(fields_all)}, valid_features={len(fields_valid)}, "
-            f"prefilter_features={len(feature_pool)}, population={max(8, int(cfg.ml_population_size))}, "
-            f"generations={max(1, int(cfg.ml_generations))}。",
-            module="mining",
+
+    elif framework == "gplearn_symbolic_alpha":
+        results = run_gplearn_symbolic_alpha_model(
+            panel=panel,
+            train_mask=train_mask,
+            time_col=time_col,
+            eval_group_col=eval_group_col,
+            framework=framework,
+            cfg=cfg,
+            cache=cache,
+            standard=standard,
+            discover_feature_pool=_discover_daily_feature_pool,
+            valid_nonconstant_features=_valid_nonconstant_features,
+            prefilter_features_by_ic=_prefilter_features_by_ic,
+            split_train_valid=_split_train_valid,
+            collect_metrics=lambda df, factor_col, group_col: _collect_metrics(
+                df, factor_col=factor_col, cfg=cfg, framework=framework, group_col=group_col
+            ),
+            objectives_from_metrics=objectives_from_metrics,
+            safe_obj=_safe_obj,
+            check_admission=check_admission,
+            to_key=_to_key,
+            ic_score=_ic_score,
+            winsorize_mad_cs=winsorize_mad_cs,
+            neutralize_series=neutralize_series,
+            cs_zscore=cs_zscore,
+            log_progress=log_progress,
         )
-
-        pop_size = max(8, int(cfg.ml_population_size))
-        generations = max(1, int(cfg.ml_generations))
-        archive: Dict[str, Dict[str, object]] = {}
-
-        def _evaluate(spec: MLEnsembleFormulaSpec) -> Dict[str, object]:
-            key = _to_key(spec.to_dict())
-            if key in cache:
-                return cache[key]
-
-            fac = _fit_ml_factor_series(
-                panel=panel,
-                train_mask=train_mask,
-                spec=spec,
-                cfg=cfg,
-                group_col=eval_group_col,
-            )
-            tmp = panel[[time_col, "code", "future_ret_n"]].copy()
-            tmp["_factor"] = pd.to_numeric(fac, errors="coerce")
-
-            tmp_tr, tmp_va = _split_train_valid(tmp)
-            m_tr = _collect_metrics(tmp_tr, factor_col="_factor", cfg=cfg, framework=framework, group_col=eval_group_col)
-            m_va = _collect_metrics(tmp_va, factor_col="_factor", cfg=cfg, framework=framework, group_col=eval_group_col)
-            obj = 0.5 * (_safe_obj(objectives_from_metrics(m_tr, framework)) + _safe_obj(objectives_from_metrics(m_va, framework)))
-
-            passed, admission = check_admission(m_va, standard)
-            score = _ic_score(m_va)
-            result = {
-                "key": key,
-                "spec": spec,
-                "series": pd.DataFrame({time_col: panel[time_col], "code": panel["code"], "v": fac})
-                .set_index([time_col, "code"])["v"]
-                .sort_index(),
-                "metrics_train": m_tr,
-                "metrics_valid": m_va,
-                "objectives": obj.tolist(),
-                "score": score,
-                "passed": bool(passed),
-                "admission": admission,
-            }
-            cache[key] = result
-            return result
-
-        pop: List[MLEnsembleFormulaSpec] = [_ml_random_spec(rng, feature_pool=feature_pool, cfg=cfg) for _ in range(pop_size)]
-        for gen in range(generations):
-            res = [_evaluate(s) for s in pop]
-            for r in res:
-                k = str(r["key"])
-                if k not in archive or float(r["score"]) > float(archive[k]["score"]):
-                    archive[k] = r
-
-            objs = [r["objectives"] for r in res]
-            parent_idx = nsga2_select(objs, n_select=max(8, pop_size // 2))
-            parent_pool = [pop[i] for i in parent_idx]
-            elites = sorted(res, key=lambda r: float(r["score"]), reverse=True)[: max(1, int(cfg.elite_size))]
-
-            best = elites[0]
-            log_progress(
-                (
-                    f"[ml_ensemble][gen={gen:02d}] best_score={best['score']:.4f} "
-                    f"absIC={best['metrics_valid'].get('abs_ic_mean', float('nan')):.4f} "
-                    f"win={best['metrics_valid'].get('ic_win_rate', float('nan')):.4f} "
-                    f"featN={len(best['spec'].feature_cols)} "
-                    f"model={best['spec'].model_name}"
-                ),
-                module="mining",
-                level="debug",
-            )
-
-            new_pop: List[MLEnsembleFormulaSpec] = [copy.deepcopy(e["spec"]) for e in elites]
-            while len(new_pop) < pop_size:
-                p1 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
-                child = p1
-                if rng.random() < cfg.crossover_rate and len(parent_pool) > 1:
-                    p2 = copy.deepcopy(parent_pool[int(rng.integers(0, len(parent_pool)))])
-                    child = _ml_crossover(p1, p2, rng, cfg=cfg)
-                if rng.random() < cfg.mutation_rate:
-                    child = _ml_mutate(child, rng, feature_pool=feature_pool, cfg=cfg)
-                new_pop.append(child)
-            pop = new_pop[: pop_size]
-
-        results = list(archive.values())
-        log_progress(f"ML 集成进化完成：candidate_count={len(results)}。", module="mining")
 
     else:
         raise ValueError(f"unsupported mining framework: {cfg.framework}")
@@ -1250,7 +1132,7 @@ def run_factor_mining(
             daily_ctx = panel[[c for c in ["date", "code", "future_ret_n", "barra_size_proxy", "industry_bucket"] if c in panel.columns]].copy()
             s2 = compute_minute_factor_daily(minute_feature_df=minute_feat, daily_context_df=daily_ctx, spec=spec)
             return (s2 * sign).sort_index()
-        if framework == "ml_ensemble_alpha":
+        if framework in {"ml_ensemble_alpha", "gplearn_symbolic_alpha"}:
             s3 = cand.get("series")
             if isinstance(s3, pd.Series):
                 return (pd.to_numeric(s3, errors="coerce") * sign).sort_index()
@@ -1304,6 +1186,8 @@ def run_factor_mining(
             fac_name = _hash_name("minx_mo", spec.to_dict())
         elif framework == "ml_ensemble_alpha":
             fac_name = _hash_name("mla_mo", spec.to_dict())
+        elif framework == "gplearn_symbolic_alpha":
+            fac_name = _hash_name("gpl_mo", spec.to_dict())
         else:
             fac_name = _hash_name("min_mo", spec.to_dict())
 
@@ -1355,10 +1239,21 @@ def run_factor_mining(
     summary = {
         "framework": framework,
         "factor_freq": cfg.factor_freq,
+        "include_default_factor_materials": bool(cfg.include_default_factor_materials),
+        "factor_packages": str(cfg.factor_packages),
+        "material_factor_count": int(cfg.material_factor_count),
         "train_period": [str(pd.Timestamp(cfg.train_start).date()), str(pd.Timestamp(cfg.train_end).date())],
         "valid_period": [str(pd.Timestamp(cfg.valid_start).date()), str(pd.Timestamp(cfg.valid_end).date())],
-        "population_size": int(cfg.ml_population_size) if framework == "ml_ensemble_alpha" else int(cfg.population_size),
-        "generations": int(cfg.ml_generations) if framework == "ml_ensemble_alpha" else int(cfg.generations),
+        "population_size": (
+            int(cfg.ml_population_size)
+            if framework == "ml_ensemble_alpha"
+            else (int(cfg.gp_population_size) if framework == "gplearn_symbolic_alpha" else int(cfg.population_size))
+        ),
+        "generations": (
+            int(cfg.ml_generations)
+            if framework == "ml_ensemble_alpha"
+            else (int(cfg.gp_generations) if framework == "gplearn_symbolic_alpha" else int(cfg.generations))
+        ),
         "candidate_count": int(len(results)),
         "selected_count": int(len(selected)),
         "catalog_path": str(catalog_path),

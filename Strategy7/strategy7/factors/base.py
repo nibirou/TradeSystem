@@ -82,6 +82,7 @@ def resolve_selected_factors(library: FactorLibrary, freq: str, factor_list_arg:
 
 def compute_factor_panel(base_df: pd.DataFrame, library: FactorLibrary, freq: str, selected_factors: List[str]) -> pd.DataFrame:
     panel = base_df.copy()
+    computed: Dict[str, pd.Series] = {}
     for fac in selected_factors:
         try:
             values = library.get(freq, fac).func(panel)
@@ -97,7 +98,13 @@ def compute_factor_panel(base_df: pd.DataFrame, library: FactorLibrary, freq: st
                     f"expected={len(panel)}, got={len(aligned)}"
                 )
             aligned.index = panel.index
-        panel[fac] = pd.to_numeric(aligned, errors="coerce")
+        computed[fac] = pd.to_numeric(aligned, errors="coerce")
+    if computed:
+        factor_frame = pd.DataFrame(computed, index=panel.index)
+        overlap = [c for c in factor_frame.columns if c in panel.columns]
+        if overlap:
+            panel = panel.drop(columns=overlap, errors="ignore")
+        panel = pd.concat([panel, factor_frame], axis=1)
     return panel
 
 

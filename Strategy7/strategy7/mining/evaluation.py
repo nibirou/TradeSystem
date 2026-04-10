@@ -143,6 +143,14 @@ def evaluate_factor_panel(
 
 def objectives_from_metrics(metrics: Dict[str, float], framework: str) -> List[float]:
     fw = str(framework).strip().lower()
+    if "gplearn_symbolic_alpha" in fw:
+        return [
+            float(metrics.get("abs_ic_mean", float("nan"))),
+            float(metrics.get("ic_win_rate", float("nan"))),
+            float(metrics.get("ndcg_k", float("nan"))),
+            float(metrics.get("long_excess_annualized", float("nan"))),
+            float(metrics.get("long_sharpe", float("nan"))),
+        ]
     if "ml_ensemble" in fw:
         return [
             float(metrics.get("abs_ic_mean", float("nan"))),
@@ -217,6 +225,18 @@ def resolve_admission_standard(freq: str, framework: str) -> FactorAdmissionStan
             min_ic_ir=0.16,
             min_long_excess_annualized=0.02,
             min_long_sharpe=0.70,
+            min_long_win_rate=0.51,
+            min_coverage=0.90,
+        )
+
+    if "gplearn_symbolic_alpha" in fw:
+        return FactorAdmissionStandard(
+            profile=f"{f}_gplearn_symbolic_v1",
+            min_abs_ic_mean=0.020,
+            min_ic_win_rate=0.54,
+            min_ic_ir=0.18,
+            min_long_excess_annualized=0.02,
+            min_long_sharpe=0.80,
             min_long_win_rate=0.51,
             min_coverage=0.90,
         )

@@ -573,22 +573,55 @@ def compute_minute_factor_daily(
     if minute_feature_df.empty:
         return pd.Series(dtype=float)
 
-    needed = {spec.a_field, spec.mask_field}
+    mdf = minute_feature_df.copy()
+    mdf["date"] = pd.to_datetime(mdf["date"], errors="coerce").dt.normalize()
+    mdf["code"] = mdf["code"].astype(str)
+
+    ctx = daily_context_df.copy()
+    ctx["date"] = pd.to_datetime(ctx["date"], errors="coerce").dt.normalize()
+    ctx["code"] = ctx["code"].astype(str)
+
+    needed = {str(spec.a_field), str(spec.mask_field)}
     if int(spec.mode) == 2:
-        needed.add(spec.b_field)
-    for c in needed:
-        if c not in minute_feature_df.columns:
-            return pd.Series(dtype=float)
+        needed.add(str(spec.b_field))
+
+    # Allow fields to come from minute data or daily context.
+    missing = [c for c in needed if c not in mdf.columns and c not in ctx.columns]
+    if missing:
+        return pd.Series(dtype=float)
+
+    ctx_cols_for_lookup = ["date", "code"] + [c for c in needed if c in ctx.columns]
+    ctx_lookup = (
+        ctx[ctx_cols_for_lookup]
+        .drop_duplicates(["date", "code"], keep="last")
+        .set_index(["date", "code"])
+    )
 
     recs: List[Dict[str, object]] = []
-    by = minute_feature_df.groupby(["date", "code"], sort=False)
+    by = mdf.groupby(["date", "code"], sort=False)
     side, q = _parse_mask_rule(spec.mask_rule)
 
     for (dt, code), g in by:
         g = g.sort_values("datetime")
-        a = pd.to_numeric(g[spec.a_field], errors="coerce").to_numpy(dtype=float)
-        b = pd.to_numeric(g[spec.b_field], errors="coerce").to_numpy(dtype=float) if spec.b_field in g.columns else np.full(len(g), np.nan)
-        m = pd.to_numeric(g[spec.mask_field], errors="coerce").to_numpy(dtype=float)
+
+        ctx_row = None
+        if (pd.Timestamp(dt), str(code)) in ctx_lookup.index:
+            row = ctx_lookup.loc[(pd.Timestamp(dt), str(code))]
+            if isinstance(row, pd.DataFrame):
+                row = row.iloc[-1]
+            ctx_row = row
+
+        def _take_field(col: str) -> np.ndarray:
+            if col in g.columns:
+                return pd.to_numeric(g[col], errors="coerce").to_numpy(dtype=float)
+            if ctx_row is not None and col in ctx_row.index:
+                vv = float(pd.to_numeric(pd.Series([ctx_row[col]]), errors="coerce").iloc[0])
+                return np.full(len(g), vv, dtype=float)
+            return np.full(len(g), np.nan, dtype=float)
+
+        a = _take_field(str(spec.a_field))
+        b = _take_field(str(spec.b_field))
+        m = _take_field(str(spec.mask_field))
 
         l, r = _slice_range(len(g), window=int(spec.window), slice_pos=spec.slice_pos)
         if r <= l:
@@ -631,8 +664,13 @@ def compute_minute_factor_daily(
     raw["code"] = raw["code"].astype(str)
 
     ctx_cols = [c for c in ["date", "code", "barra_size_proxy", "industry_bucket"] if c in daily_context_df.columns]
-    ctx = daily_context_df[ctx_cols].copy().drop_duplicates(["date", "code"], keep="last")
-    df = raw.merge(ctx, on=["date", "code"], how="left")
+    ctx_for_neutral = daily_context_df.copy()
+    if "date" in ctx_for_neutral.columns:
+        ctx_for_neutral["date"] = pd.to_datetime(ctx_for_neutral["date"], errors="coerce").dt.normalize()
+    if "code" in ctx_for_neutral.columns:
+        ctx_for_neutral["code"] = ctx_for_neutral["code"].astype(str)
+    ctx_for_neutral = ctx_for_neutral[ctx_cols].copy().drop_duplicates(["date", "code"], keep="last")
+    df = raw.merge(ctx_for_neutral, on=["date", "code"], how="left")
 
     fac = pd.to_numeric(df["_raw"], errors="coerce")
     fac = winsorize_mad_cs(fac, group=df["date"], limit=3.0)

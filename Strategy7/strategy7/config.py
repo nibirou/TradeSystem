@@ -1,4 +1,4 @@
-"""Configuration models and CLI parser."""
+﻿"""Configuration models and CLI parser."""
 
 from __future__ import annotations
 
@@ -33,6 +33,7 @@ class DataConfig:
 class FactorConfig:
     factor_freq: str
     factor_list: str
+    factor_packages: str
     custom_factor_py: str | None
     list_factors: bool
     lookback_days: int
@@ -416,6 +417,12 @@ def parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help="显式指定因子名列表（逗号分隔）；为空时使用该频率默认因子集",
+    )
+    g_factor.add_argument(
+        "--factor-packages",
+        type=str,
+        default="",
+        help="默认因子包过滤（逗号分隔；空=启用该频率全部默认包）",
     )
     g_factor.add_argument(
         "--custom-factor-py",
@@ -851,6 +858,7 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
     factors = FactorConfig(
         factor_freq=args.factor_freq,
         factor_list=args.factor_list,
+        factor_packages=str(args.factor_packages),
         custom_factor_py=_resolve_path(args.custom_factor_py) if args.custom_factor_py else None,
         list_factors=bool(args.list_factors),
         lookback_days=int(args.lookback_days),
@@ -956,3 +964,4 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         output_dir=resolve_output_dir(args),
         save_models=bool(args.save_models),
     )
+

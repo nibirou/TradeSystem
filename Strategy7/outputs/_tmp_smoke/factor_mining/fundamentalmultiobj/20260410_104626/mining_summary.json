@@ -1,0 +1,45 @@
+{
+  "framework": "fundamental_multiobj",
+  "factor_freq": "D",
+  "train_period": [
+    "2021-01-01",
+    "2021-01-31"
+  ],
+  "valid_period": [
+    "2021-02-01",
+    "2021-02-28"
+  ],
+  "population_size": 24,
+  "generations": 2,
+  "candidate_count": 41,
+  "selected_count": 1,
+  "catalog_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_smoke\\factor_mining\\factor_catalog.json",
+  "factor_table_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_smoke\\factor_mining\\fundamentalmultiobj\\20260410_104626\\factor_values_D.csv",
+  "selected_factors": [
+    "fund_mo_cf916e1ce7"
+  ],
+  "admission_profile": "D_fundamental_nsga2_v1",
+  "top_candidates": [
+    {
+      "name": "fund_mo_cf916e1ce7",
+      "score": 5.733315029759159,
+      "passed": true,
+      "metrics_valid": {
+        "obs": 15.0,
+        "coverage": 1.0,
+        "ic_mean": 0.16891685975626133,
+        "rank_ic_mean": 0.2733333333333333,
+        "abs_ic_mean": 0.2733333333333333,
+        "ic_win_rate": 0.6,
+        "ic_ir": 5.733315029759159,
+        "ndcg_k": 0.7402535847736151,
+        "long_ret_mean": 0.06778753713909243,
+        "long_ret_annualized": 2745.698911586198,
+        "long_sharpe": 9.107190382359354,
+        "long_win_rate": 0.7333333333333333,
+        "long_excess_mean": 0.053466617121929384,
+        "long_excess_annualized": 557.0406430197816
+      }
+    }
+  ]
+}

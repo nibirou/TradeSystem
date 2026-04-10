@@ -1,4 +1,4 @@
-"""Strategy7 end-to-end pipeline runner."""
+﻿"""Strategy7 end-to-end pipeline runner."""
 
 from __future__ import annotations
 
@@ -36,7 +36,12 @@ from ..factors.base import (
     register_passthrough_panel_factors,
     resolve_selected_factors,
 )
-from ..factors.defaults import DEFAULT_FACTOR_SET_BY_FREQ, register_default_factors
+from ..factors.defaults import (
+    DEFAULT_FACTOR_PACKS_BY_FREQ,
+    list_default_factor_packages,
+    register_default_factors,
+    resolve_default_factor_set,
+)
 from ..factors.labeling import add_labels, pick_target_column, split_train_test, validate_label_frequency_alignment
 from ..models import build_execution_model, build_portfolio_model, build_stock_model, build_timing_model
 from ..mining.catalog import load_active_catalog_entries, merge_catalog_factors, register_catalog_factors
@@ -80,6 +85,13 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         log_progress("进入仅列出因子模式。", module="pipeline")
         factor_lib = FactorLibrary()
         register_default_factors(factor_lib)
+        avail_packages = list_default_factor_packages(cfg.factors.factor_freq)
+        if avail_packages:
+            log_progress(
+                f"default factor packages@{cfg.factors.factor_freq}: {avail_packages}",
+                module="pipeline",
+                level="debug",
+            )
         catalog_count = 0
         if cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path:
             entries = load_active_catalog_entries(cfg.data.factor_catalog_path, freq=cfg.factors.factor_freq)
@@ -88,6 +100,16 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
                 catalog_count = int(len(entries))
         if cfg.factors.custom_factor_py:
             load_custom_factor_module(factor_lib, cfg.factors.custom_factor_py)
+        if str(getattr(cfg.factors, "factor_packages", "")).strip():
+            selected_default = resolve_default_factor_set(
+                freq=cfg.factors.factor_freq,
+                package_expr=str(cfg.factors.factor_packages),
+            )
+            log_progress(
+                f"factor-packages filter active: {cfg.factors.factor_packages}, "
+                f"default_selected_count={len(selected_default)}",
+                module="pipeline",
+            )
         print(factor_lib.metadata(freq=cfg.factors.factor_freq).to_string(index=False))
         log_progress(
             f"因子清单输出完成：freq={cfg.factors.factor_freq}, catalog_factor_count={catalog_count}。",
@@ -189,7 +211,18 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
 
     # 5) Resolve selected factors and compute the factor panel.
     log_progress("步骤 5/13：解析因子清单并计算因子面板。", module="pipeline")
-    default_set = DEFAULT_FACTOR_SET_BY_FREQ.get(factor_freq, [])
+    default_set = resolve_default_factor_set(
+        freq=factor_freq,
+        package_expr=str(getattr(cfg.factors, "factor_packages", "")),
+    )
+    if str(getattr(cfg.factors, "factor_packages", "")).strip():
+        log_progress(
+            f"default factor package filter: {cfg.factors.factor_packages}; "
+            f"default_count={len(default_set)}; "
+            f"available_packages={list(DEFAULT_FACTOR_PACKS_BY_FREQ.get(factor_freq, {}).keys())}",
+            module="pipeline",
+            level="debug",
+        )
     selected_factors = resolve_selected_factors(
         library=factor_lib,
         freq=factor_freq,

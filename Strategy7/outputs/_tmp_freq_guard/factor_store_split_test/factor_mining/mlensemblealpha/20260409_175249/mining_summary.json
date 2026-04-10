@@ -1,0 +1,21 @@
+{
+  "framework": "ml_ensemble_alpha",
+  "factor_freq": "D",
+  "train_period": [
+    "2023-01-01",
+    "2024-06-30"
+  ],
+  "valid_period": [
+    "2024-07-01",
+    "2024-12-31"
+  ],
+  "population_size": 8,
+  "generations": 1,
+  "candidate_count": 8,
+  "selected_count": 0,
+  "catalog_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_store_split_test\\factor_catalog.json",
+  "factor_table_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_store_split_test\\factor_mining\\mlensemblealpha\\20260409_175249\\factor_values_D.parquet",
+  "selected_factors": [],
+  "admission_profile": "D_ml_ensemble_v1",
+  "top_candidates": []
+}

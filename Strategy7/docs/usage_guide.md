@@ -151,7 +151,7 @@ python Strategy7/run_strategy7.py --list-factors --factor-freq D
 1. 数据：
    `--data-root --hs300-list-path --index-root --file-format --max-files --main-board-only`
 2. 因子：
-   `--factor-freq --factor-list --custom-factor-py --label-task --lookback-days`
+   `--factor-freq --factor-list --factor-packages --custom-factor-py --label-task --lookback-days`
 3. 选股模型：
    `--stock-model-type`（`decision_tree`/`factor_gcl`/`dafat`）
 4. 择时模型：
@@ -164,6 +164,57 @@ python Strategy7/run_strategy7.py --list-factors --factor-freq D
    `--horizon --top-k --long-threshold --execution-scheme --fee-bps --slippage-bps`
 8. 产物：
    `--output-dir --save-models`
+
+### 6.1 分频默认量价因子库（已扩容）
+
+当前默认因子库已按主频 `["5min", "15min", "30min", "60min", "120min", "D", "W", "M"]` 分层设计，核心思路：
+
+1. 5min：
+   - 偏微观结构与短时成交行为（冲击、反转、噪声过滤、拥挤压力）
+2. 15/30/60/120min：
+   - 偏中短周期趋势-波动-流动性联动，并叠加跨频桥接特征
+3. D：
+   - 偏日频趋势/反转/波动/流动性 + 分钟级桥接（5min/30min/60min/120min -> D）
+4. W/M：
+   - 偏周期趋势与风险轮动，并融合日频与分钟频向上聚合信息
+
+每个主频的默认因子池都按“包”组织，当前统一支持：
+
+1. `legacy_core`：历史兼容核心因子（原工程默认因子 + 关键扩展）
+2. `trend`：趋势/动量包
+3. `reversal`：反转/均值回复包
+4. `liquidity`：流动性/成交行为包
+5. `volatility`：波动率/风险结构包
+6. `structure`：K线结构/微观形态包
+7. `context`：上下文状态包（日频风格代理、跨阶段背景）
+8. `bridge`：跨频桥接包（高频向主频聚合）
+9. `multiscale`：多尺度差分包（快慢频对比）
+
+跨频桥接因子命名规则：
+
+1. 基础桥接列：`hf_{source_freq}_to_{target_freq}_{agg}_{base_col}`
+2. 默认桥接因子族：`hf_noise_to_signal`、`hf_liquidity_pulse`、`hf_trend_carry`、`hf_fast_slow_*`
+
+`--factor-packages` 用法：
+
+1. 空（默认）：使用该频率全部默认包
+2. `--factor-packages trend,reversal`：只启用趋势+反转包
+3. `--factor-packages bridge,multiscale`：只做跨频研究
+4. `--factor-packages all`：显式启用全部默认包（等价于留空）
+
+示例：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --factor-freq 30min `
+  --factor-packages trend,liquidity,bridge `
+  --stock-model-type factor_gcl
+```
+
+建议：
+
+1. 先用 `--list-factors --factor-freq <freq>` 查看当前频率可用因子清单
+2. 再通过 `--factor-list` 按研究主题筛选子集（例如偏趋势、偏流动性、偏跨频）
 
 布尔参数注意：
 
@@ -210,7 +261,16 @@ python Strategy7/run_strategy7.py --list-factors --factor-freq D
 
 1. `fundamental_multiobj`：基本面参数化 + NSGA-II
 2. `minute_parametric`：分钟参数化 + NSGA-III
-3. `custom`：用户表达式挖掘
+3. `minute_parametric_plus`：分钟增强参数化 + NSGA-III
+4. `ml_ensemble_alpha`：集成学习因子挖掘
+5. `gplearn_symbolic_alpha`：基于 `gplearn` 的符号遗传规划挖掘
+6. `custom`：用户表达式挖掘
+
+默认素材池（新）：
+
+1. `run_factor_mining.py` 默认会按 `--factor-freq` 注入主因子库默认因子作为挖掘素材
+2. 可通过 `--factor-packages` 控制注入包（空=全部）
+3. 可通过 `--disable-default-factor-materials` 关闭默认因子素材注入
 
 示例（基本面）：
 
@@ -236,6 +296,16 @@ python Strategy7/run_factor_mining.py `
 python Strategy7/run_factor_mining.py `
   --framework custom `
   --custom-spec-json ./Strategy7/docs/custom_factor_specs.json
+```
+
+示例（GP 符号遗传规划）：
+
+```powershell
+python Strategy7/run_factor_mining.py `
+  --framework gplearn_symbolic_alpha `
+  --gp-population-size 400 --gp-generations 12 `
+  --gp-num-runs 3 --gp-n-components 24 `
+  --gp-prefilter-topk 80
 ```
 
 ## 10. 因子 catalog 与主流程联动

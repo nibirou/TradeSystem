@@ -1,0 +1,21 @@
+{
+  "framework": "minute_parametric_plus",
+  "factor_freq": "15min",
+  "train_period": [
+    "2024-01-01",
+    "2024-06-30"
+  ],
+  "valid_period": [
+    "2024-07-01",
+    "2024-09-30"
+  ],
+  "population_size": 4,
+  "generations": 1,
+  "candidate_count": 4,
+  "selected_count": 0,
+  "catalog_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_store_split_test\\factor_catalog.json",
+  "factor_table_path": "d:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_tmp_freq_guard\\factor_store_split_test\\factor_mining\\minuteparametricplus\\20260409_175433\\factor_values_15min.parquet",
+  "selected_factors": [],
+  "admission_profile": "15MIN_minute_nsga3_plus_v1",
+  "top_candidates": []
+}
