@@ -120,6 +120,24 @@
   - 当 `factor_freq` 为分钟频时，注入因子直接进入分钟面板素材池
   - 当 `factor_freq=D` 且使用分钟框架时，日频素材会作为“日内常量字段”参与分钟表达式计算
 
+### 2.7 指数上下文素材（`--index-root` 生效）
+
+- 挖掘入口会从 `--index-root` 读取 HS300 指数数据，并自动构建市场上下文特征：
+  - `mkt_hs300_ret_1d/5d/20d`
+  - `mkt_hs300_vol_20d`
+  - `mkt_hs300_ma_gap_20d`
+  - `mkt_hs300_drawdown_60d`
+- 这些特征会 merge 到挖掘面板，并与默认因子素材一起参与挖掘模型。
+- `mining_summary.json` 会记录 `index_context_cols` 以便追溯本次挖掘是否成功注入指数上下文。
+
+### 2.8 股票池与自定义池加载（`--universe/--stock-list-path`）
+
+- 挖掘入口与主回测入口都支持：
+  - `--universe hs300/sz50/zz500/all`
+  - `--stock-list-path`（旧参数 `--hs300-list-path` 仍兼容）
+- 当 `--universe all` 且提供 `--stock-list-path` 时，可在全市场历史行情上加载任意自定义股票池（例如中证1000/中证2000）。
+- `--data-root auto` 会按 `--universe` 自动映射到 `data_baostock/stock_hist/<universe>`。
+
 ## 3. 入库标准（频率分层）
 
 `strategy7/mining/evaluation.py` 中内置频率+框架标准：

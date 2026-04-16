@@ -17,8 +17,8 @@ from tqdm import tqdm
 # ===========================
 #        路径配置
 # ===========================
-BASE_DIR = "/workspace/Quant/data_baostock"
-# BASE_DIR = "D:/PythonProject/Quant/data_baostock"
+# BASE_DIR = "/workspace/Quant/data_baostock"
+BASE_DIR = "D:/PythonProject/Quant/data_baostock"
 META_DIR = os.path.join(BASE_DIR, "metadata")
 SNAPSHOT_DIR = os.path.join(META_DIR, "stock_snapshots")
 
@@ -69,7 +69,8 @@ def get_stock_list_bs(mode="hs300", day=None):
     elif mode == "all":
         if day is None:
             raise ValueError("mode='all' 需要 day='YYYY-MM-DD'")
-        rs = bs.query_all_stock(day=day)
+        # rs = bs.query_all_stock(day=day)
+        rs = bs.query_all_stock(day="2026-04-13") 
     else:
         raise ValueError(f"未知股票池模式：{mode}")
 
@@ -409,5 +410,6 @@ def run_ak_fundamental_download(
 if __name__ == "__main__":
     # 示例：中证500
     # run_ak_fundamental_download(pool="zz500", indicator_em_mode="按报告期", min_year_sina_indicator=2000)
-    run_ak_fundamental_download(pool="hs300", indicator_em_mode="按报告期", min_year_sina_indicator=2000)
+    # run_ak_fundamental_download(pool="hs300", indicator_em_mode="按报告期", min_year_sina_indicator=2000)
+    run_ak_fundamental_download(pool="all", indicator_em_mode="按报告期", min_year_sina_indicator=2000)
     bs_logout()

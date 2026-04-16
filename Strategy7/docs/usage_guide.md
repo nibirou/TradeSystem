@@ -60,7 +60,11 @@ python -c "import torch; print(torch.__version__)"
 
 默认数据根目录（可改）：
 
-1. `D:/PythonProject/Quant/data_baostock/stock_hist/hs300`
+1. `--data-root auto` 时，会按 `--universe` 自动映射到：
+2. `D:/PythonProject/Quant/data_baostock/stock_hist/hs300`
+3. `D:/PythonProject/Quant/data_baostock/stock_hist/sz50`
+4. `D:/PythonProject/Quant/data_baostock/stock_hist/zz500`
+5. `D:/PythonProject/Quant/data_baostock/stock_hist/all`
 
 应包含：
 
@@ -82,9 +86,12 @@ python -c "import torch; print(torch.__version__)"
 1. `D:/PythonProject/Quant/data_baostock/ak_index`
 2. 文件：`hs300_price/zz500_price/zz1000_price`（csv/parquet）
 
-HS300 成分表（默认）：
+股票列表文件（可选，用于二次过滤）：
 
 1. `D:/PythonProject/Quant/data_baostock/metadata/stock_list_hs300.csv`
+2. `D:/PythonProject/Quant/data_baostock/metadata/stock_list_sz50.csv`
+3. `D:/PythonProject/Quant/data_baostock/metadata/stock_list_zz500.csv`
+4. `D:/PythonProject/Quant/data_baostock/metadata/stock_list_all.csv`
 
 ## 5. 主流程运行
 
@@ -144,12 +151,34 @@ python Strategy7/run_strategy7.py --list-factors --factor-freq D
 
 说明：当前版本已支持 `--list-factors` 快速路径，不再依赖本地行情数据存在。
 
+### 5.5 股票池切换与自定义池
+
+```powershell
+# 上证50
+python Strategy7/run_strategy7.py --universe sz50
+
+# 中证500
+python Strategy7/run_strategy7.py --universe zz500
+
+# 全市场
+python Strategy7/run_strategy7.py --universe all
+
+# 全市场 + 自定义股票池（中证1000/中证2000等）
+python Strategy7/run_strategy7.py `
+  --universe all `
+  --stock-list-path D:/PythonProject/Quant/data_baostock/metadata/stock_list_custom.csv
+```
+
 ## 6. 常用参数说明（主流程）
+
+参数闭环审计文档：
+
+1. 详见 `docs/config_usage_audit.md`（记录每组参数在哪个模块生效、哪些参数是条件生效）。
 
 参数分组：
 
 1. 数据：
-   `--data-root --hs300-list-path --index-root --file-format --max-files --main-board-only`
+   `--universe --data-root --stock-list-path(--hs300-list-path 兼容) --index-root --file-format --max-files --main-board-only`
 2. 因子：
    `--factor-freq --factor-list --factor-packages --custom-factor-py --label-task --lookback-days`
 3. 选股模型：
@@ -256,6 +285,7 @@ python Strategy7/run_strategy7.py `
 入口：
 
 1. `python Strategy7/run_factor_mining.py ...`
+2. 股票池参数同样支持：`--universe` 与 `--stock-list-path`（兼容 `--hs300-list-path`）
 
 框架：
 
@@ -271,6 +301,7 @@ python Strategy7/run_strategy7.py `
 1. `run_factor_mining.py` 默认会按 `--factor-freq` 注入主因子库默认因子作为挖掘素材
 2. 可通过 `--factor-packages` 控制注入包（空=全部）
 3. 可通过 `--disable-default-factor-materials` 关闭默认因子素材注入
+4. `--index-root` 会加载 HS300 指数并注入市场上下文特征（收益、波动、回撤等）
 
 示例（基本面）：
 

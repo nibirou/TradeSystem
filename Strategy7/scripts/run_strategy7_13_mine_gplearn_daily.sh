@@ -6,8 +6,9 @@ cd /workspace/Quant/TradeSystem
 
 python3 ./Strategy7/run_factor_mining.py \
   --framework gplearn_symbolic_alpha \
+  --universe hs300 \
   --data-root /workspace/Quant/data_baostock/stock_hist/hs300 \
-  --hs300-list-path /workspace/Quant/data_baostock/metadata/stock_list_hs300.csv \
+  --stock-list-path /workspace/Quant/data_baostock/metadata/stock_list_hs300.csv \
   --index-root /workspace/Quant/data_baostock/ak_index \
   --train-start 2021-01-01 \
   --train-end 2023-12-31 \
@@ -38,4 +39,3 @@ python3 ./Strategy7/run_factor_mining.py \
   --factor-store-root /workspace/Quant/data_baostock \
   --catalog-path auto \
   --save-format parquet
-

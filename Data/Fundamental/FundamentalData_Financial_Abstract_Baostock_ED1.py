@@ -62,7 +62,10 @@ def get_stock_list_bs(mode="hs300", day=None):
     elif mode == "all":
         if day is None:
             raise ValueError("mode='all' 需要 day='YYYY-MM-DD'")
-        rs = bs.query_all_stock(day=day)
+        # rs = bs.query_all_stock(day=day) 
+        # 因为baostock数据更新机制，有时候当日的数据取不到为空，把日期改成最近一个交易日的上一个交易日
+        # 当参数“day”为空时，默认取当天日期。闭市后日K线数据更新，该接口才会返回当天数据，否则返回空。
+        rs = bs.query_all_stock(day="2026-04-13") 
     else:
         raise ValueError(f"未知股票池模式：{mode}")
 

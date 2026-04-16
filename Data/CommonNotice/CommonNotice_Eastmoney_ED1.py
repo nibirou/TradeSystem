@@ -82,7 +82,8 @@ def get_stock_list_bs(mode="hs300", day=None):
     elif mode == "sz50":
         rs = bs.query_sz50_stocks()
     elif mode == "all":
-        rs = bs.query_all_stock(day=day)
+        # rs = bs.query_all_stock(day=day)
+        rs = bs.query_all_stock(day="2026-04-14")
     else:
         raise ValueError(mode)
 
@@ -365,4 +366,6 @@ def run_notice_download(pool="hs300"):
 
 
 if __name__ == "__main__":
-    run_notice_download(pool="hs300")
+    # run_notice_download(pool="hs300")
+    # run_notice_download(pool="zz500")
+    run_notice_download(pool="all")

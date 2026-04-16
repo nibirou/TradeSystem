@@ -19,7 +19,8 @@ import pandas as pd
 # ===========================
 #        路径配置
 # ===========================
-BASE_DIR = "/workspace/Quant/data_baostock"
+# BASE_DIR = "/workspace/Quant/data_baostock"
+BASE_DIR = "D:/PythonProject/Quant/data_baostock"
 REPORT_DIR = os.path.join(BASE_DIR, "data_iwencai_reports")
 META_DIR = os.path.join(BASE_DIR, "metadata")
 HIST_DIR = os.path.join(BASE_DIR, "stock_hist")
@@ -599,7 +600,7 @@ def run_report_download(pool="hs300"):
 
 if __name__ == "__main__":
     # run_report_download(pool="sz50")
-    run_report_download(pool="hs300")
-    # run_report_download(pool="zz500")
+    # run_report_download(pool="hs300")
+    run_report_download(pool="zz500")
     # run_report_download(pool="all")
     bs_logout()

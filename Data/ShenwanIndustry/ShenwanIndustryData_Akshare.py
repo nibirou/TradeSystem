@@ -22,7 +22,8 @@ from tqdm import tqdm
 #        路径配置
 # ===========================
 # BASE_DIR = "E:/pythonProject/data_baostock"
-BASE_DIR = "/workspace/Quant/data_baostock"
+# BASE_DIR = "/workspace/Quant/data_baostock"
+BASE_DIR = "D:/PythonProject/Quant/data_baostock"
 HIST_DIR = os.path.join(BASE_DIR, "stock_hist")
 META_DIR = os.path.join(BASE_DIR, "metadata")
 SNAPSHOT_DIR = os.path.join(META_DIR, "stock_snapshots")
@@ -106,7 +107,8 @@ def get_stock_list_bs(mode="hs300", day=None):
     elif mode == "all":
         if day is None:
             raise ValueError("mode='all' 需要 day='YYYY-MM-DD'")
-        rs = bs.query_all_stock(day=day)
+        # rs = bs.query_all_stock(day=day)
+        rs = bs.query_all_stock(day="2026-04-15")
     else:
         raise ValueError(f"未知股票池模式：{mode}")
 
@@ -401,6 +403,6 @@ def run_sw_industry_download(pool: str = "hs300"):
 #             MAIN
 # ===========================
 if __name__ == "__main__":
-    run_sw_industry_download(pool="hs300")
+    # run_sw_industry_download(pool="hs300")
     # run_sw_industry_download(pool="zz500")
-    # run_sw_industry_download(pool="all")
+    run_sw_industry_download(pool="all")

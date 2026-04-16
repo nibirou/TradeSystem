@@ -10,6 +10,7 @@ from strategy7.pipeline.runner import run_pipeline
 
 
 def main() -> None:
+    # 第一步：解析并标准化日志级别（quiet/normal/verbose）。
     args = parse_args()
     effective_log_level = set_log_level(
         level=str(args.log_level),
@@ -18,13 +19,17 @@ def main() -> None:
     )
     log_progress(f"log level: {effective_log_level}", module="run_strategy7")
     log_progress("parsing and validating CLI arguments", module="run_strategy7")
+
+    # 第二步：将 CLI 参数转换为强类型配置对象，并执行参数合法性校验。
     cfg = build_run_config(args)
     log_progress("configuration ready, start pipeline", module="run_strategy7")
 
+    # 第三步：打印运行参数快照，便于复现实验。
     print("=== Strategy7 Parameters ===")
     print(json.dumps(cfg.to_dict(), ensure_ascii=False, indent=2, default=str))
     print()
 
+    # 第四步：执行端到端主流程（数据->因子->模型->回测->产物落盘）。
     summary = run_pipeline(cfg)
     summary_path = summary.get("outputs", {}).get("summary_json", "")
     if summary_path:
@@ -32,6 +37,7 @@ def main() -> None:
     else:
         log_progress("pipeline finished", module="run_strategy7")
 
+    # 第五步：输出关键评估结果，便于命令行快速观察。
     print("=== Model Metrics ===")
     print(json.dumps(summary.get("model_metrics", {}), ensure_ascii=False, indent=2))
     print("=== Backtest Metrics (Strategy) ===")
@@ -43,6 +49,7 @@ def main() -> None:
     print()
 
     outputs = summary.get("outputs", {})
+    # 第六步：打印核心产物路径（预测、持仓、交易、曲线、IC等）。
     for k in [
         "predictions_csv",
         "trades_csv",
@@ -58,6 +65,7 @@ def main() -> None:
 
     save_models_enabled = bool(outputs.get("save_models_enabled", False))
     model_files = outputs.get("model_files", {}) or {}
+    # 第七步：给出模型落盘状态（是否保存成功）。
     if save_models_enabled:
         print(f"{'model_files':24s}: {len(model_files)} models persisted")
     else:

@@ -46,6 +46,22 @@ python Strategy7/run_strategy7.py --stock-model-type dafat --label-task return
 python Strategy7/run_factor_mining.py --framework fundamental_multiobj
 ```
 
+股票池切换（主流程与挖掘入口通用）：
+
+```bash
+# 上证50
+python Strategy7/run_strategy7.py --universe sz50
+
+# 中证500
+python Strategy7/run_strategy7.py --universe zz500
+
+# 全市场
+python Strategy7/run_strategy7.py --universe all
+
+# 全市场 + 自定义股票列表（例如中证1000/中证2000研究池）
+python Strategy7/run_strategy7.py --universe all --stock-list-path D:/PythonProject/Quant/data_baostock/metadata/your_custom_pool.csv
+```
+
 ## 文档
 
 1. [完整使用指南](./docs/usage_guide.md)

@@ -72,10 +72,10 @@ def read_data_file(path: Path, usecols: List[str], start_date: pd.Timestamp, end
     return df
 
 
-def load_hs300_constituent_keys(hs300_list_path: Path) -> List[str]:
-    if not hs300_list_path.exists():
-        raise FileNotFoundError(f"hs300 constituent file not found: {hs300_list_path}")
-    df = pd.read_csv(hs300_list_path)
+def load_stock_list_keys(stock_list_path: Path) -> List[str]:
+    if not stock_list_path.exists():
+        raise FileNotFoundError(f"stock list file not found: {stock_list_path}")
+    df = pd.read_csv(stock_list_path)
     if "code" in df.columns:
         codes = df["code"].astype(str)
     else:
@@ -85,9 +85,14 @@ def load_hs300_constituent_keys(hs300_list_path: Path) -> List[str]:
     return sorted(keys.drop_duplicates().tolist())
 
 
+def load_hs300_constituent_keys(hs300_list_path: Path) -> List[str]:
+    """Backward-compatible alias. Prefer `load_stock_list_keys`."""
+    return load_stock_list_keys(hs300_list_path)
+
+
 @dataclass
-class HS300MarketDataLoader(MarketDataLoader):
-    """Loader for hs300 daily+5min files."""
+class MarketUniverseDataLoader(MarketDataLoader):
+    """Generic loader for stock-universe daily + 5min files."""
 
     data_cfg: DataConfig
     date_cfg: DateConfig
@@ -102,7 +107,7 @@ class HS300MarketDataLoader(MarketDataLoader):
         end_date: pd.Timestamp,
         file_format: str = "auto",
         max_files: Optional[int] = None,
-        hs300_list_path: Optional[Path] = None,
+        stock_list_path: Optional[Path] = None,
         main_board_only: bool = False,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         daily_dir = data_root / "d"
@@ -117,10 +122,10 @@ class HS300MarketDataLoader(MarketDataLoader):
             module="loader",
             level="debug",
         )
-        if hs300_list_path is not None:
-            hs300_keys = set(load_hs300_constituent_keys(hs300_list_path))
-            keys = [k for k in keys if k in hs300_keys]
-            log_progress(f"按 HS300 成分过滤后 symbols={len(keys)}。", module="loader", level="debug")
+        if stock_list_path is not None:
+            listed_keys = set(load_stock_list_keys(stock_list_path))
+            keys = [k for k in keys if k in listed_keys]
+            log_progress(f"按股票列表过滤后 symbols={len(keys)}。", module="loader", level="debug")
         if main_board_only:
             keys = [k for k in keys if is_main_board_symbol(k)]
             log_progress(f"按主板过滤后 symbols={len(keys)}。", module="loader", level="debug")
@@ -233,13 +238,14 @@ class HS300MarketDataLoader(MarketDataLoader):
             end_date=load_end,
             file_format=self.data_cfg.file_format,
             max_files=self.data_cfg.max_files,
-            hs300_list_path=Path(self.data_cfg.hs300_list_path),
+            stock_list_path=Path(self.data_cfg.stock_list_path) if self.data_cfg.stock_list_path else None,
             main_board_only=self.data_cfg.main_board_only,
         )
         codes = sorted(daily_df["code"].astype(str).drop_duplicates().tolist())
         notes = {
             "data_root": self.data_cfg.data_root,
-            "hs300_list_path": self.data_cfg.hs300_list_path,
+            "universe": self.data_cfg.universe,
+            "stock_list_path": str(self.data_cfg.stock_list_path or ""),
             "main_board_only": str(self.data_cfg.main_board_only),
             "file_format": self.data_cfg.file_format,
         }
@@ -255,6 +261,9 @@ class HS300MarketDataLoader(MarketDataLoader):
             codes=codes,
             source_notes=notes,
         )
+
+
+HS300MarketDataLoader = MarketUniverseDataLoader
 
 
 def build_minute_daily_features(minute_df: pd.DataFrame) -> pd.DataFrame:

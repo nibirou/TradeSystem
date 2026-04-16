@@ -32,7 +32,8 @@ from tqdm import tqdm
 # ===========================
 #         路径配置
 # ===========================
-BASE_DIR = "/workspace/Quant/data_baostock"
+# BASE_DIR = "/workspace/Quant/data_baostock"
+BASE_DIR = "D:/PythonProject/Quant/data_baostock"
 ETF_BASE_DIR = os.path.join(BASE_DIR, "etf_hist")
 META_DIR = os.path.join(BASE_DIR, "metadata")
 ETF_META_DIR = os.path.join(META_DIR, "etf_metadata")
@@ -485,7 +486,7 @@ def run_sina_history_download():
 # ===========================
 if __name__ == "__main__":
     # 东方财富：建议量化研究默认用 hfq
-    run_em_history_download(adjust="hfq")
+    # run_em_history_download(adjust="hfq")
     # run_em_history_download(adjust="qfq")
     # run_em_history_download(adjust="")
 

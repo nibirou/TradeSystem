@@ -14,11 +14,14 @@ import pandas as pd
 from .core.constants import EXECUTION_SCHEMES, SUPPORTED_FREQS
 from .core.utils import parse_date
 
+UNIVERSE_CHOICES: tuple[str, ...] = ("hs300", "sz50", "zz500", "all")
+
 
 @dataclass
 class DataConfig:
     data_root: str
-    hs300_list_path: str
+    universe: str
+    stock_list_path: str | None
     index_root: str
     file_format: str
     max_files: int | None
@@ -227,6 +230,37 @@ def _parse_bool(value: object) -> bool:
     raise argparse.ArgumentTypeError(f"invalid boolean value: {value}")
 
 
+def _normalize_universe(value: object) -> str:
+    v = str(value).strip().lower()
+    alias = {
+        "沪深300": "hs300",
+        "300": "hs300",
+        "上证50": "sz50",
+        "50": "sz50",
+        "中证500": "zz500",
+        "500": "zz500",
+        "全市场": "all",
+        "full": "all",
+    }
+    v = alias.get(v, v)
+    if v not in set(UNIVERSE_CHOICES):
+        raise argparse.ArgumentTypeError(f"invalid universe: {value}, choose from {UNIVERSE_CHOICES}")
+    return v
+
+
+def _is_auto_value(value: object) -> bool:
+    return str(value).strip().lower() in {"", "auto"}
+
+
+def _infer_universe_from_data_root(data_root: str) -> str | None:
+    p = Path(data_root).expanduser()
+    if p.name.lower() in set(UNIVERSE_CHOICES):
+        return p.name.lower()
+    if p.parent.name.lower() == "stock_hist" and p.name.lower() in set(UNIVERSE_CHOICES):
+        return p.name.lower()
+    return None
+
+
 def _infer_data_baostock_root(data_root: str) -> Path:
     p = Path(data_root).expanduser()
     for cand in [p, *p.parents]:
@@ -238,6 +272,64 @@ def _infer_data_baostock_root(data_root: str) -> Path:
     if p.name.lower() == "stock_hist":
         return p.parent
     return p
+
+
+def _default_data_root_for_universe(universe: str) -> str:
+    u = _normalize_universe(universe)
+    return _autodetect_default_path(
+        ["data_baostock", "stock_hist", u],
+        fallback=rf"/workspace/Quant/data_baostock/stock_hist/{u}",
+        env_var="STRATEGY7_DATA_ROOT",
+    )
+
+
+def _default_stock_list_path_for_universe(universe: str) -> str | None:
+    env_stock_list = os.getenv("STRATEGY7_STOCK_LIST_PATH") or os.getenv("STRATEGY7_HS300_LIST_PATH")
+    if env_stock_list:
+        return str(Path(env_stock_list).expanduser())
+
+    u = _normalize_universe(universe)
+    if u == "all":
+        return None
+    return _autodetect_default_path(
+        ["data_baostock", "metadata", f"stock_list_{u}.csv"],
+        fallback=rf"/workspace/Quant/data_baostock/metadata/stock_list_{u}.csv",
+        env_var="STRATEGY7_STOCK_LIST_PATH",
+    )
+
+
+def _resolve_data_root(raw_value: object, universe: str) -> str:
+    if _is_auto_value(raw_value):
+        return _default_data_root_for_universe(universe)
+    p = Path(str(raw_value).strip()).expanduser()
+    if p.name.lower() == "stock_hist":
+        cand = p / universe
+        if cand.exists():
+            return str(cand)
+    return str(p)
+
+
+def _resolve_stock_list_path(raw_value: object, universe: str) -> str | None:
+    v = str(raw_value).strip() if raw_value is not None else "auto"
+    if v.lower() in {"none", "null", "disable", "disabled"}:
+        return None
+    if not _is_auto_value(v):
+        return _resolve_path(v)
+    return _default_stock_list_path_for_universe(universe)
+
+
+def resolve_market_data_scope(
+    data_root: object,
+    universe: object,
+    stock_list_path: object,
+) -> tuple[str, str, str | None]:
+    requested_universe = _normalize_universe(universe)
+    data_root_is_auto = _is_auto_value(data_root)
+    data_root_resolved = _resolve_data_root(data_root, requested_universe)
+    inferred_universe = _infer_universe_from_data_root(data_root_resolved)
+    effective_universe = requested_universe if data_root_is_auto else (inferred_universe or requested_universe)
+    stock_list_path_resolved = _resolve_stock_list_path(stock_list_path, effective_universe)
+    return data_root_resolved, effective_universe, stock_list_path_resolved
 
 
 def _resolve_factor_catalog_path(raw_value: str | None, data_root: str) -> str | None:
@@ -294,16 +386,9 @@ def _compact_output_leaf(
     return f"{factor_freq}_h{horizon}_k{top_k}_{board_tag}_{port_tag}_{digest}"
 
 
-DEFAULT_DATA_ROOT = _autodetect_default_path(
-    ["data_baostock", "stock_hist", "hs300"],
-    fallback=r"/workspace/Quant/data_baostock/stock_hist/hs300",
-    env_var="STRATEGY7_DATA_ROOT",
-)
-DEFAULT_HS300_LIST_PATH = _autodetect_default_path(
-    ["data_baostock", "metadata", "stock_list_hs300.csv"],
-    fallback=r"/workspace/Quant/data_baostock/metadata/stock_list_hs300.csv",
-    env_var="STRATEGY7_HS300_LIST_PATH",
-)
+DEFAULT_UNIVERSE = _normalize_universe(os.getenv("STRATEGY7_UNIVERSE", "hs300"))
+DEFAULT_DATA_ROOT = "auto"
+DEFAULT_STOCK_LIST_PATH = "auto"
 DEFAULT_INDEX_ROOT = _autodetect_default_path(
     ["data_baostock", "ak_index"],
     fallback=r"/workspace/Quant/data_baostock/ak_index",
@@ -329,16 +414,28 @@ def parse_args() -> argparse.Namespace:
     # =========================
     g_data = parser.add_argument_group("数据与因子源配置")
     g_data.add_argument(
+        "--universe",
+        type=str,
+        choices=list(UNIVERSE_CHOICES),
+        default=DEFAULT_UNIVERSE,
+        help="股票池：hs300/sz50/zz500/all；默认 hs300",
+    )
+    g_data.add_argument(
         "--data-root",
         type=str,
         default=DEFAULT_DATA_ROOT,
-        help="行情数据根目录（通常为 .../data_baostock/stock_hist/hs300）",
+        help="行情数据根目录；auto 时自动使用 .../data_baostock/stock_hist/<universe>",
     )
     g_data.add_argument(
+        "--stock-list-path",
         "--hs300-list-path",
+        dest="stock_list_path",
         type=str,
-        default=DEFAULT_HS300_LIST_PATH,
-        help="HS300 成分股文件路径，用于限制股票池",
+        default=DEFAULT_STOCK_LIST_PATH,
+        help=(
+            "可选股票列表文件路径（code 列），用于在 data-root 上二次过滤；"
+            "auto 时 hs300/sz50/zz500 自动匹配 metadata 列表，all 默认不过滤。"
+        ),
     )
     g_data.add_argument(
         "--index-root",
@@ -840,12 +937,17 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
 
     portfolio_mode = args.portfolio_weighting or args.portfolio_model_type
     extra_paths = [_resolve_path(x.strip()) for x in str(args.extra_factor_paths).split(",") if x.strip()]
-    data_root_resolved = _resolve_path(args.data_root)
+    data_root_resolved, universe_resolved, stock_list_path_resolved = resolve_market_data_scope(
+        data_root=args.data_root,
+        universe=getattr(args, "universe", DEFAULT_UNIVERSE),
+        stock_list_path=getattr(args, "stock_list_path", DEFAULT_STOCK_LIST_PATH),
+    )
     factor_catalog_path = _resolve_factor_catalog_path(args.factor_catalog_path, data_root=data_root_resolved)
 
     data = DataConfig(
         data_root=data_root_resolved,
-        hs300_list_path=_resolve_path(args.hs300_list_path),
+        universe=universe_resolved,
+        stock_list_path=stock_list_path_resolved,
         index_root=_resolve_path(args.index_root),
         file_format=args.file_format,
         max_files=args.max_files,

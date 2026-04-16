@@ -21,7 +21,7 @@ from ..config import RunConfig
 from ..core.constants import INTRADAY_FREQS
 from ..core.time_utils import infer_periods_per_year
 from ..core.utils import dump_json, ensure_dir, log_progress
-from ..data.loaders import HS300MarketDataLoader, build_feature_bundle, load_index_benchmark_data
+from ..data.loaders import MarketUniverseDataLoader, build_feature_bundle, load_index_benchmark_data
 from ..data.preprocess import (
     PreprocessOptions,
     apply_cross_section_pipeline,
@@ -130,7 +130,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
 
     # 1) Load raw market data and build feature bundle for all supported frequencies.
     log_progress("步骤 1/13：开始加载市场数据。", module="pipeline")
-    loader = HS300MarketDataLoader(
+    loader = MarketUniverseDataLoader(
         data_cfg=cfg.data,
         date_cfg=cfg.dates,
         lookback_days=cfg.factors.lookback_days,

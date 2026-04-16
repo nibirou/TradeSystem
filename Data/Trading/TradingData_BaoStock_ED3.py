@@ -59,8 +59,8 @@ def get_stock_list_bs(mode="hs300", day=None):
         if day is None:
             raise ValueError("mode='all' 需要 day='YYYY-MM-DD'")
         print(day)
-        # rs = bs.query_all_stock(day="2025-12-22")
-        rs = bs.query_all_stock(day=day)
+        rs = bs.query_all_stock(day="2026-04-15")
+        # rs = bs.query_all_stock(day=day)
     else:
         raise ValueError(f"未知股票池模式：{mode}")
 
@@ -396,10 +396,10 @@ def run_history_download(pool="hs300", freq="d"):
 #             MAIN
 # ===========================
 if __name__ == "__main__":
-    run_history_download(pool="hs300", freq="d")
+    # run_history_download(pool="hs300", freq="d")
     # run_history_download(pool="hs300", freq="5")
     # run_history_download(pool="zz500", freq="d")
     # run_history_download(pool="zz500", freq="5")
     # run_history_download(pool="all", freq="d")
-    # run_history_download(pool="all", freq="5")
+    run_history_download(pool="all", freq="5")
     bs_logout()

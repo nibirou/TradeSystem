@@ -8,10 +8,17 @@ from pathlib import Path
 
 import pandas as pd
 
-from strategy7.config import DataConfig, DateConfig
+from strategy7.config import (
+    DEFAULT_INDEX_ROOT,
+    DEFAULT_UNIVERSE,
+    UNIVERSE_CHOICES,
+    DataConfig,
+    DateConfig,
+    resolve_market_data_scope,
+)
 from strategy7.core.constants import INTRADAY_FREQS, SUPPORTED_FREQS
 from strategy7.core.utils import log_progress, set_log_level
-from strategy7.data.loaders import HS300MarketDataLoader, build_feature_bundle
+from strategy7.data.loaders import MarketUniverseDataLoader, build_feature_bundle, load_index_benchmark_data
 from strategy7.factors.base import FactorLibrary, compute_factor_panel
 from strategy7.factors.defaults import (
     list_default_factor_packages,
@@ -37,6 +44,38 @@ def _infer_data_baostock_root(data_root: str) -> Path:
     if p.name.lower() == "stock_hist":
         return p.parent
     return p
+
+
+def _build_hs300_context_features(index_hs300: pd.DataFrame) -> pd.DataFrame:
+    """基于 HS300 指数构建可直接并入面板的市场上下文特征。"""
+    if index_hs300.empty:
+        return pd.DataFrame(columns=["date"])
+    x = index_hs300.copy()
+    x["date"] = pd.to_datetime(x["date"], errors="coerce").dt.normalize()
+    x["close"] = pd.to_numeric(x["close"], errors="coerce")
+    x = x.dropna(subset=["date", "close"]).sort_values("date").drop_duplicates(["date"], keep="last").reset_index(drop=True)
+    if x.empty:
+        return pd.DataFrame(columns=["date"])
+
+    x["mkt_hs300_close"] = x["close"]
+    x["mkt_hs300_ret_1d"] = x["close"].pct_change(1)
+    x["mkt_hs300_ret_5d"] = x["close"].pct_change(5)
+    x["mkt_hs300_ret_20d"] = x["close"].pct_change(20)
+    x["mkt_hs300_vol_20d"] = x["mkt_hs300_ret_1d"].rolling(20, min_periods=10).std()
+    x["mkt_hs300_ma_gap_20d"] = x["close"] / (x["close"].rolling(20, min_periods=10).mean() + 1e-12) - 1.0
+    x["mkt_hs300_drawdown_60d"] = x["close"] / (x["close"].rolling(60, min_periods=20).max() + 1e-12) - 1.0
+
+    keep = [
+        "date",
+        "mkt_hs300_close",
+        "mkt_hs300_ret_1d",
+        "mkt_hs300_ret_5d",
+        "mkt_hs300_ret_20d",
+        "mkt_hs300_vol_20d",
+        "mkt_hs300_ma_gap_20d",
+        "mkt_hs300_drawdown_60d",
+    ]
+    return x[keep].copy()
 
 
 def _parse_args() -> argparse.Namespace:
@@ -71,22 +110,34 @@ def _parse_args() -> argparse.Namespace:
     # =========================
     g_data = parser.add_argument_group("数据加载配置")
     g_data.add_argument(
-        "--data-root",
+        "--universe",
         type=str,
-        default=r"D:/PythonProject/Quant/data_baostock/stock_hist/hs300",
-        help="行情数据根目录（用于构建日线/分钟特征与标签）",
+        choices=list(UNIVERSE_CHOICES),
+        default=DEFAULT_UNIVERSE,
+        help="股票池：hs300/sz50/zz500/all；默认 hs300",
     )
     g_data.add_argument(
-        "--hs300-list-path",
+        "--data-root",
         type=str,
-        default=r"D:/PythonProject/Quant/data_baostock/metadata/stock_list_hs300.csv",
-        help="HS300 成分股文件路径",
+        default="auto",
+        help="行情数据根目录；auto 时自动使用 .../data_baostock/stock_hist/<universe>",
+    )
+    g_data.add_argument(
+        "--stock-list-path",
+        "--hs300-list-path",
+        dest="stock_list_path",
+        type=str,
+        default="auto",
+        help=(
+            "可选股票列表路径（code 列），用于在 data-root 上二次过滤；"
+            "auto 时 hs300/sz50/zz500 自动匹配 metadata 列表，all 默认不过滤。"
+        ),
     )
     g_data.add_argument(
         "--index-root",
         type=str,
-        default=r"D:/PythonProject/Quant/data_baostock/ak_index",
-        help="指数目录（该脚本中主要保持与主框架配置一致）",
+        default=DEFAULT_INDEX_ROOT,
+        help="指数目录（用于读取 HS300 指数并注入市场上下文特征）",
     )
     g_data.add_argument(
         "--file-format",
@@ -288,6 +339,7 @@ def _parse_args() -> argparse.Namespace:
 
 
 def main() -> None:
+    # Step 1) 参数解析与日志级别初始化。
     args = _parse_args()
     effective_log_level = set_log_level(level=str(args.log_level), quiet=bool(args.quiet), verbose=bool(args.verbose))
     log_progress(f"日志级别：{effective_log_level}", module="run_factor_mining")
@@ -332,16 +384,24 @@ def main() -> None:
         raise ValueError("gp_max_depth must be >= 2")
     if not (0.0 < float(args.gp_max_samples) <= 1.0):
         raise ValueError("gp_max_samples must be in (0,1]")
+    if args.max_files is not None and int(args.max_files) <= 0:
+        raise ValueError("max_files must be positive when provided")
     log_progress(
         f"参数校验通过：framework={args.framework}, train={train_start.date()}~{train_end.date()}, "
         f"valid={valid_start.date()}~{valid_end.date()}。",
         module="run_factor_mining",
     )
 
-    data_root = str(Path(args.data_root).expanduser())
+    # Step 2) 构建数据配置并加载市场数据（含训练/验证所需回看窗口）。
+    data_root, universe, stock_list_path = resolve_market_data_scope(
+        data_root=args.data_root,
+        universe=args.universe,
+        stock_list_path=getattr(args, "stock_list_path", "auto"),
+    )
     data_cfg = DataConfig(
         data_root=data_root,
-        hs300_list_path=str(Path(args.hs300_list_path).expanduser()),
+        universe=universe,
+        stock_list_path=stock_list_path,
         index_root=str(Path(args.index_root).expanduser()),
         file_format=str(args.file_format),
         max_files=args.max_files,
@@ -359,14 +419,17 @@ def main() -> None:
         test_end=valid_end,
     )
 
-    loader = HS300MarketDataLoader(
+    loader = MarketUniverseDataLoader(
         data_cfg=data_cfg,
         date_cfg=date_cfg,
         lookback_days=160,
         horizon=int(args.horizon),
         factor_freq=str(args.factor_freq),
     )
-    log_progress("开始加载市场数据（日线+5分钟）。", module="run_factor_mining")
+    log_progress(
+        f"开始加载市场数据（日线+5分钟）：universe={universe}, stock_list_path={stock_list_path or 'None'}。",
+        module="run_factor_mining",
+    )
     market_bundle = loader.load()
     log_progress(
         f"市场数据加载完成：daily_rows={len(market_bundle.daily)}, minute_rows={len(market_bundle.minute5)}, "
@@ -379,6 +442,7 @@ def main() -> None:
         module="run_factor_mining",
     )
 
+    # Step 3) 选择主频面板。
     factor_freq = str(args.factor_freq)
     if factor_freq not in feat_bundle.by_freq:
         raise RuntimeError(f"feature bundle missing factor_freq={factor_freq}")
@@ -390,6 +454,33 @@ def main() -> None:
         f"选择研究主频率面板：freq={factor_freq}, rows={len(panel)}, time_col={time_col}。",
         module="run_factor_mining",
     )
+
+    # 使用 --index-root 读取指数数据并构建市场上下文素材，确保该配置项在挖掘流程中实际生效。
+    # Step 4) 注入指数上下文素材（来自 --index-root）。
+    index_ctx_cols: list[str] = []
+    try:
+        idx_map = load_index_benchmark_data(
+            index_root=Path(args.index_root).expanduser(),
+            start_date=pd.Timestamp(market_bundle.start_date),
+            end_date=pd.Timestamp(market_bundle.end_date),
+            file_format=str(args.file_format),
+        )
+        hs300_ctx = _build_hs300_context_features(idx_map.get("hs300", pd.DataFrame()))
+        if not hs300_ctx.empty:
+            panel["date"] = pd.to_datetime(panel["date"], errors="coerce").dt.normalize()
+            before_cols = set(panel.columns)
+            panel = panel.merge(hs300_ctx, on="date", how="left")
+            index_ctx_cols = [c for c in hs300_ctx.columns if c != "date" and c not in before_cols]
+            log_progress(
+                f"指数上下文合并完成：source=index_root, added={len(index_ctx_cols)}。",
+                module="run_factor_mining",
+            )
+        else:
+            log_progress("指数上下文为空：未找到可用 HS300 指数数据，跳过合并。", module="run_factor_mining", level="debug")
+    except Exception as exc:
+        log_progress(f"指数上下文加载失败，已跳过：{exc}", module="run_factor_mining", level="debug")
+
+    # Step 5) 注入默认因子库素材（可按 --factor-packages 过滤）。
     default_material_cols: list[str] = []
     if not bool(args.disable_default_factor_materials):
         fac_lib = FactorLibrary()
@@ -424,6 +515,7 @@ def main() -> None:
     else:
         log_progress("已关闭默认因子库素材注入。", module="run_factor_mining")
 
+    # Step 6) 生成标签并做频率一致性检查。
     log_progress(f"开始生成挖掘标签 future_ret_n（freq={factor_freq}）。", module="run_factor_mining")
     panel = add_labels(
         panel=panel,
@@ -447,6 +539,7 @@ def main() -> None:
         module="run_factor_mining",
     )
 
+    # Step 7) 如使用 custom 框架，加载用户表达式规格。
     custom_specs = []
     if str(args.framework).lower() == "custom":
         if not str(args.custom_spec_json).strip():
@@ -457,6 +550,7 @@ def main() -> None:
             raise RuntimeError(f"no valid custom specs loaded from: {args.custom_spec_json}")
         log_progress(f"custom 规格加载完成：{len(custom_specs)} 条。", module="run_factor_mining")
 
+    # Step 8) 解析因子落盘路径与 catalog 路径。
     store_root = str(args.factor_store_root).strip()
     if store_root.lower() in {"", "auto"}:
         store_root = str(_infer_data_baostock_root(data_root))
@@ -465,6 +559,7 @@ def main() -> None:
     if catalog_path.lower() in {"", "auto"}:
         catalog_path = str((Path(store_root) / "factor_mining" / "factor_catalog.json").resolve())
 
+    # Step 9) 汇总挖掘配置并执行核心 runner。
     mine_cfg = FactorMiningConfig(
         framework=str(args.framework),
         factor_freq=str(args.factor_freq),
@@ -520,6 +615,7 @@ def main() -> None:
         include_default_factor_materials=not bool(args.disable_default_factor_materials),
         factor_packages=str(args.factor_packages),
         material_factor_count=int(len(default_material_cols)),
+        index_context_cols=index_ctx_cols,
     )
     log_progress("开始执行因子挖掘核心流程。", module="run_factor_mining")
 
@@ -536,6 +632,7 @@ def main() -> None:
         module="run_factor_mining",
     )
 
+    # Step 10) 输出摘要（含候选数、入选数、落盘路径）。
     print("=== Factor Mining Summary ===")
     print(json.dumps(summary, ensure_ascii=False, indent=2, default=str))
 

@@ -464,6 +464,6 @@ def run_news_download(pool="hs300", save_snapshot: bool = True):
 
 if __name__ == "__main__":
     # run_news_download(pool="sz50")
-    run_news_download(pool="hs300")
-    # run_news_download(pool="zz500")
+    # run_news_download(pool="hs300")
+    run_news_download(pool="zz500")
     # run_news_download(pool="all")

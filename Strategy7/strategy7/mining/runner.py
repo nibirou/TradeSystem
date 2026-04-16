@@ -128,6 +128,7 @@ class FactorMiningConfig:
     include_default_factor_materials: bool = True
     factor_packages: str = ""
     material_factor_count: int = 0
+    index_context_cols: List[str] | None = None
 
 
 def _seed(seed: int) -> np.random.Generator:
@@ -1242,6 +1243,7 @@ def run_factor_mining(
         "include_default_factor_materials": bool(cfg.include_default_factor_materials),
         "factor_packages": str(cfg.factor_packages),
         "material_factor_count": int(cfg.material_factor_count),
+        "index_context_cols": list(cfg.index_context_cols or []),
         "train_period": [str(pd.Timestamp(cfg.train_start).date()), str(pd.Timestamp(cfg.train_end).date())],
         "valid_period": [str(pd.Timestamp(cfg.valid_start).date()), str(pd.Timestamp(cfg.valid_end).date())],
         "population_size": (
