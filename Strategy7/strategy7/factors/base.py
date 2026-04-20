@@ -90,6 +90,13 @@ _CATEGORY_CN: Dict[str, str] = {
     "fundamental_efficiency": "基本面-运营效率",
     "fundamental_expectation": "基本面-预期",
     "fundamental_hf_fusion": "基本面-高频融合",
+    "mined_price_volume": "挖掘因子-量价",
+    "mined_fundamental": "挖掘因子-基本面",
+    "mined_text": "挖掘因子-文本",
+    "mined_fusion": "挖掘因子-融合",
+    "mined_other": "挖掘因子-其他",
+    "mined_custom": "挖掘因子-自定义",
+    "catalog_custom": "Catalog-自定义",
 }
 
 _CATEGORY_CN.update(
@@ -118,6 +125,13 @@ _PACKAGE_CN: Dict[str, str] = {
     "fund_efficiency": "基本面运营效率包",
     "fund_expectation": "基本面预期包",
     "fund_hf_fusion": "基本面-高频融合包",
+    "mined_price_volume": "挖掘量价包",
+    "mined_fundamental": "挖掘基本面包",
+    "mined_text": "挖掘文本包",
+    "mined_fusion": "挖掘融合包",
+    "mined_other": "挖掘其他包",
+    "mined_custom": "挖掘自定义包",
+    "catalog_custom": "Catalog自定义包",
 }
 
 _PACKAGE_CN.update(

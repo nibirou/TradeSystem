@@ -46,6 +46,12 @@ python Strategy7/run_strategy7.py --stock-model-type dafat --label-task return
 python Strategy7/run_factor_mining.py --framework fundamental_multiobj
 ```
 
+列出挖掘可用因子（含 catalog/自定义）：
+
+```bash
+python Strategy7/run_factor_mining.py --list-factors --factor-freq 30min
+```
+
 股票池切换（主流程与挖掘入口通用）：
 
 ```bash

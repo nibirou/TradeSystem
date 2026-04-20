@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from pathlib import Path
+from typing import Dict, List
 
 import pandas as pd
 
@@ -25,13 +26,27 @@ from strategy7.config import (
 from strategy7.core.constants import INTRADAY_FREQS, SUPPORTED_FREQS
 from strategy7.core.utils import log_progress, set_log_level
 from strategy7.data.loaders import MarketUniverseDataLoader, build_feature_bundle, load_index_benchmark_data
-from strategy7.factors.base import FactorLibrary, compute_factor_panel
+from strategy7.factors.base import (
+    FactorLibrary,
+    compute_factor_panel,
+    enrich_factor_metadata_for_display,
+    load_custom_factor_module,
+    resolve_selected_factors,
+)
 from strategy7.factors.defaults import (
+    build_factor_package_index,
     list_default_factor_packages,
     register_default_factors,
+    resolve_primary_factor_package,
     resolve_default_factor_set,
 )
 from strategy7.factors.labeling import add_labels, validate_label_frequency_alignment
+from strategy7.mining.catalog import (
+    list_catalog_factor_packages,
+    load_active_catalog_entries,
+    merge_catalog_factors,
+    register_catalog_factors,
+)
 from strategy7.mining.custom import load_custom_specs
 from strategy7.mining.runner import FactorMiningConfig, run_factor_mining
 
@@ -82,6 +97,199 @@ def _build_hs300_context_features(index_hs300: pd.DataFrame) -> pd.DataFrame:
         "mkt_hs300_drawdown_60d",
     ]
     return x[keep].copy()
+
+
+def _parse_factor_name_list(expr: str) -> List[str]:
+    return [x.strip() for x in str(expr).split(",") if x.strip()]
+
+
+def _resolve_catalog_path(
+    *,
+    factor_catalog_path_arg: str,
+    data_root: str,
+    factor_store_root: str,
+) -> str:
+    factor_catalog_path_arg = str(factor_catalog_path_arg or "").strip()
+    if factor_catalog_path_arg and factor_catalog_path_arg.lower() not in {"auto", "none", "null"}:
+        return str(Path(factor_catalog_path_arg).expanduser().resolve())
+
+    store_root = str(factor_store_root or "").strip()
+    if store_root.lower() not in {"", "auto"}:
+        return str((Path(store_root).expanduser() / "factor_mining" / "factor_catalog.json").resolve())
+    root = _infer_data_baostock_root(data_root)
+    return str((root / "factor_mining" / "factor_catalog.json").resolve())
+
+
+def _split_package_tokens_for_default_and_catalog(freq: str, package_expr: str) -> tuple[List[str], str]:
+    tokens = [x.strip() for x in str(package_expr).split(",") if x.strip()]
+    if not tokens:
+        return [], "all"
+    tokens_lower = {x.lower() for x in tokens}
+    if "all" in tokens_lower:
+        return [], "all"
+
+    avail_defaults = {x.lower(): x for x in list_default_factor_packages(freq)}
+    default_tokens: List[str] = []
+    catalog_tokens: List[str] = []
+    for tok in tokens:
+        k = tok.lower()
+        if k in avail_defaults:
+            default_tokens.append(avail_defaults[k])
+        else:
+            catalog_tokens.append(tok)
+    return default_tokens, ",".join(catalog_tokens)
+
+
+def _resolve_default_materials_by_package(freq: str, package_expr: str) -> List[str]:
+    tokens = [x.strip() for x in str(package_expr).split(",") if x.strip()]
+    if not tokens:
+        return resolve_default_factor_set(freq=freq, package_expr="all")
+    if "all" in {x.lower() for x in tokens}:
+        return resolve_default_factor_set(freq=freq, package_expr="all")
+    avail_defaults = {x.lower(): x for x in list_default_factor_packages(freq)}
+    selected = [avail_defaults[x.lower()] for x in tokens if x.lower() in avail_defaults]
+    if not selected:
+        return []
+    return resolve_default_factor_set(freq=freq, package_expr=",".join(selected))
+
+
+def _attach_factor_package_columns(meta_df: pd.DataFrame, freq: str) -> pd.DataFrame:
+    if meta_df.empty or "factor" not in meta_df.columns:
+        out = meta_df.copy()
+        out["factor_package"] = pd.Series(dtype=str)
+        out["factor_packages"] = pd.Series(dtype=str)
+        return out
+
+    out = meta_df.copy()
+    package_index = build_factor_package_index(freq=str(freq))
+    categories = out["category"].astype(str).tolist() if "category" in out.columns else [""] * len(out)
+    primary_packages: List[str] = []
+    all_packages: List[str] = []
+    for fac, cat in zip(out["factor"].astype(str).tolist(), categories):
+        pri, members = resolve_primary_factor_package(
+            freq=str(freq),
+            factor=fac,
+            category=cat,
+            package_index=package_index,
+        )
+        primary_packages.append(str(pri))
+        all_packages.append(",".join([str(x) for x in members]))
+    out["factor_package"] = primary_packages
+    out["factor_packages"] = all_packages
+    return out
+
+
+def _summarize_factor_packages(meta_df: pd.DataFrame) -> Dict[str, Dict[str, int]]:
+    group_col = "factor_package" if "factor_package" in meta_df.columns else "category"
+    if meta_df.empty or group_col not in meta_df.columns:
+        return {"all": {}, "price_volume": {}, "fundamental": {}, "text": {}, "mined": {}}
+
+    counts = (
+        meta_df.groupby(group_col)
+        .size()
+        .sort_values(ascending=False)
+        .astype(int)
+    )
+    all_counts = {str(k): int(v) for k, v in counts.items()}
+    fund_counts = {k: v for k, v in all_counts.items() if str(k).startswith("fund_") or str(k).startswith("fundamental_")}
+    text_counts = {k: v for k, v in all_counts.items() if str(k).startswith("text_")}
+    mined_counts = {k: v for k, v in all_counts.items() if str(k).startswith("mined_") or str(k).startswith("catalog_")}
+    pv_counts = {
+        k: v
+        for k, v in all_counts.items()
+        if not (
+            str(k).startswith("fund_")
+            or str(k).startswith("fundamental_")
+            or str(k).startswith("text_")
+            or str(k).startswith("mined_")
+            or str(k).startswith("catalog_")
+        )
+    }
+    return {
+        "all": all_counts,
+        "price_volume": pv_counts,
+        "fundamental": fund_counts,
+        "text": text_counts,
+        "mined": mined_counts,
+    }
+
+
+def _print_factor_package_summary(meta_df: pd.DataFrame) -> Dict[str, Dict[str, int]]:
+    summary = _summarize_factor_packages(meta_df)
+    print("\n=== Factor Package Summary ===")
+    for title, key in [
+        ("[Price-Volume / Non-Fundamental Packages]", "price_volume"),
+        ("[Fundamental Packages]", "fundamental"),
+        ("[Text Packages]", "text"),
+        ("[Mined/Catalog Packages]", "mined"),
+    ]:
+        print(title)
+        part = summary[key]
+        if part:
+            print(pd.Series(part, dtype=int).sort_values(ascending=False).to_string())
+        else:
+            print("(none)")
+        print("")
+    return summary
+
+
+def _export_factor_list(
+    *,
+    meta_df_view: pd.DataFrame,
+    summary: Dict[str, Dict[str, int]],
+    factor_freq: str,
+    export_format: str,
+    export_path_arg: str,
+    default_dir: Path,
+) -> Path:
+    fmt = str(export_format).strip().lower()
+    if fmt not in {"csv", "json", "markdown"}:
+        raise ValueError(f"unsupported factor list export format: {fmt}")
+
+    if str(export_path_arg).strip():
+        out_path = Path(str(export_path_arg).strip()).expanduser().resolve()
+    else:
+        ts = pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y%m%d_%H%M%S")
+        ext = "md" if fmt == "markdown" else fmt
+        out_path = (default_dir / f"factor_list_mining_{factor_freq}_{ts}.{ext}").resolve()
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    if fmt == "csv":
+        meta_df_view.to_csv(out_path, index=False, encoding="utf-8")
+        return out_path
+    if fmt == "json":
+        payload = {
+            "factor_freq": str(factor_freq),
+            "generated_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(),
+            "summary": summary,
+            "factors": meta_df_view.to_dict(orient="records"),
+        }
+        out_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+        return out_path
+
+    # markdown
+    raw_df = pd.DataFrame(
+        [{"factor_package": k, "count": int(v)} for k, v in summary.get("all", {}).items()]
+    )
+    raw_df = raw_df.sort_values("count", ascending=False).reset_index(drop=True) if not raw_df.empty else raw_df
+    md_lines: List[str] = []
+    md_lines.append(f"# Factor List (Mining) @ {factor_freq}")
+    md_lines.append("")
+    md_lines.append("## Package Summary")
+    md_lines.append("")
+    if raw_df.empty:
+        md_lines.append("(none)")
+    else:
+        md_lines.append(raw_df.to_markdown(index=False))
+    md_lines.append("")
+    md_lines.append("## Factor Table")
+    md_lines.append("")
+    if meta_df_view.empty:
+        md_lines.append("(empty)")
+    else:
+        md_lines.append(meta_df_view.to_markdown(index=False))
+    out_path.write_text("\n".join(md_lines), encoding="utf-8")
+    return out_path
 
 
 def _parse_args() -> argparse.Namespace:
@@ -250,8 +458,46 @@ def _parse_args() -> argparse.Namespace:
             "multi_freq,bridge,multiscale,"
             "text_sentiment,text_attention,text_event,text_topic,text_fusion,"
             "fund_growth,fund_valuation,fund_profitability,fund_quality,fund_leverage,fund_cashflow,"
-            "fund_efficiency,fund_expectation,fund_hf_fusion,all"
+            "fund_efficiency,fund_expectation,fund_hf_fusion,"
+            "mined_price_volume,mined_fundamental,mined_text,mined_fusion,mined_other,mined_custom,"
+            "catalog_custom,all。"
+            "catalog 挖掘因子还支持维度标签：mined_fw_*, mined_universe_*, mined_freq_*, mined_materialpkg_*。"
         ),
+    )
+    g_date.add_argument(
+        "--factor-list",
+        type=str,
+        default="",
+        help="显式指定挖掘素材因子名列表（逗号分隔）；为空时按 --factor-packages 自动选择素材",
+    )
+    g_date.add_argument(
+        "--custom-factor-py",
+        type=str,
+        default=None,
+        help="自定义因子插件路径，模块需实现 register_factors(library)",
+    )
+    g_date.add_argument(
+        "--list-factors",
+        action="store_true",
+        help="仅列出当前频率可用因子（默认+catalog+自定义）并退出，不加载市场数据",
+    )
+    g_date.add_argument(
+        "--export-factor-list",
+        action="store_true",
+        help="在 --list-factors 模式下导出因子清单文件",
+    )
+    g_date.add_argument(
+        "--factor-list-export-format",
+        type=str,
+        choices=["csv", "json", "markdown"],
+        default="csv",
+        help="因子清单导出格式（仅 --export-factor-list 生效）：csv/json/markdown",
+    )
+    g_date.add_argument(
+        "--factor-list-export-path",
+        type=str,
+        default="",
+        help="因子清单导出路径（可选）；为空时自动写入 factor_store_root/factor_mining/factor_lists/",
     )
     g_date.add_argument(
         "--disable-default-factor-materials",
@@ -361,10 +607,20 @@ def _parse_args() -> argparse.Namespace:
         help="因子输出根目录；auto 时自动推断为 data_baostock 根目录",
     )
     g_out.add_argument(
+        "--factor-catalog-path",
         "--catalog-path",
+        dest="factor_catalog_path",
         type=str,
         default="auto",
-        help="catalog 路径；auto 时使用 <factor-store-root>/factor_mining/factor_catalog.json",
+        help=(
+            "因子挖掘 catalog 路径（输入加载 + 输出更新）。"
+            "auto 时使用 <factor-store-root>/factor_mining/factor_catalog.json。"
+        ),
+    )
+    g_out.add_argument(
+        "--disable-catalog-factors",
+        action="store_true",
+        help="禁用 catalog 因子加载（不影响本次挖掘结果写入 catalog）",
     )
     g_out.add_argument(
         "--save-format",
@@ -466,12 +722,112 @@ def main() -> None:
         module="run_factor_mining",
     )
 
-    # Step 2) 构建数据配置并加载市场数据（含训练/验证所需回看窗口）。
+    # Step 2) 解析数据范围与 catalog 路径。
     data_root, universe, stock_list_path = resolve_market_data_scope(
         data_root=args.data_root,
         universe=args.universe,
         stock_list_path=getattr(args, "stock_list_path", "auto"),
     )
+    store_root = str(args.factor_store_root).strip()
+    if store_root.lower() in {"", "auto"}:
+        store_root = str(_infer_data_baostock_root(data_root))
+    catalog_path = _resolve_catalog_path(
+        factor_catalog_path_arg=str(getattr(args, "factor_catalog_path", "")),
+        data_root=data_root,
+        factor_store_root=store_root,
+    )
+    factor_freq = str(args.factor_freq)
+    explicit_factor_names = _parse_factor_name_list(str(args.factor_list))
+    default_pkg_tokens, catalog_pkg_expr = _split_package_tokens_for_default_and_catalog(
+        factor_freq,
+        str(args.factor_packages),
+    )
+
+    # Fast path: --list-factors 不加载行情，仅输出清单。
+    if bool(args.list_factors):
+        log_progress("进入仅列出因子模式（run_factor_mining）。", module="run_factor_mining")
+        fac_lib = FactorLibrary()
+        register_default_factors(fac_lib)
+
+        catalog_entries_for_list: List[Dict[str, object]] = []
+        catalog_pkg_for_list = "all" if not str(args.factor_packages).strip() else catalog_pkg_expr
+        should_load_catalog_list = not bool(args.disable_catalog_factors)
+        if should_load_catalog_list and str(args.factor_packages).strip() and not catalog_pkg_expr and not explicit_factor_names:
+            should_load_catalog_list = False
+        if should_load_catalog_list:
+            catalog_entries_for_list = load_active_catalog_entries(
+                catalog_path=catalog_path,
+                freq=factor_freq,
+                factor_names=explicit_factor_names or None,
+                package_expr=catalog_pkg_for_list,
+            )
+            if catalog_entries_for_list:
+                register_catalog_factors(fac_lib, catalog_entries_for_list)
+        if args.custom_factor_py:
+            load_custom_factor_module(fac_lib, str(args.custom_factor_py))
+
+        avail_default_packages = list_default_factor_packages(factor_freq)
+        avail_catalog_packages = list_catalog_factor_packages(catalog_path=catalog_path, freq=factor_freq)
+        if avail_default_packages:
+            log_progress(
+                f"default factor packages@{factor_freq}: {avail_default_packages}",
+                module="run_factor_mining",
+                level="debug",
+            )
+        if avail_catalog_packages:
+            log_progress(
+                f"catalog factor packages@{factor_freq}: {avail_catalog_packages}",
+                module="run_factor_mining",
+                level="debug",
+            )
+
+        meta_df = fac_lib.metadata(freq=factor_freq)
+        meta_df = _attach_factor_package_columns(meta_df, freq=factor_freq)
+        meta_df_view = enrich_factor_metadata_for_display(meta_df)
+        if "category" in meta_df_view.columns:
+            meta_df_view = meta_df_view.drop(columns=["category"])
+        preferred_cols = [
+            "factor",
+            "freq",
+            "factor_package",
+            "factor_packages",
+            "name_cn",
+            "meaning_cn",
+            "formula_cn",
+            "description",
+        ]
+        ordered_cols = [c for c in preferred_cols if c in meta_df_view.columns] + [c for c in meta_df_view.columns if c not in preferred_cols]
+        meta_df_view = meta_df_view[ordered_cols]
+        print(meta_df_view.to_string(index=False))
+
+        package_summary = _print_factor_package_summary(meta_df)
+        export_path: Path | None = None
+        if bool(args.export_factor_list):
+            export_path = _export_factor_list(
+                meta_df_view=meta_df_view,
+                summary=package_summary,
+                factor_freq=factor_freq,
+                export_format=str(args.factor_list_export_format),
+                export_path_arg=str(args.factor_list_export_path),
+                default_dir=Path(__file__).resolve().parent / "outputs" / "factor_lists",
+            )
+            log_progress(
+                f"因子清单导出完成：format={args.factor_list_export_format}, path={export_path}",
+                module="run_factor_mining",
+            )
+        log_progress(
+            (
+                f"因子清单输出完成：freq={factor_freq}, total_factor_count={len(meta_df)}, "
+                f"factor_package_count={len(package_summary['all'])}, "
+                f"catalog_factor_count={len(catalog_entries_for_list)}。"
+            ),
+            module="run_factor_mining",
+        )
+        if export_path is not None:
+            print(f"factor_list_export: {export_path}")
+        return
+
+    # Step 3) 构建数据配置并加载市场数据（含训练/验证所需回看窗口）。
     data_cfg = DataConfig(
         data_root=data_root,
         universe=universe,
@@ -526,8 +882,7 @@ def main() -> None:
         module="run_factor_mining",
     )
 
-    # Step 3) 选择主频面板。
-    factor_freq = str(args.factor_freq)
+    # Step 4) 选择主频面板。
     if factor_freq not in feat_bundle.by_freq:
         raise RuntimeError(f"feature bundle missing factor_freq={factor_freq}")
     panel = feat_bundle.by_freq[factor_freq].copy()
@@ -540,7 +895,7 @@ def main() -> None:
     )
 
     # 使用 --index-root 读取指数数据并构建市场上下文素材，确保该配置项在挖掘流程中实际生效。
-    # Step 4) 注入指数上下文素材（来自 --index-root）。
+    # Step 5) 注入指数上下文素材（来自 --index-root）。
     index_ctx_cols: list[str] = []
     try:
         idx_map = load_index_benchmark_data(
@@ -564,24 +919,53 @@ def main() -> None:
     except Exception as exc:
         log_progress(f"指数上下文加载失败，已跳过：{exc}", module="run_factor_mining", level="debug")
 
-    # Step 5) 注入默认因子库素材（可按 --factor-packages 过滤）。
-    default_material_cols: list[str] = []
+    # Step 6) 构建挖掘素材因子库（默认+catalog+自定义）并注入素材列。
+    fac_lib = FactorLibrary()
+    register_default_factors(fac_lib)
+
+    catalog_rows: Dict[str, int] = {}
+    catalog_entries: List[Dict[str, object]] = []
+    should_load_catalog = not bool(args.disable_catalog_factors)
+    if should_load_catalog and str(args.factor_packages).strip() and not catalog_pkg_expr and not explicit_factor_names:
+        should_load_catalog = False
+    if should_load_catalog:
+        catalog_pkg_for_material = "all" if not str(args.factor_packages).strip() else catalog_pkg_expr
+        panel, catalog_rows, catalog_entries = merge_catalog_factors(
+            base_panel=panel,
+            catalog_path=catalog_path,
+            factor_freq=factor_freq,
+            factor_names=explicit_factor_names or None,
+            package_expr=catalog_pkg_for_material,
+        )
+        if catalog_entries:
+            register_catalog_factors(fac_lib, catalog_entries)
+    if args.custom_factor_py:
+        load_custom_factor_module(fac_lib, str(args.custom_factor_py))
+
+    default_material_cols: List[str] = []
     if not bool(args.disable_default_factor_materials):
-        fac_lib = FactorLibrary()
-        register_default_factors(fac_lib)
-        avail_packages = list_default_factor_packages(factor_freq)
-        if avail_packages:
-            log_progress(
-                f"默认因子素材包@{factor_freq}: {avail_packages}",
-                module="run_factor_mining",
-                level="debug",
-            )
-        default_material_cols = resolve_default_factor_set(
+        default_material_cols = _resolve_default_materials_by_package(
             freq=factor_freq,
             package_expr=str(args.factor_packages),
         )
+
+    catalog_material_cols: List[str] = []
+    if not explicit_factor_names:
+        if not str(args.factor_packages).strip():
+            catalog_material_cols = [str(e.get("name", "")).strip() for e in catalog_entries if str(e.get("name", "")).strip()]
+        elif catalog_pkg_expr:
+            catalog_material_cols = [str(e.get("name", "")).strip() for e in catalog_entries if str(e.get("name", "")).strip()]
+
+    default_set = sorted(set(default_material_cols) | set(catalog_material_cols))
+    selected_material_cols = resolve_selected_factors(
+        library=fac_lib,
+        freq=factor_freq,
+        factor_list_arg=str(args.factor_list),
+        default_set=default_set,
+    )
+    if selected_material_cols:
         log_progress(
-            f"开始注入默认因子库素材：freq={factor_freq}, selected={len(default_material_cols)}。",
+            f"开始注入挖掘素材因子：freq={factor_freq}, selected={len(selected_material_cols)}。",
             module="run_factor_mining",
         )
         before_cols = set(panel.columns)
@@ -589,17 +973,18 @@ def main() -> None:
             base_df=panel,
             library=fac_lib,
             freq=factor_freq,
-            selected_factors=default_material_cols,
+            selected_factors=selected_material_cols,
         )
-        added_cols = [c for c in default_material_cols if c not in before_cols]
+        added_cols = [c for c in selected_material_cols if c not in before_cols]
         log_progress(
-            f"默认因子素材注入完成：added={len(added_cols)}, panel_cols={len(panel.columns)}。",
+            f"挖掘素材因子注入完成：added={len(added_cols)}, panel_cols={len(panel.columns)}, "
+            f"catalog_entries={len(catalog_entries)}, catalog_rows_meta={catalog_rows}。",
             module="run_factor_mining",
         )
     else:
-        log_progress("已关闭默认因子库素材注入。", module="run_factor_mining")
+        log_progress("未选择任何显式素材因子，继续使用原始特征面板挖掘。", module="run_factor_mining")
 
-    # Step 6) 生成标签并做频率一致性检查。
+    # Step 7) 生成标签并做频率一致性检查。
     log_progress(f"开始生成挖掘标签 future_ret_n（freq={factor_freq}）。", module="run_factor_mining")
     panel = add_labels(
         panel=panel,
@@ -623,7 +1008,7 @@ def main() -> None:
         module="run_factor_mining",
     )
 
-    # Step 7) 如使用 custom 框架，加载用户表达式规格。
+    # Step 8) 如使用 custom 框架，加载用户表达式规格。
     custom_specs = []
     if str(args.framework).lower() == "custom":
         if not str(args.custom_spec_json).strip():
@@ -633,15 +1018,6 @@ def main() -> None:
         if not custom_specs:
             raise RuntimeError(f"no valid custom specs loaded from: {args.custom_spec_json}")
         log_progress(f"custom 规格加载完成：{len(custom_specs)} 条。", module="run_factor_mining")
-
-    # Step 8) 解析因子落盘路径与 catalog 路径。
-    store_root = str(args.factor_store_root).strip()
-    if store_root.lower() in {"", "auto"}:
-        store_root = str(_infer_data_baostock_root(data_root))
-
-    catalog_path = str(args.catalog_path).strip()
-    if catalog_path.lower() in {"", "auto"}:
-        catalog_path = str((Path(store_root) / "factor_mining" / "factor_catalog.json").resolve())
 
     # Step 9) 汇总挖掘配置并执行核心 runner。
     mine_cfg = FactorMiningConfig(
@@ -698,7 +1074,10 @@ def main() -> None:
         gp_num_jobs=int(args.gp_num_jobs),
         include_default_factor_materials=not bool(args.disable_default_factor_materials),
         factor_packages=str(args.factor_packages),
-        material_factor_count=int(len(default_material_cols)),
+        factor_list=str(args.factor_list),
+        material_factor_count=int(len(selected_material_cols)),
+        material_factor_names=[str(x) for x in selected_material_cols],
+        universe=str(universe),
         index_context_cols=index_ctx_cols,
     )
     log_progress("开始执行因子挖掘核心流程。", module="run_factor_mining")

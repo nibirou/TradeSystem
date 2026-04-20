@@ -318,8 +318,16 @@ python Strategy7/run_strategy7.py `
 29. `fund_efficiency`：基本面运营效率类（>=100 初始因子）
 30. `fund_expectation`：预期/业绩预告类（>=100 初始因子）
 31. `fund_hf_fusion`：基本面-高频量价融合类（>=100 初始因子）
+32. `mined_price_volume`：挖掘因子-量价类
+33. `mined_fundamental`：挖掘因子-基本面类
+34. `mined_text`：挖掘因子-金融文本类
+35. `mined_fusion`：挖掘因子-融合类（量价/基本面/文本混合）
+36. `mined_other`：挖掘因子-其他类
+37. `mined_custom`：挖掘因子-自定义类
+38. `catalog_custom`：catalog 历史兼容自定义类
 
 说明：部分包只在特定频率有非空因子，例如 `period_signature` 仅在 `W/M` 生效，`intraday_signature` 仅在分钟频生效。
+挖掘因子还支持维度标签包：`mined_fw_*`（挖掘框架）、`mined_universe_*`（股票池）、`mined_freq_*`（频率）、`mined_materialpkg_*`（素材包）。
 
 补充说明：当前工程已统一为“仅使用 factor package 分类”，因子清单不再单独展示 `category` 列。
 你在清单中看到的分类与 `--factor-packages` 参数使用的是同一套标准。
@@ -338,6 +346,8 @@ python Strategy7/run_strategy7.py `
 5. `--factor-packages fund_growth,fund_quality`：只做成长+质量基本面研究
 6. `--factor-packages text_sentiment,text_event`：只做金融文本情绪+事件研究
 7. `--factor-packages text_fusion,fund_hf_fusion,bridge`：做文本/基本面与高频桥接融合研究
+8. `--factor-packages mined_fusion`：只启用 catalog 中“挖掘融合类”因子
+9. `--factor-packages mined_fw_gpl,mined_universe_hs300`：只启用特定挖掘框架/股票池标签下的挖掘因子
 
 示例：
 
@@ -419,6 +429,11 @@ python Strategy7/run_strategy7.py `
 
 1. `python Strategy7/run_factor_mining.py ...`
 2. 股票池参数同样支持：`--universe` 与 `--stock-list-path`（兼容 `--hs300-list-path`）
+3. 新增与主流程对齐参数：
+   - `--factor-list`：显式指定挖掘素材因子名列表
+   - `--custom-factor-py`：加载自定义因子插件作为可选素材
+   - `--list-factors` / `--export-factor-list`：列出并导出挖掘可用因子清单
+   - `--factor-catalog-path` / `--disable-catalog-factors`：控制 catalog 因子加载与过滤
 
 框架：
 
@@ -437,6 +452,8 @@ python Strategy7/run_strategy7.py `
 4. `--index-root` 会加载 HS300 指数并注入市场上下文特征（收益、波动、回撤等）
 5. 基本面素材默认参与面板构建（AK+Baostock）；可通过 `--disable-fundamental-data` 关闭
 6. 金融文本素材默认参与面板构建（news/notice/report）；可通过 `--disable-text-data` 关闭
+7. catalog 因子素材支持按 `--factor-packages` 过滤（如 `mined_fusion`）或按 `--factor-list` 精确点名
+8. 当 `--factor-list` 非空时，挖掘素材将按显式名单解析（默认包仅作为补充可选来源）
 
 示例（基本面）：
 
@@ -472,6 +489,26 @@ python Strategy7/run_factor_mining.py `
   --gp-population-size 400 --gp-generations 12 `
   --gp-num-runs 3 --gp-n-components 24 `
   --gp-prefilter-topk 80
+```
+
+示例（仅查看挖掘可用因子清单并导出）：
+
+```powershell
+python Strategy7/run_factor_mining.py `
+  --list-factors --factor-freq 30min `
+  --factor-catalog-path D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/mining_test/factor_mining/factor_catalog.json `
+  --factor-packages mined_fusion `
+  --export-factor-list --factor-list-export-format csv
+```
+
+示例（显式指定挖掘素材因子）：
+
+```powershell
+python Strategy7/run_factor_mining.py `
+  --framework fundamental_multiobj `
+  --factor-freq 30min `
+  --factor-list amount_ratio_12,ret_12,rv_12 `
+  --factor-store-root D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/mining_test
 ```
 
 ## 10. 因子 catalog 与主流程联动

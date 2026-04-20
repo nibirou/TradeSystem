@@ -47,7 +47,12 @@ from ..factors.defaults import (
 )
 from ..factors.labeling import add_labels, pick_target_column, split_train_test, validate_label_frequency_alignment
 from ..models import build_execution_model, build_portfolio_model, build_stock_model, build_timing_model
-from ..mining.catalog import load_active_catalog_entries, merge_catalog_factors, register_catalog_factors
+from ..mining.catalog import (
+    list_catalog_factor_packages,
+    load_active_catalog_entries,
+    merge_catalog_factors,
+    register_catalog_factors,
+)
 from .artifacts import build_run_tag, save_common_artifacts
 
 
@@ -64,11 +69,48 @@ def _safe_trade_dates_from_panel(panel: pd.DataFrame, factor_freq: str) -> pd.Da
     return pd.DatetimeIndex([])
 
 
+def _parse_factor_names_expr(expr: str) -> List[str]:
+    return [x.strip() for x in str(expr).split(",") if x.strip()]
+
+
+def _split_package_tokens_for_default_and_catalog(freq: str, package_expr: str) -> tuple[List[str], str]:
+    tokens = [x.strip() for x in str(package_expr).split(",") if x.strip()]
+    if not tokens:
+        return [], "all"
+    tokens_lower = {x.lower() for x in tokens}
+    if "all" in tokens_lower:
+        return [], "all"
+
+    avail_defaults = {x.lower(): x for x in list_default_factor_packages(freq)}
+    default_tokens: List[str] = []
+    catalog_tokens: List[str] = []
+    for tok in tokens:
+        k = tok.lower()
+        if k in avail_defaults:
+            default_tokens.append(avail_defaults[k])
+        else:
+            catalog_tokens.append(tok)
+    return default_tokens, ",".join(catalog_tokens)
+
+
+def _resolve_default_factors_by_packages(freq: str, package_expr: str) -> List[str]:
+    tokens = [x.strip() for x in str(package_expr).split(",") if x.strip()]
+    if not tokens:
+        return resolve_default_factor_set(freq=freq, package_expr="all")
+    if "all" in {x.lower() for x in tokens}:
+        return resolve_default_factor_set(freq=freq, package_expr="all")
+    avail_defaults = {x.lower(): x for x in list_default_factor_packages(freq)}
+    selected = [avail_defaults[x.lower()] for x in tokens if x.lower() in avail_defaults]
+    if not selected:
+        return []
+    return resolve_default_factor_set(freq=freq, package_expr=",".join(selected))
+
+
 def _summarize_factor_categories(meta_df: pd.DataFrame) -> Dict[str, Dict[str, int]]:
     """Build factor-package count summary for list-factors output."""
     group_col = "factor_package" if "factor_package" in meta_df.columns else "category"
     if meta_df.empty or group_col not in meta_df.columns:
-        return {"all": {}, "price_volume": {}, "fundamental": {}, "text": {}}
+        return {"all": {}, "price_volume": {}, "fundamental": {}, "text": {}, "mined": {}}
 
     counts = (
         meta_df.groupby(group_col)
@@ -79,6 +121,7 @@ def _summarize_factor_categories(meta_df: pd.DataFrame) -> Dict[str, Dict[str, i
     all_counts = {str(k): int(v) for k, v in counts.items()}
     fund_counts = {k: v for k, v in all_counts.items() if str(k).startswith("fund_") or str(k).startswith("fundamental_")}
     text_counts = {k: v for k, v in all_counts.items() if str(k).startswith("text_")}
+    mined_counts = {k: v for k, v in all_counts.items() if str(k).startswith("mined_") or str(k).startswith("catalog_")}
     pv_counts = {
         k: v
         for k, v in all_counts.items()
@@ -86,6 +129,8 @@ def _summarize_factor_categories(meta_df: pd.DataFrame) -> Dict[str, Dict[str, i
             str(k).startswith("fund_")
             or str(k).startswith("fundamental_")
             or str(k).startswith("text_")
+            or str(k).startswith("mined_")
+            or str(k).startswith("catalog_")
         )
     }
     return {
@@ -93,6 +138,7 @@ def _summarize_factor_categories(meta_df: pd.DataFrame) -> Dict[str, Dict[str, i
         "price_volume": pv_counts,
         "fundamental": fund_counts,
         "text": text_counts,
+        "mined": mined_counts,
     }
 
 
@@ -101,6 +147,7 @@ def _print_factor_category_summary(meta_df: pd.DataFrame) -> Dict[str, Dict[str,
     pv_counts = summary["price_volume"]
     fund_counts = summary["fundamental"]
     text_counts = summary["text"]
+    mined_counts = summary["mined"]
 
     print("\n=== Factor Package Summary ===")
     if pv_counts:
@@ -119,6 +166,11 @@ def _print_factor_category_summary(meta_df: pd.DataFrame) -> Dict[str, Dict[str,
         print(pd.Series(text_counts, dtype=int).sort_values(ascending=False).to_string())
     else:
         print("\n[Text Packages]\n(none)")
+    if mined_counts:
+        print("\n[Mined/Catalog Packages]")
+        print(pd.Series(mined_counts, dtype=int).sort_values(ascending=False).to_string())
+    else:
+        print("\n[Mined/Catalog Packages]\n(none)")
     return summary
 
 
@@ -293,6 +345,11 @@ def _build_external_source_registry(cfg: RunConfig) -> DataSourceRegistry:
 
 def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     factor_freq = cfg.factors.factor_freq
+    explicit_factor_names = _parse_factor_names_expr(cfg.factors.factor_list)
+    default_pkg_tokens, catalog_pkg_expr = _split_package_tokens_for_default_and_catalog(
+        factor_freq,
+        str(getattr(cfg.factors, "factor_packages", "")),
+    )
     log_progress(
         f"主流水线启动：factor_freq={cfg.factors.factor_freq}, "
         f"train={cfg.dates.train_start.date()}~{cfg.dates.train_end.date()}, "
@@ -312,16 +369,37 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
                 module="pipeline",
                 level="debug",
             )
-        catalog_count = 0
+        avail_catalog_packages: List[str] = []
         if cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path:
-            entries = load_active_catalog_entries(cfg.data.factor_catalog_path, freq=cfg.factors.factor_freq)
+            avail_catalog_packages = list_catalog_factor_packages(
+                catalog_path=cfg.data.factor_catalog_path,
+                freq=cfg.factors.factor_freq,
+            )
+            if avail_catalog_packages:
+                log_progress(
+                    f"catalog factor packages@{cfg.factors.factor_freq}: {avail_catalog_packages}",
+                    module="pipeline",
+                    level="debug",
+                )
+        catalog_count = 0
+        should_load_catalog_list = bool(cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path)
+        if should_load_catalog_list and str(getattr(cfg.factors, "factor_packages", "")).strip() and not catalog_pkg_expr and not explicit_factor_names:
+            should_load_catalog_list = False
+        if should_load_catalog_list:
+            catalog_pkg_for_list = "all" if not str(getattr(cfg.factors, "factor_packages", "")).strip() else catalog_pkg_expr
+            entries = load_active_catalog_entries(
+                cfg.data.factor_catalog_path,
+                freq=cfg.factors.factor_freq,
+                factor_names=explicit_factor_names or None,
+                package_expr=catalog_pkg_for_list,
+            )
             if entries:
                 register_catalog_factors(factor_lib, entries)
                 catalog_count = int(len(entries))
         if cfg.factors.custom_factor_py:
             load_custom_factor_module(factor_lib, cfg.factors.custom_factor_py)
         if str(getattr(cfg.factors, "factor_packages", "")).strip():
-            selected_default = resolve_default_factor_set(
+            selected_default = _resolve_default_factors_by_packages(
                 freq=cfg.factors.factor_freq,
                 package_expr=str(cfg.factors.factor_packages),
             )
@@ -369,6 +447,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         pv_total = int(sum(package_summary["price_volume"].values()))
         fund_total = int(sum(package_summary["fundamental"].values()))
         text_total = int(sum(package_summary["text"].values()))
+        mined_total = int(sum(package_summary["mined"].values()))
         export_path: Path | None = None
         if bool(getattr(cfg.factors, "export_factor_list", False)):
             export_path = _export_factor_list_file(
@@ -385,6 +464,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
                 f"price_volume_factor_count={pv_total}, "
                 f"fundamental_factor_count={fund_total}, "
                 f"text_factor_count={text_total}, "
+                f"mined_factor_count={mined_total}, "
                 f"fundamental_expected_count={fund_coverage['expected']}, "
                 f"fundamental_missing_count={len(fund_coverage['missing'])}, "
                 f"factor_package_count={len(package_summary['all'])}, "
@@ -400,6 +480,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "price_volume_factor_count": pv_total,
             "fundamental_factor_count": fund_total,
             "text_factor_count": text_total,
+            "mined_factor_count": mined_total,
             "fundamental_expected_count": int(fund_coverage["expected"]),
             "fundamental_missing_count": int(len(fund_coverage["missing"])),
             "fundamental_missing_factors": list(fund_coverage["missing"]),
@@ -407,6 +488,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "price_volume_package_counts": package_summary["price_volume"],
             "fundamental_package_counts": package_summary["fundamental"],
             "text_package_counts": package_summary["text"],
+            "mined_package_counts": package_summary["mined"],
             "factor_list_export_format": str(getattr(cfg.factors, "factor_list_export_format", "csv")),
             "factor_list_export_path": str(export_path) if export_path is not None else "",
             "factor_list_exported": bool(export_path is not None),
@@ -453,11 +535,17 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     log_progress("步骤 2/13：开始合并 catalog 因子（若启用）。", module="pipeline")
     catalog_rows: Dict[str, int] = {}
     catalog_entries: List[Dict[str, object]] = []
-    if cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path:
+    should_load_catalog = bool(cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path)
+    if should_load_catalog and str(getattr(cfg.factors, "factor_packages", "")).strip() and not catalog_pkg_expr and not explicit_factor_names:
+        should_load_catalog = False
+    if should_load_catalog:
+        catalog_pkg_for_merge = "all" if not str(getattr(cfg.factors, "factor_packages", "")).strip() else catalog_pkg_expr
         base_df, catalog_rows, catalog_entries = merge_catalog_factors(
             base_panel=base_df,
             catalog_path=cfg.data.factor_catalog_path,
             factor_freq=factor_freq,
+            factor_names=explicit_factor_names or None,
+            package_expr=catalog_pkg_for_merge,
         )
     log_progress(
         f"catalog 合并完成：entries={len(catalog_entries)}, merged_rows_meta={catalog_rows}。",
@@ -502,10 +590,17 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
 
     # 5) Resolve selected factors and compute the factor panel.
     log_progress("步骤 5/13：解析因子清单并计算因子面板。", module="pipeline")
-    default_set = resolve_default_factor_set(
+    default_set = _resolve_default_factors_by_packages(
         freq=factor_freq,
         package_expr=str(getattr(cfg.factors, "factor_packages", "")),
     )
+    catalog_default_set: List[str] = []
+    if not explicit_factor_names:
+        if not str(getattr(cfg.factors, "factor_packages", "")).strip():
+            catalog_default_set = [str(e.get("name", "")).strip() for e in catalog_entries if str(e.get("name", "")).strip()]
+        elif catalog_pkg_expr:
+            catalog_default_set = [str(e.get("name", "")).strip() for e in catalog_entries if str(e.get("name", "")).strip()]
+    default_set = sorted(set(default_set) | set(catalog_default_set))
     if str(getattr(cfg.factors, "factor_packages", "")).strip():
         log_progress(
             f"default factor package filter: {cfg.factors.factor_packages}; "

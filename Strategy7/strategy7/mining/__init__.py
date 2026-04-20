@@ -2,6 +2,7 @@
 
 from .catalog import (
     load_active_catalog_entries,
+    list_catalog_factor_packages,
     merge_catalog_factors,
     register_catalog_factors,
     upsert_catalog_entries,
@@ -12,6 +13,7 @@ __all__ = [
     "FactorMiningConfig",
     "run_factor_mining",
     "load_active_catalog_entries",
+    "list_catalog_factor_packages",
     "merge_catalog_factors",
     "register_catalog_factors",
     "upsert_catalog_entries",

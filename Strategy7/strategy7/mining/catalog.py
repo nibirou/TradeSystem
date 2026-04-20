@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Dict, Iterable, List, Tuple
+from typing import Dict, Iterable, List, Sequence, Set, Tuple
 
 import numpy as np
 import pandas as pd
@@ -67,6 +67,36 @@ def _entry_key(entry: Dict[str, object]) -> tuple[str, str]:
     return str(entry.get("name", "")).strip(), str(entry.get("freq", "")).strip()
 
 
+def _split_csv_items(expr: str | Sequence[str] | None) -> List[str]:
+    if expr is None:
+        return []
+    if isinstance(expr, str):
+        parts = [x.strip() for x in expr.split(",")]
+        return [x for x in parts if x]
+    out: List[str] = []
+    for x in expr:
+        s = str(x).strip()
+        if s:
+            out.append(s)
+    return out
+
+
+def _entry_factor_packages(entry: Dict[str, object]) -> Set[str]:
+    out: Set[str] = set()
+    primary = str(entry.get("factor_package", "")).strip()
+    if primary:
+        out.add(primary)
+
+    packs_expr = str(entry.get("factor_packages", "")).strip()
+    if packs_expr:
+        out.update(_split_csv_items(packs_expr))
+
+    category = str(entry.get("category", "")).strip()
+    if category:
+        out.add(category)
+    return {x for x in out if x}
+
+
 def upsert_catalog_entries(catalog_path: str | Path, new_entries: Iterable[Dict[str, object]]) -> Dict[str, object]:
     catalog = load_catalog(catalog_path)
     entries: List[Dict[str, object]] = list(catalog.get("entries", []))
@@ -92,9 +122,21 @@ def upsert_catalog_entries(catalog_path: str | Path, new_entries: Iterable[Dict[
     return catalog
 
 
-def load_active_catalog_entries(catalog_path: str | Path | None, freq: str | None = None) -> List[Dict[str, object]]:
+def load_active_catalog_entries(
+    catalog_path: str | Path | None,
+    freq: str | None = None,
+    *,
+    factor_names: Sequence[str] | None = None,
+    package_expr: str = "",
+) -> List[Dict[str, object]]:
     catalog = load_catalog(catalog_path)
     out: List[Dict[str, object]] = []
+
+    name_set = {str(x).strip() for x in (factor_names or []) if str(x).strip()}
+    requested_packs = _split_csv_items(package_expr)
+    requested_pack_set = {x for x in requested_packs if x.lower() != "all"}
+    package_filter_on = bool(requested_pack_set) and ("all" not in {x.lower() for x in requested_packs})
+
     for e in catalog.get("entries", []):
         status = str(e.get("status", "active")).strip().lower()
         if status != "active":
@@ -106,8 +148,31 @@ def load_active_catalog_entries(catalog_path: str | Path | None, freq: str | Non
         table_path = str(e.get("table_path", "")).strip()
         if not name or not value_col or not table_path:
             continue
-        out.append(dict(e))
+        if name_set and name not in name_set:
+            continue
+
+        row = dict(e)
+        row_packs = _entry_factor_packages(row)
+        if package_filter_on and not (row_packs & requested_pack_set):
+            continue
+        if not str(row.get("factor_package", "")).strip():
+            row["factor_package"] = str(row.get("category", "")).strip()
+        if not str(row.get("factor_packages", "")).strip():
+            row["factor_packages"] = ",".join(sorted(row_packs))
+        out.append(row)
     return out
+
+
+def list_catalog_factor_packages(
+    catalog_path: str | Path | None,
+    *,
+    freq: str | None = None,
+) -> List[str]:
+    entries = load_active_catalog_entries(catalog_path=catalog_path, freq=freq)
+    out: Set[str] = set()
+    for e in entries:
+        out.update(_entry_factor_packages(e))
+    return sorted(x for x in out if x)
 
 
 def _read_factor_table(path: str, usecols: List[str] | None = None) -> pd.DataFrame:
@@ -152,11 +217,19 @@ def merge_catalog_factors(
     base_panel: pd.DataFrame,
     catalog_path: str | Path | None,
     factor_freq: str,
+    *,
+    factor_names: Sequence[str] | None = None,
+    package_expr: str = "",
 ) -> Tuple[pd.DataFrame, Dict[str, int], List[Dict[str, object]]]:
     """Merge active catalog factors into panel and return loaded catalog entries."""
     out = base_panel.copy()
     notes: Dict[str, int] = {}
-    entries = load_active_catalog_entries(catalog_path, freq=factor_freq)
+    entries = load_active_catalog_entries(
+        catalog_path,
+        freq=factor_freq,
+        factor_names=factor_names,
+        package_expr=package_expr,
+    )
     if not entries:
         return out, notes, []
 

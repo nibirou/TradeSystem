@@ -115,6 +115,8 @@
 - 注入后，默认因子会并入挖掘面板，与原始特征一起成为挖掘素材。
 - 素材包可用参数：
   - `--factor-packages`：逗号分隔，控制注入哪些默认包（空=全部）
+  - `--factor-list`：显式指定素材因子名（逗号分隔）；用于精确控制输入素材
+  - `--custom-factor-py`：加载自定义因子插件并纳入可选素材库
   - `--disable-default-factor-materials`：关闭默认因子素材注入
   - 新增金融文本因子包：`text_sentiment/text_attention/text_event/text_topic/text_fusion`
   - 每个文本类别初始模板因子数 >=30（按频率自动注册）
@@ -123,6 +125,27 @@
 - 对分钟框架：
   - 当 `factor_freq` 为分钟频时，注入因子直接进入分钟面板素材池
   - 当 `factor_freq=D` 且使用分钟框架时，日频素材会作为“日内常量字段”参与分钟表达式计算
+
+### 2.6.1 挖掘因子命名与 factor package 分类（新）
+
+- 每个入库挖掘因子都会生成：
+  - `factor_package`（主包）
+  - `factor_packages`（多标签）
+- 主包（可直接用于 `--factor-packages`）：
+  - `mined_price_volume`
+  - `mined_fundamental`
+  - `mined_text`
+  - `mined_fusion`
+  - `mined_other`
+  - `mined_custom`
+- 维度标签包（也可用于筛选）：
+  - `mined_fw_*`：挖掘框架维度（如 `mined_fw_fmo` / `mined_fw_gpl`）
+  - `mined_universe_*`：股票池维度（如 `mined_universe_hs300`）
+  - `mined_freq_*`：频率维度（如 `mined_freq_30min`）
+  - `mined_materialpkg_*`：素材包维度（如 `mined_materialpkg_text_sentiment`）
+- 挖掘因子命名采用可追溯命名规则：
+  - `mf_<framework_alias>_<type>_<freq>_<universe>_<hash>`
+  - 示例：`mf_fmo_fusion_30m_hs300_88bb33e4a6`
 
 ### 2.7 指数上下文素材（`--index-root` 生效）
 
@@ -143,6 +166,16 @@
 - `--data-root auto` 会按 `--universe` 自动映射到 `data_baostock/stock_hist/<universe>`。
 - 基本面加载与该股票池完全一致：同样按 `--universe + --stock-list-path` 过滤后再并入。
 - 金融文本加载同样按该股票池过滤；支持 `all + --stock-list-path` 构建自定义文本研究池。
+
+### 2.8.1 catalog 因子加载过滤（新）
+
+- 主流程与挖掘入口都支持 catalog 因子按两种方式过滤：
+  - `--factor-packages`：按 factor package/标签包过滤
+  - `--factor-list`：按显式因子名过滤
+- 典型用法：
+  - `--factor-packages mined_fusion`：只加载挖掘融合类
+  - `--factor-packages mined_fw_gpl,mined_universe_hs300`：按框架+股票池标签组合筛选
+  - `--factor-list mf_fmo_fusion_30m_hs300_xxxxxxxx`：只加载指定挖掘因子
 
 ### 2.9 基本面数据接入（AK + Baostock）
 
@@ -345,6 +378,26 @@ python Strategy7/run_factor_mining.py \
   --gp-num-runs 3 --gp-n-components 24 \
   --gp-function-set add,sub,mul,div,sqrt,log,abs,neg,max,min \
   --gp-prefilter-topk 80
+```
+
+### 6.7 列出挖掘可用因子（支持 catalog + package 过滤）
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --list-factors --factor-freq 30min \
+  --factor-catalog-path D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/mining_test/factor_mining/factor_catalog.json \
+  --factor-packages mined_fusion \
+  --export-factor-list --factor-list-export-format csv
+```
+
+### 6.8 显式素材列表挖掘（`--factor-list`）
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --framework fundamental_multiobj \
+  --factor-freq 30min \
+  --factor-list amount_ratio_12,ret_12,rv_12 \
+  --factor-store-root D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/mining_test
 ```
 
 依赖说明：

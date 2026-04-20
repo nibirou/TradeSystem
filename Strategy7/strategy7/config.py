@@ -629,7 +629,10 @@ def parse_args() -> argparse.Namespace:
             "multi_freq,bridge,multiscale,"
             "text_sentiment,text_attention,text_event,text_topic,text_fusion,"
             "fund_growth,fund_valuation,fund_profitability,fund_quality,fund_leverage,fund_cashflow,"
-            "fund_efficiency,fund_expectation,fund_hf_fusion,all"
+            "fund_efficiency,fund_expectation,fund_hf_fusion,"
+            "mined_price_volume,mined_fundamental,mined_text,mined_fusion,mined_other,mined_custom,"
+            "catalog_custom,all。"
+            "catalog 挖掘因子还支持维度标签：mined_fw_*, mined_universe_*, mined_freq_*, mined_materialpkg_*。"
         ),
     )
     g_factor.add_argument(

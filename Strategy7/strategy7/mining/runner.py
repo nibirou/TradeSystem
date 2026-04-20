@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Sequence
@@ -127,7 +128,10 @@ class FactorMiningConfig:
     # 素材池控制参数（run_factor_mining.py 注入默认因子后透传记录）
     include_default_factor_materials: bool = True
     factor_packages: str = ""
+    factor_list: str = ""
     material_factor_count: int = 0
+    material_factor_names: List[str] | None = None
+    universe: str = ""
     index_context_cols: List[str] | None = None
 
 
@@ -143,6 +147,167 @@ def _hash_name(prefix: str, payload: Dict[str, object], length: int = 10) -> str
 
 def _to_key(payload: Dict[str, object]) -> str:
     return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _norm_tag(text: object, *, max_len: int = 24) -> str:
+    s = str(text or "").strip().lower()
+    s = re.sub(r"[^a-z0-9]+", "_", s).strip("_")
+    if not s:
+        return "na"
+    return s[:max_len]
+
+
+def _framework_alias(framework: str) -> str:
+    mp = {
+        "fundamental_multiobj": "fmo",
+        "minute_parametric": "mmo",
+        "minute_parametric_plus": "mmx",
+        "ml_ensemble_alpha": "mla",
+        "gplearn_symbolic_alpha": "gpl",
+        "custom": "cus",
+    }
+    return mp.get(str(framework).strip().lower(), "unk")
+
+
+def _extract_spec_material_columns(spec: object) -> List[str]:
+    if spec is None or not hasattr(spec, "to_dict"):
+        return []
+    try:
+        payload = spec.to_dict()
+    except Exception:
+        return []
+    if not isinstance(payload, dict):
+        return []
+
+    cols: List[str] = []
+    for k, v in payload.items():
+        key = str(k).strip().lower()
+        if key == "feature_cols" and isinstance(v, list):
+            cols.extend([str(x).strip() for x in v if str(x).strip()])
+            continue
+        if key.endswith("_field") or key in {"x_field", "y_field", "a_field", "b_field", "mask_field"}:
+            s = str(v).strip()
+            if s:
+                cols.append(s)
+            continue
+        if key == "expression":
+            tokens = re.findall(r"[A-Za-z_][A-Za-z0-9_]*", str(v))
+            cols.extend(tokens)
+    return sorted(set([x for x in cols if x]))
+
+
+def _infer_mined_factor_type(
+    *,
+    framework: str,
+    material_columns: Sequence[str],
+) -> str:
+    counts = {
+        "price_volume": 0,
+        "fundamental": 0,
+        "text": 0,
+        "fusion": 0,
+    }
+
+    for col in material_columns:
+        c = str(col).strip().lower()
+        if not c:
+            continue
+        if c.startswith(("fd_", "fdsrc_", "fund_")):
+            counts["fundamental"] += 1
+            continue
+        if c.startswith("txt_"):
+            counts["text"] += 1
+            continue
+        if c.startswith(("hf_", "bridge_", "ms_", "context_", "mkt_")):
+            counts["fusion"] += 1
+            continue
+        if c.startswith(
+            (
+                "ret_",
+                "rv_",
+                "ma_",
+                "amount_",
+                "vol_",
+                "range_",
+                "close",
+                "open",
+                "high",
+                "low",
+                "volume",
+                "turn",
+                "amihud",
+                "signed_",
+                "intraday_",
+                "period_",
+            )
+        ):
+            counts["price_volume"] += 1
+
+    non_zero = [k for k, v in counts.items() if int(v) > 0]
+    if len(non_zero) >= 2:
+        return "fusion"
+    if len(non_zero) == 1:
+        return non_zero[0]
+
+    fw = str(framework).strip().lower()
+    if fw == "fundamental_multiobj":
+        return "fundamental"
+    if fw in {"minute_parametric", "minute_parametric_plus"}:
+        return "price_volume"
+    if fw == "custom":
+        return "custom"
+    return "other"
+
+
+def _mined_factor_packages(
+    *,
+    factor_type: str,
+    framework: str,
+    factor_freq: str,
+    universe: str,
+    material_packages_expr: str,
+    has_explicit_factor_list: bool,
+) -> List[str]:
+    ftype = str(factor_type).strip().lower()
+    primary = f"mined_{ftype}" if ftype else "mined_other"
+    out = [
+        "mined",
+        primary,
+        f"mined_fw_{_framework_alias(framework)}",
+        f"mined_freq_{_norm_tag(factor_freq, max_len=12)}",
+        f"mined_universe_{_norm_tag(universe, max_len=16)}",
+    ]
+    for p in [x.strip() for x in str(material_packages_expr).split(",") if x.strip()]:
+        out.append(f"mined_materialpkg_{_norm_tag(p)}")
+    if has_explicit_factor_list:
+        out.append("mined_materiallist_explicit")
+    if str(framework).strip().lower() == "custom":
+        out.append("mined_custom")
+    dedup: List[str] = []
+    seen: set[str] = set()
+    for x in out:
+        sx = str(x).strip()
+        if not sx or sx in seen:
+            continue
+        seen.add(sx)
+        dedup.append(sx)
+    return dedup
+
+
+def _build_mined_factor_name(
+    *,
+    framework: str,
+    factor_type: str,
+    factor_freq: str,
+    universe: str,
+    payload: Dict[str, object],
+) -> str:
+    freq_tag = _norm_tag(str(factor_freq).replace("min", "m"), max_len=10)
+    uni_tag = _norm_tag(universe, max_len=10)
+    type_tag = _norm_tag(factor_type, max_len=12)
+    fw_tag = _framework_alias(framework)
+    sig = _hash_name("sig", payload, length=10).split("_", 1)[1]
+    return f"mf_{fw_tag}_{type_tag}_{freq_tag}_{uni_tag}_{sig}"
 
 
 def _safe_obj(vals: Iterable[float]) -> np.ndarray:
@@ -885,6 +1050,7 @@ def run_factor_mining(
         "素材池配置："
         f"include_default_factor_materials={int(bool(cfg.include_default_factor_materials))}, "
         f"factor_packages='{cfg.factor_packages}', "
+        f"factor_list='{cfg.factor_list}', "
         f"material_factor_count={int(cfg.material_factor_count)}。",
         module="mining",
         level="debug",
@@ -1176,21 +1342,32 @@ def run_factor_mining(
         spec = cand["spec"]
         sign_ref = float(cand["metrics_valid"].get("rank_ic_mean", float("nan")))
         score_sign = -1.0 if np.isfinite(sign_ref) and sign_ref < 0.0 else 1.0
+        spec_payload = spec.to_dict() if hasattr(spec, "to_dict") else {}
+        material_cols = _extract_spec_material_columns(spec)
+        factor_type = _infer_mined_factor_type(
+            framework=framework,
+            material_columns=material_cols,
+        )
+        packages = _mined_factor_packages(
+            factor_type=factor_type,
+            framework=framework,
+            factor_freq=cfg.factor_freq,
+            universe=cfg.universe,
+            material_packages_expr=cfg.factor_packages,
+            has_explicit_factor_list=bool(str(cfg.factor_list).strip()),
+        )
+        primary_package = packages[1] if len(packages) > 1 else (packages[0] if packages else "mined_other")
 
         if framework == "custom":
             fac_name = str(spec.name)
-        elif framework == "fundamental_multiobj":
-            fac_name = _hash_name("fund_mo", spec.to_dict())
-        elif framework == "minute_parametric":
-            fac_name = _hash_name("min_mo", spec.to_dict())
-        elif framework == "minute_parametric_plus":
-            fac_name = _hash_name("minx_mo", spec.to_dict())
-        elif framework == "ml_ensemble_alpha":
-            fac_name = _hash_name("mla_mo", spec.to_dict())
-        elif framework == "gplearn_symbolic_alpha":
-            fac_name = _hash_name("gpl_mo", spec.to_dict())
         else:
-            fac_name = _hash_name("min_mo", spec.to_dict())
+            fac_name = _build_mined_factor_name(
+                framework=framework,
+                factor_type=factor_type,
+                factor_freq=cfg.factor_freq,
+                universe=cfg.universe,
+                payload=spec_payload if isinstance(spec_payload, dict) else {},
+            )
 
         s = _series_getter(cand)
         fac_df = s.rename(fac_name).reset_index()
@@ -1200,13 +1377,21 @@ def run_factor_mining(
             {
                 "name": fac_name,
                 "freq": cfg.factor_freq,
-                "category": "mined_factor" if framework != "custom" else "custom_factor",
+                "category": primary_package,
+                "factor_package": primary_package,
+                "factor_packages": ",".join(packages),
                 "description": (
                     f"{framework} admitted factor #{i}; "
                     f"profile={cand['admission'].get('profile', '')}"
                 ),
                 "source": "custom" if framework == "custom" else "mined",
                 "framework": framework,
+                "mined_factor_type": factor_type,
+                "mined_universe": str(cfg.universe),
+                "mined_freq": str(cfg.factor_freq),
+                "material_factor_packages": str(cfg.factor_packages),
+                "material_factor_list": str(cfg.factor_list),
+                "material_factor_count": int(cfg.material_factor_count),
                 "status": "active",
                 "table_path": "",
                 "value_col": fac_name,
@@ -1214,7 +1399,8 @@ def run_factor_mining(
                 "metrics_train": cand["metrics_train"],
                 "metrics_valid": cand["metrics_valid"],
                 "admission": cand["admission"],
-                "formula": spec.to_dict(),
+                "formula": spec_payload,
+                "material_columns": material_cols,
                 "created_at": pd.Timestamp.now(tz="Asia/Shanghai").isoformat(),
             }
         )
@@ -1240,9 +1426,12 @@ def run_factor_mining(
     summary = {
         "framework": framework,
         "factor_freq": cfg.factor_freq,
+        "universe": str(cfg.universe),
         "include_default_factor_materials": bool(cfg.include_default_factor_materials),
         "factor_packages": str(cfg.factor_packages),
+        "factor_list": str(cfg.factor_list),
         "material_factor_count": int(cfg.material_factor_count),
+        "material_factor_names": [str(x) for x in (cfg.material_factor_names or [])],
         "index_context_cols": list(cfg.index_context_cols or []),
         "train_period": [str(pd.Timestamp(cfg.train_start).date()), str(pd.Timestamp(cfg.train_end).date())],
         "valid_period": [str(pd.Timestamp(cfg.valid_start).date()), str(pd.Timestamp(cfg.valid_end).date())],
@@ -1261,10 +1450,19 @@ def run_factor_mining(
         "catalog_path": str(catalog_path),
         "factor_table_path": str(data_path),
         "selected_factors": [e["name"] for e in catalog_entries],
+        "selected_factor_packages": sorted(
+            set(
+                str(x).strip()
+                for e in catalog_entries
+                for x in str(e.get("factor_packages", "")).split(",")
+                if str(x).strip()
+            )
+        ),
         "admission_profile": standard.profile,
         "top_candidates": [
             {
                 "name": catalog_entries[i]["name"] if i < len(catalog_entries) else "",
+                "factor_package": catalog_entries[i].get("factor_package", "") if i < len(catalog_entries) else "",
                 "score": float(selected[i]["score"]),
                 "passed": bool(selected[i]["passed"]),
                 "metrics_valid": selected[i]["metrics_valid"],

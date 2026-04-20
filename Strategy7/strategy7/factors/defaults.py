@@ -1504,6 +1504,13 @@ _PACKAGE_PRIMARY_PRIORITY: List[str] = [
     "fund_efficiency",
     "fund_expectation",
     "fund_hf_fusion",
+    "mined_price_volume",
+    "mined_fundamental",
+    "mined_text",
+    "mined_fusion",
+    "mined_other",
+    "mined_custom",
+    "catalog_custom",
 ]
 
 
@@ -1520,6 +1527,8 @@ def _fallback_package_from_category(category: str) -> str:
     c = str(category or "").strip()
     if not c:
         return "other_custom"
+    if c.startswith("mined_") or c.startswith("catalog_"):
+        return c
     if c.startswith("fundamental_"):
         suffix = c[len("fundamental_") :]
         return f"fund_{suffix}"
