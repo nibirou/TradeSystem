@@ -32,14 +32,17 @@ from ..data.sources import DataSourceRegistry, TableFileSource, load_custom_sour
 from ..factors.base import (
     FactorLibrary,
     compute_factor_panel,
+    enrich_factor_metadata_for_display,
     load_custom_factor_module,
     register_passthrough_panel_factors,
     resolve_selected_factors,
 )
 from ..factors.defaults import (
     DEFAULT_FACTOR_PACKS_BY_FREQ,
+    build_factor_package_index,
     list_default_factor_packages,
     register_default_factors,
+    resolve_primary_factor_package,
     resolve_default_factor_set,
 )
 from ..factors.labeling import add_labels, pick_target_column, split_train_test, validate_label_frequency_alignment
@@ -59,6 +62,223 @@ def _safe_trade_dates_from_panel(panel: pd.DataFrame, factor_freq: str) -> pd.Da
     if "date" in panel.columns:
         return pd.DatetimeIndex(pd.to_datetime(panel["date"], errors="coerce").dropna().unique()).sort_values()
     return pd.DatetimeIndex([])
+
+
+def _summarize_factor_categories(meta_df: pd.DataFrame) -> Dict[str, Dict[str, int]]:
+    """Build factor-package count summary for list-factors output."""
+    group_col = "factor_package" if "factor_package" in meta_df.columns else "category"
+    if meta_df.empty or group_col not in meta_df.columns:
+        return {"all": {}, "price_volume": {}, "fundamental": {}, "text": {}}
+
+    counts = (
+        meta_df.groupby(group_col)
+        .size()
+        .sort_values(ascending=False)
+        .astype(int)
+    )
+    all_counts = {str(k): int(v) for k, v in counts.items()}
+    fund_counts = {k: v for k, v in all_counts.items() if str(k).startswith("fund_") or str(k).startswith("fundamental_")}
+    text_counts = {k: v for k, v in all_counts.items() if str(k).startswith("text_")}
+    pv_counts = {
+        k: v
+        for k, v in all_counts.items()
+        if not (
+            str(k).startswith("fund_")
+            or str(k).startswith("fundamental_")
+            or str(k).startswith("text_")
+        )
+    }
+    return {
+        "all": all_counts,
+        "price_volume": pv_counts,
+        "fundamental": fund_counts,
+        "text": text_counts,
+    }
+
+
+def _print_factor_category_summary(meta_df: pd.DataFrame) -> Dict[str, Dict[str, int]]:
+    summary = _summarize_factor_categories(meta_df)
+    pv_counts = summary["price_volume"]
+    fund_counts = summary["fundamental"]
+    text_counts = summary["text"]
+
+    print("\n=== Factor Package Summary ===")
+    if pv_counts:
+        print("[Price-Volume / Non-Fundamental Packages]")
+        print(pd.Series(pv_counts, dtype=int).sort_values(ascending=False).to_string())
+    else:
+        print("[Price-Volume / Non-Fundamental Packages]\n(none)")
+
+    if fund_counts:
+        print("\n[Fundamental Packages]")
+        print(pd.Series(fund_counts, dtype=int).sort_values(ascending=False).to_string())
+    else:
+        print("\n[Fundamental Packages]\n(none)")
+    if text_counts:
+        print("\n[Text Packages]")
+        print(pd.Series(text_counts, dtype=int).sort_values(ascending=False).to_string())
+    else:
+        print("\n[Text Packages]\n(none)")
+    return summary
+
+
+def _attach_factor_package_columns(meta_df: pd.DataFrame, freq: str) -> pd.DataFrame:
+    if meta_df.empty or "factor" not in meta_df.columns:
+        out = meta_df.copy()
+        out["factor_package"] = pd.Series(dtype=str)
+        out["factor_packages"] = pd.Series(dtype=str)
+        return out
+
+    out = meta_df.copy()
+    package_index = build_factor_package_index(freq=str(freq))
+    categories = out["category"].astype(str).tolist() if "category" in out.columns else [""] * len(out)
+    primary_packages: List[str] = []
+    all_packages: List[str] = []
+    for fac, cat in zip(out["factor"].astype(str).tolist(), categories):
+        pri, members = resolve_primary_factor_package(
+            freq=str(freq),
+            factor=fac,
+            category=cat,
+            package_index=package_index,
+        )
+        primary_packages.append(str(pri))
+        all_packages.append(",".join([str(x) for x in members]))
+    out["factor_package"] = primary_packages
+    out["factor_packages"] = all_packages
+    return out
+
+
+def _markdown_escape(value: object) -> str:
+    s = str(value)
+    return s.replace("|", "\\|").replace("\n", "<br>").replace("\r", "")
+
+
+def _to_markdown_table(df: pd.DataFrame) -> str:
+    if df.empty:
+        return "(empty)\n"
+    cols = [str(c) for c in df.columns]
+    header = "| " + " | ".join(cols) + " |"
+    sep = "| " + " | ".join(["---"] * len(cols)) + " |"
+    lines = [header, sep]
+    for row in df.itertuples(index=False):
+        vals = [_markdown_escape(v) for v in row]
+        lines.append("| " + " | ".join(vals) + " |")
+    return "\n".join(lines) + "\n"
+
+
+def _export_factor_list_file(
+    *,
+    meta_df_view: pd.DataFrame,
+    cfg: RunConfig,
+    package_summary: Dict[str, Dict[str, int]],
+    fund_coverage: Dict[str, object],
+) -> Path:
+    fmt = str(getattr(cfg.factors, "factor_list_export_format", "csv")).strip().lower()
+    if fmt not in {"csv", "json", "markdown"}:
+        raise ValueError(f"unsupported factor list export format: {fmt}")
+
+    path_cfg = getattr(cfg.factors, "factor_list_export_path", None)
+    if path_cfg:
+        out_path = Path(str(path_cfg)).expanduser()
+    else:
+        export_dir = ensure_dir(cfg.output_dir / "factor_lists")
+        ts = pd.Timestamp.now(tz="Asia/Shanghai").strftime("%Y%m%d_%H%M%S")
+        ext = {"csv": "csv", "json": "json", "markdown": "md"}[fmt]
+        out_path = export_dir / f"factor_list_{cfg.factors.factor_freq}_{ts}.{ext}"
+    ensure_dir(out_path.parent)
+
+    if fmt == "csv":
+        meta_df_view.to_csv(out_path, index=False, encoding="utf-8-sig")
+        return out_path
+
+    if fmt == "json":
+        dump_json(
+            out_path,
+            {
+                "factor_freq": str(cfg.factors.factor_freq),
+                "factor_count": int(len(meta_df_view)),
+                "fundamental_coverage": fund_coverage,
+                "factor_package_summary": package_summary,
+                "items": meta_df_view.to_dict(orient="records"),
+            },
+        )
+        return out_path
+
+    # markdown
+    md = []
+    md.append(f"# Factor List ({cfg.factors.factor_freq})")
+    md.append("")
+    md.append(
+        f"- factor_count: {int(len(meta_df_view))}\n"
+        f"- fundamental_expected: {int(fund_coverage.get('expected', 0))}\n"
+        f"- fundamental_listed: {int(fund_coverage.get('listed', 0))}\n"
+        f"- fundamental_missing: {int(len(fund_coverage.get('missing', [])))}"
+    )
+    md.append("")
+    md.append("## Factor Package Summary (Raw)")
+    md.append("")
+    raw_df = pd.DataFrame(
+        [{"factor_package": k, "count": int(v)} for k, v in package_summary.get("all", {}).items()]
+    )
+    raw_df = raw_df.sort_values("count", ascending=False).reset_index(drop=True) if not raw_df.empty else raw_df
+    md.append(_to_markdown_table(raw_df))
+    md.append("## Factor Table")
+    md.append("")
+    md.append(_to_markdown_table(meta_df_view))
+    out_path.write_text("\n".join(md), encoding="utf-8")
+    return out_path
+
+
+def _expected_fundamental_factor_names(freq: str) -> List[str]:
+    packs = DEFAULT_FACTOR_PACKS_BY_FREQ.get(str(freq), {})
+    names: List[str] = []
+    for pack, factors in packs.items():
+        if str(pack).startswith("fund_"):
+            names.extend([str(x) for x in factors])
+    return sorted(set(names))
+
+
+def _ensure_fundamental_factor_coverage(
+    *,
+    meta_df: pd.DataFrame,
+    factor_lib: FactorLibrary,
+    freq: str,
+) -> tuple[pd.DataFrame, Dict[str, object]]:
+    """Ensure list-factors metadata includes all default fundamental factors for the target freq."""
+    expected = _expected_fundamental_factor_names(freq)
+    if not expected:
+        return meta_df, {"expected": 0, "listed": 0, "missing": []}
+
+    listed_df = meta_df[meta_df["category"].astype(str).str.startswith("fundamental_")] if not meta_df.empty else pd.DataFrame()
+    listed = set(listed_df.get("factor", pd.Series(dtype=str)).astype(str).tolist())
+    missing = [x for x in expected if x not in listed]
+
+    # Safety net: if metadata somehow misses registered factors, append from registry.
+    if missing:
+        rows: List[Dict[str, object]] = []
+        for fac in missing:
+            if not factor_lib.has(freq, fac):
+                continue
+            fd = factor_lib.get(freq, fac)
+            rows.append(
+                {
+                    "factor": fd.name,
+                    "freq": fd.freq,
+                    "category": fd.category,
+                    "description": fd.description,
+                }
+            )
+        if rows:
+            meta_df = pd.concat([meta_df, pd.DataFrame(rows)], ignore_index=True)
+            meta_df = (
+                meta_df.drop_duplicates(subset=["freq", "factor"], keep="first")
+                .sort_values(["freq", "factor"])
+                .reset_index(drop=True)
+            )
+            listed = set(meta_df[meta_df["category"].astype(str).str.startswith("fundamental_")]["factor"].astype(str).tolist())
+            missing = [x for x in expected if x not in listed]
+
+    return meta_df, {"expected": len(expected), "listed": len(listed), "missing": missing}
 
 
 def _build_external_source_registry(cfg: RunConfig) -> DataSourceRegistry:
@@ -110,15 +330,86 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
                 f"default_selected_count={len(selected_default)}",
                 module="pipeline",
             )
-        print(factor_lib.metadata(freq=cfg.factors.factor_freq).to_string(index=False))
+        meta_df = factor_lib.metadata(freq=cfg.factors.factor_freq)
+        meta_df, fund_coverage = _ensure_fundamental_factor_coverage(
+            meta_df=meta_df,
+            factor_lib=factor_lib,
+            freq=cfg.factors.factor_freq,
+        )
+        meta_df = _attach_factor_package_columns(meta_df, freq=cfg.factors.factor_freq)
+        meta_df_view = enrich_factor_metadata_for_display(meta_df)
+        if "category" in meta_df_view.columns:
+            meta_df_view = meta_df_view.drop(columns=["category"])
+        for c in ["category_l1", "category_l1_cn"]:
+            if c in meta_df_view.columns:
+                meta_df_view = meta_df_view.drop(columns=[c])
+        preferred_cols = [
+            "factor",
+            "freq",
+            "factor_package",
+            "factor_packages",
+            "name_cn",
+            "meaning_cn",
+            "formula_cn",
+            "description",
+        ]
+        ordered_cols = [c for c in preferred_cols if c in meta_df_view.columns] + [c for c in meta_df_view.columns if c not in preferred_cols]
+        meta_df_view = meta_df_view[ordered_cols]
+        print(meta_df_view.to_string(index=False))
+        print(
+            "\n=== Fundamental Factor Coverage ===\n"
+            f"expected={fund_coverage['expected']}, "
+            f"listed={fund_coverage['listed']}, "
+            f"missing={len(fund_coverage['missing'])}"
+        )
+        if fund_coverage["missing"]:
+            print("missing factors:")
+            print(pd.Series(fund_coverage["missing"], dtype=str).to_string(index=False))
+        package_summary = _print_factor_category_summary(meta_df)
+        pv_total = int(sum(package_summary["price_volume"].values()))
+        fund_total = int(sum(package_summary["fundamental"].values()))
+        text_total = int(sum(package_summary["text"].values()))
+        export_path: Path | None = None
+        if bool(getattr(cfg.factors, "export_factor_list", False)):
+            export_path = _export_factor_list_file(
+                meta_df_view=meta_df_view,
+                cfg=cfg,
+                package_summary=package_summary,
+                fund_coverage=fund_coverage,
+            )
+            log_progress(f"因子清单导出完成：format={cfg.factors.factor_list_export_format}, path={export_path}", module="pipeline")
         log_progress(
-            f"因子清单输出完成：freq={cfg.factors.factor_freq}, catalog_factor_count={catalog_count}。",
+            (
+                f"因子清单输出完成：freq={cfg.factors.factor_freq}, "
+                f"total_factor_count={len(meta_df)}, "
+                f"price_volume_factor_count={pv_total}, "
+                f"fundamental_factor_count={fund_total}, "
+                f"text_factor_count={text_total}, "
+                f"fundamental_expected_count={fund_coverage['expected']}, "
+                f"fundamental_missing_count={len(fund_coverage['missing'])}, "
+                f"factor_package_count={len(package_summary['all'])}, "
+                f"catalog_factor_count={catalog_count}。"
+            ),
             module="pipeline",
         )
         return {
             "status": "listed_factors_only",
             "factor_freq": cfg.factors.factor_freq,
             "catalog_factor_count": catalog_count,
+            "total_factor_count": int(len(meta_df)),
+            "price_volume_factor_count": pv_total,
+            "fundamental_factor_count": fund_total,
+            "text_factor_count": text_total,
+            "fundamental_expected_count": int(fund_coverage["expected"]),
+            "fundamental_missing_count": int(len(fund_coverage["missing"])),
+            "fundamental_missing_factors": list(fund_coverage["missing"]),
+            "factor_package_counts": package_summary["all"],
+            "price_volume_package_counts": package_summary["price_volume"],
+            "fundamental_package_counts": package_summary["fundamental"],
+            "text_package_counts": package_summary["text"],
+            "factor_list_export_format": str(getattr(cfg.factors, "factor_list_export_format", "csv")),
+            "factor_list_export_path": str(export_path) if export_path is not None else "",
+            "factor_list_exported": bool(export_path is not None),
         }
 
     output_dir = ensure_dir(cfg.output_dir)

@@ -9,7 +9,13 @@ from pathlib import Path
 import pandas as pd
 
 from strategy7.config import (
+    DEFAULT_FUNDAMENTAL_ROOT_AK,
+    DEFAULT_FUNDAMENTAL_ROOT_BSQ,
     DEFAULT_INDEX_ROOT,
+    DEFAULT_TEXT_ROOT_NEWS,
+    DEFAULT_TEXT_ROOT_NOTICE,
+    DEFAULT_TEXT_ROOT_REPORT_EM,
+    DEFAULT_TEXT_ROOT_REPORT_IWENCAI,
     DEFAULT_UNIVERSE,
     UNIVERSE_CHOICES,
     DataConfig,
@@ -134,6 +140,66 @@ def _parse_args() -> argparse.Namespace:
         ),
     )
     g_data.add_argument(
+        "--fundamental-root-ak",
+        type=str,
+        default=DEFAULT_FUNDAMENTAL_ROOT_AK,
+        help="AK 基本面数据根目录（financial_indicator_em / financial_indicator_sina / financial_abstract_sina）",
+    )
+    g_data.add_argument(
+        "--fundamental-root-bsq",
+        type=str,
+        default=DEFAULT_FUNDAMENTAL_ROOT_BSQ,
+        help="Baostock 季频财务数据根目录（balance/cash_flow/growth/profit 等）",
+    )
+    g_data.add_argument(
+        "--fundamental-file-format",
+        type=str,
+        choices=["auto", "csv", "parquet"],
+        default="auto",
+        help="基本面文件格式：auto 自动识别，或强制 csv/parquet",
+    )
+    g_data.add_argument(
+        "--disable-fundamental-data",
+        action="store_true",
+        help="禁用基本面/财务数据加载（仅使用量价数据）",
+    )
+    g_data.add_argument(
+        "--text-root-news",
+        type=str,
+        default=DEFAULT_TEXT_ROOT_NEWS,
+        help="金融文本-新闻数据根目录（data_em_news）",
+    )
+    g_data.add_argument(
+        "--text-root-notice",
+        type=str,
+        default=DEFAULT_TEXT_ROOT_NOTICE,
+        help="金融文本-公告数据根目录（data_em_notices）",
+    )
+    g_data.add_argument(
+        "--text-root-report-em",
+        type=str,
+        default=DEFAULT_TEXT_ROOT_REPORT_EM,
+        help="金融文本-东财研报数据根目录（data_em_reports）",
+    )
+    g_data.add_argument(
+        "--text-root-report-iwencai",
+        type=str,
+        default=DEFAULT_TEXT_ROOT_REPORT_IWENCAI,
+        help="金融文本-问财研报数据根目录（data_iwencai_reports）",
+    )
+    g_data.add_argument(
+        "--text-file-format",
+        type=str,
+        choices=["auto", "csv", "parquet"],
+        default="auto",
+        help="金融文本文件格式：auto 自动识别，或强制 csv/parquet",
+    )
+    g_data.add_argument(
+        "--disable-text-data",
+        action="store_true",
+        help="禁用金融文本数据加载（仅保留量价+基本面）",
+    )
+    g_data.add_argument(
         "--index-root",
         type=str,
         default=DEFAULT_INDEX_ROOT,
@@ -177,7 +243,15 @@ def _parse_args() -> argparse.Namespace:
         "--factor-packages",
         type=str,
         default="",
-        help="默认因子库素材包过滤（逗号分隔；空=该频率全部默认包）",
+        help=(
+            "默认因子库素材包过滤（逗号分隔；空=该频率全部默认包）。"
+            "可选：trend,reversal,liquidity,volatility,structure,context,"
+            "flow,crowding,price_action,intraday_signature,intraday_micro,period_signature,oscillator,overnight,"
+            "multi_freq,bridge,multiscale,"
+            "text_sentiment,text_attention,text_event,text_topic,text_fusion,"
+            "fund_growth,fund_valuation,fund_profitability,fund_quality,fund_leverage,fund_cashflow,"
+            "fund_efficiency,fund_expectation,fund_hf_fusion,all"
+        ),
     )
     g_date.add_argument(
         "--disable-default-factor-materials",
@@ -402,6 +476,16 @@ def main() -> None:
         data_root=data_root,
         universe=universe,
         stock_list_path=stock_list_path,
+        fundamental_root_ak=str(Path(args.fundamental_root_ak).expanduser()),
+        fundamental_root_bsq=str(Path(args.fundamental_root_bsq).expanduser()),
+        fundamental_file_format=str(args.fundamental_file_format),
+        enable_fundamental_data=not bool(args.disable_fundamental_data),
+        text_root_news=str(Path(args.text_root_news).expanduser()),
+        text_root_notice=str(Path(args.text_root_notice).expanduser()),
+        text_root_report_em=str(Path(args.text_root_report_em).expanduser()),
+        text_root_report_iwencai=str(Path(args.text_root_report_iwencai).expanduser()),
+        text_file_format=str(args.text_file_format),
+        enable_text_data=not bool(args.disable_text_data),
         index_root=str(Path(args.index_root).expanduser()),
         file_format=str(args.file_format),
         max_files=args.max_files,

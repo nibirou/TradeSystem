@@ -63,6 +63,9 @@ def main() -> None:
         if k in outputs:
             print(f"{k:24s}: {outputs[k]}")
 
+    if bool(summary.get("factor_list_exported", False)):
+        print(f"{'factor_list_export':24s}: {summary.get('factor_list_export_path', '')}")
+
     save_models_enabled = bool(outputs.get("save_models_enabled", False))
     model_files = outputs.get("model_files", {}) or {}
     # 第七步：给出模型落盘状态（是否保存成功）。

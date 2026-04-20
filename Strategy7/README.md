@@ -62,6 +62,32 @@ python Strategy7/run_strategy7.py --universe all
 python Strategy7/run_strategy7.py --universe all --stock-list-path D:/PythonProject/Quant/data_baostock/metadata/your_custom_pool.csv
 ```
 
+基本面数据接入（AK + Baostock）：
+
+```bash
+python Strategy7/run_strategy7.py \
+  --universe all \
+  --stock-list-path D:/PythonProject/Quant/data_baostock/metadata/your_custom_pool.csv \
+  --fundamental-root-ak D:/PythonProject/Quant/data_baostock/ak_fundamental \
+  --fundamental-root-bsq D:/PythonProject/Quant/data_baostock/baostock_fundamental_q
+```
+
+可选基本面因子包（`--factor-packages`）：`fund_growth/fund_valuation/fund_profitability/fund_quality/fund_leverage/fund_cashflow/fund_efficiency/fund_expectation/fund_hf_fusion`。
+
+金融文本数据接入（新闻/公告/研报）：
+
+```bash
+python Strategy7/run_strategy7.py \
+  --universe all \
+  --stock-list-path D:/PythonProject/Quant/data_baostock/metadata/your_custom_pool.csv \
+  --text-root-news D:/PythonProject/Quant/data_baostock/data_em_news \
+  --text-root-notice D:/PythonProject/Quant/data_baostock/data_em_notices \
+  --text-root-report-em D:/PythonProject/Quant/data_baostock/data_em_reports \
+  --text-root-report-iwencai D:/PythonProject/Quant/data_baostock/data_iwencai_reports
+```
+
+可选文本因子包（`--factor-packages`）：`text_sentiment/text_attention/text_event/text_topic/text_fusion`。
+
 ## 文档
 
 1. [完整使用指南](./docs/usage_guide.md)

@@ -212,6 +212,209 @@ BRIDGE_MULTISCALE_FACTORS: List[str] = [
     "hf_fast_slow_noise_diff",
 ]
 
+DAILY_FLOW_FACTORS: List[str] = [
+    "ret_vol_corr_20",
+    "volume_price_confirmation_20",
+    "turnover_pressure_reversal",
+]
+
+GENERIC_FLOW_FACTORS: List[str] = [
+    "vol_chg_1",
+    "flow_momentum_sync",
+    "vol_flow_dislocation",
+]
+
+DAILY_CROWDING_FACTORS: List[str] = [
+    "crowding_unwind_daily",
+]
+
+GENERIC_CROWDING_FACTORS: List[str] = [
+    "crowding_proxy_raw",
+    "crowding_unwind",
+]
+
+DAILY_PRICE_ACTION_FACTORS: List[str] = [
+    "body_ratio",
+    "close_pos",
+    "candle_imbalance_alpha",
+]
+
+GENERIC_PRICE_ACTION_FACTORS: List[str] = [
+    "range_break_signal",
+]
+
+DAILY_INTRADAY_MICRO_FACTORS: List[str] = [
+    "close_to_vwap_day",
+    "morning_momentum_30m",
+    "last30_momentum",
+    "vwap30_vs_day",
+    "minute_realized_vol_5m",
+    "minute_up_ratio_5m",
+    "minute_ret_skew_5m",
+    "minute_ret_kurt_5m",
+    "signed_vol_imbalance_5m",
+    "jump_ratio_5m",
+    "open_to_close_intraday",
+    "opening_drive_vs_close",
+    "vwap_reversion_day",
+    "intraday_sentiment_divergence",
+    "jump_risk_discount",
+    "skew_carry_intraday",
+    "micro_macro_conflict",
+]
+
+DAILY_OVERNIGHT_FACTORS: List[str] = [
+    "overnight_gap",
+    "overnight_intraday_rotation",
+]
+
+DAILY_OSCILLATOR_FACTORS: List[str] = [
+    "rsi14",
+]
+
+DAILY_MULTI_FREQ_EXTRA_FACTORS: List[str] = [
+    "hf_ultra_noise_5m_day",
+    "hf_fast_slow_liquidity_diff_day",
+    "hf_fast_slow_trend_diff_day",
+]
+
+FUNDAMENTAL_PACK_TO_CATEGORY: Dict[str, str] = {
+    "fund_growth": "growth",
+    "fund_valuation": "valuation",
+    "fund_profitability": "profitability",
+    "fund_quality": "quality",
+    "fund_leverage": "leverage",
+    "fund_cashflow": "cashflow",
+    "fund_efficiency": "efficiency",
+    "fund_expectation": "expectation",
+}
+
+FUND_HF_METRICS: List[str] = ["flow", "jump", "intraday", "vwap", "sentiment"]
+
+
+def _fundamental_raw_count(freq: str) -> int:
+    return 12 if str(freq) in {"D", "W", "M"} else 5
+
+
+def _fundamental_cols_for_category(freq: str, cat: str) -> List[str]:
+    raw_n = _fundamental_raw_count(freq)
+    cols = [f"fd_{cat}_raw_{i:02d}" for i in range(1, raw_n + 1)]
+    cols.extend([f"fd_{cat}_score", f"fd_{cat}_trend", f"fd_{cat}_disp"])
+    if str(freq) in INTRADAY_FREQS:
+        cols.extend([f"fd_hf_{cat}_{m}" for m in FUND_HF_METRICS])
+    return _uniq(cols)
+
+
+def _fundamental_hf_fusion_cols(freq: str) -> List[str]:
+    cols: List[str] = []
+    for cat in FUNDAMENTAL_PACK_TO_CATEGORY.values():
+        cols.extend([f"fd_hf_{cat}_{m}" for m in FUND_HF_METRICS])
+    cols.extend(["fd_hf_fusion_score", "fd_hf_fusion_disp"])
+    # Add some explicit bridge columns so this pack can combine valuation/fundamental
+    # context with intraday micro-structure aggregation.
+    cols.extend(
+        [
+            _hf_name("5min", str(freq), "mean", "ret_1"),
+            _hf_name("5min", str(freq), "std", "ret_1"),
+            _hf_name("5min", str(freq), "mean", "amount_ratio_12"),
+            _hf_name("120min", str(freq), "last", "ret_3"),
+            _hf_name("120min", str(freq), "mean", "amount_ratio_12"),
+            "hf_fast_slow_trend_diff",
+            "hf_fast_slow_liquidity_diff",
+            "hf_fast_slow_noise_diff",
+        ]
+    )
+    return _uniq(cols)
+
+
+TEXT_PACKAGES: Sequence[str] = (
+    "text_sentiment",
+    "text_attention",
+    "text_event",
+    "text_topic",
+    "text_fusion",
+)
+
+
+def _text_cols_for_package(freq: str, package: str) -> List[str]:
+    # Text features are derived from daily panels and then broadcast to non-daily
+    # views as daily context fields, so the same feature namespace is valid for
+    # all frequencies.
+    _ = str(freq)
+    p = str(package)
+    mapping: Dict[str, List[str]] = {
+        "text_sentiment": [
+            "txt_sentiment_mean",
+            "txt_sentiment_std",
+            "txt_pos_share",
+            "txt_neg_share",
+            "txt_sent_5",
+            "txt_sent_20",
+            "txt_sent_trend_5",
+            "txt_sent_vol_20",
+            "txt_novelty_mean",
+            "txt_novelty_20",
+        ],
+        "text_attention": [
+            "txt_event_count",
+            "txt_source_coverage",
+            "txt_attention_mean",
+            "txt_attention_5",
+            "txt_attention_20",
+            "txt_attention_shock",
+            "txt_count_5",
+            "txt_count_20",
+            "txt_news_burst",
+            "txt_notice_burst",
+            "txt_em_report_burst",
+            "txt_iwencai_burst",
+        ],
+        "text_event": [
+            "txt_risk_mean",
+            "txt_uncertainty_mean",
+            "txt_action_mean",
+            "txt_risk_5",
+            "txt_risk_20",
+            "txt_uncertainty_5",
+            "txt_uncertainty_20",
+            "txt_news_count",
+            "txt_notice_count",
+            "txt_em_report_count",
+            "txt_iwencai_count",
+            "txt_rating_delta_mean",
+        ],
+        "text_topic": [
+            "txt_topic_earnings",
+            "txt_topic_policy",
+            "txt_topic_mna",
+            "txt_topic_risk",
+            "txt_topic_operation",
+            "txt_topic_capital",
+            "txt_topic_risk_vs_earnings",
+            "txt_topic_policy_mna_mix",
+            "txt_news_share",
+            "txt_notice_share",
+            "txt_em_report_share",
+            "txt_iwencai_share",
+            "txt_source_dispersion",
+        ],
+        "text_fusion": [
+            "txt_hf_sent_flow",
+            "txt_hf_attention_jump",
+            "txt_hf_risk_vol",
+            "txt_hf_momentum_resonance",
+            "txt_hf_liquidity_pulse",
+            "txt_fd_growth_resonance",
+            "txt_fd_quality_guard",
+            "txt_fd_expectation_spread",
+            "txt_fd_cashflow_conflict",
+            "txt_fd_valuation_contrast",
+            "txt_fusion_score",
+            "txt_fusion_disp",
+        ],
+    }
+    return _uniq(mapping.get(p, []))
+
 
 DEFAULT_FACTOR_SET_BY_FREQ: Dict[str, List[str]] = {
     "D": _uniq(DAILY_BASE_FACTORS + DAILY_ALPHA_EXTENSION + BRIDGE_PRIMARY_FACTORS + BRIDGE_MULTISCALE_FACTORS),
@@ -1013,17 +1216,164 @@ def _generated_columns_by_freq(freq: str) -> Dict[str, List[str]]:
     }
 
 
-def _legacy_package_names_for_freq(freq: str) -> List[str]:
+def _core_price_volume_package_raw_names_for_freq(freq: str) -> Dict[str, List[str]]:
     f = str(freq)
     if f == "D":
-        return _uniq(DAILY_BASE_FACTORS + DAILY_ALPHA_EXTENSION + BRIDGE_PRIMARY_FACTORS + BRIDGE_MULTISCALE_FACTORS)
+        return {
+            "trend": [
+                "mom_5",
+                "mom_10",
+                "mom_20",
+                "ma_gap_5",
+                "ma_gap_10",
+                "ma_gap_20",
+                "ma_cross_5_20",
+                "breakout_20",
+                "trend_shock_5_20",
+                "momentum_quality_20",
+                "breakout_strength_20",
+                "trend_vol_regime",
+            ],
+            "reversal": [
+                "rev_1",
+                "rev_3",
+                "amihud_reversal_20",
+            ],
+            "liquidity": [
+                "vol_ratio_5",
+                "vol_ratio_20",
+                "amount_ratio_20",
+                "turn_ratio_5",
+                "amihud_20",
+                "liquidity_regime_switch",
+            ],
+            "volatility": [
+                "intraday_range",
+                "atr_norm_14",
+                "realized_vol_20",
+                "downside_vol_ratio_20",
+                "vol_asymmetry_alpha",
+            ],
+            "flow": DAILY_FLOW_FACTORS,
+            "crowding": DAILY_CROWDING_FACTORS,
+            "price_action": DAILY_PRICE_ACTION_FACTORS,
+            "intraday_micro": DAILY_INTRADAY_MICRO_FACTORS,
+            "oscillator": DAILY_OSCILLATOR_FACTORS,
+            "overnight": DAILY_OVERNIGHT_FACTORS,
+            "multi_freq": DAILY_MULTI_FREQ_EXTRA_FACTORS + BRIDGE_PRIMARY_FACTORS + BRIDGE_MULTISCALE_FACTORS,
+            "context": [
+                "ret_20d",
+                "realized_vol_20",
+                "amihud_20",
+            ],
+        }
+    if f in {"5min", "15min", "30min", "60min", "120min", "W", "M"}:
+        return {
+            "trend": [
+                "ret_1",
+                "ret_3",
+                "ret_6",
+                "ret_12",
+                "ma_gap_6",
+                "ma_gap_12",
+                "ret_spread_1_6",
+                "ret_accel_3_12",
+                "momentum_quality_12",
+                "trend_efficiency_6",
+                "trend_liquidity_combo",
+                "vol_adjusted_gap",
+                "ret_curve_312",
+            ],
+            "reversal": [
+                "reversal_pressure_1",
+            ],
+            "liquidity": [
+                "amount_ratio_12",
+                "liquidity_stress",
+            ],
+            "volatility": [
+                "rv_12",
+                "range_norm",
+            ],
+            "flow": GENERIC_FLOW_FACTORS,
+            "crowding": GENERIC_CROWDING_FACTORS,
+            "price_action": GENERIC_PRICE_ACTION_FACTORS,
+            "intraday_signature": INTRADAY_SIGNATURE_FACTORS if f in INTRADAY_FREQS else [],
+            "intraday_micro": MICRO_5MIN_EXTRA_FACTORS if f == "5min" else [],
+            "period_signature": PERIOD_SIGNATURE_FACTORS if f in {"W", "M"} else [],
+            "multi_freq": BRIDGE_PRIMARY_FACTORS + BRIDGE_MULTISCALE_FACTORS,
+            "context": [
+                "context_trend_20d",
+                "context_quality_20d",
+                "context_liquidity_20d",
+                "context_intraday_mood",
+            ],
+        }
+    return {}
+
+
+def _flow_package_names_for_freq(freq: str) -> List[str]:
+    f = str(freq)
+    if f == "D":
+        return _uniq(DAILY_FLOW_FACTORS)
+    if f in {"5min", "15min", "30min", "60min", "120min", "W", "M"}:
+        return _uniq(GENERIC_FLOW_FACTORS)
+    return []
+
+
+def _crowding_package_names_for_freq(freq: str) -> List[str]:
+    f = str(freq)
+    if f == "D":
+        return _uniq(DAILY_CROWDING_FACTORS)
+    if f in {"5min", "15min", "30min", "60min", "120min", "W", "M"}:
+        return _uniq(GENERIC_CROWDING_FACTORS)
+    return []
+
+
+def _price_action_package_names_for_freq(freq: str) -> List[str]:
+    f = str(freq)
+    if f == "D":
+        return _uniq(DAILY_PRICE_ACTION_FACTORS)
+    if f in {"5min", "15min", "30min", "60min", "120min", "W", "M"}:
+        return _uniq(GENERIC_PRICE_ACTION_FACTORS)
+    return []
+
+
+def _intraday_signature_package_names_for_freq(freq: str) -> List[str]:
+    return _uniq(INTRADAY_SIGNATURE_FACTORS) if str(freq) in INTRADAY_FREQS else []
+
+
+def _intraday_micro_package_names_for_freq(freq: str) -> List[str]:
+    f = str(freq)
+    if f == "D":
+        return _uniq(DAILY_INTRADAY_MICRO_FACTORS)
     if f == "5min":
-        return _uniq(GENERIC_CORE_FACTORS + INTRADAY_SIGNATURE_FACTORS + MICRO_5MIN_EXTRA_FACTORS)
-    if f == "15min":
-        return _uniq(GENERIC_CORE_FACTORS + INTRADAY_SIGNATURE_FACTORS + BRIDGE_PRIMARY_FACTORS)
-    if f in {"30min", "60min", "120min"}:
-        return _uniq(GENERIC_CORE_FACTORS + INTRADAY_SIGNATURE_FACTORS + BRIDGE_PRIMARY_FACTORS + BRIDGE_MULTISCALE_FACTORS)
-    return _uniq(GENERIC_CORE_FACTORS + PERIOD_SIGNATURE_FACTORS + BRIDGE_PRIMARY_FACTORS + BRIDGE_MULTISCALE_FACTORS)
+        return _uniq(MICRO_5MIN_EXTRA_FACTORS)
+    return []
+
+
+def _period_signature_package_names_for_freq(freq: str) -> List[str]:
+    return _uniq(PERIOD_SIGNATURE_FACTORS) if str(freq) in {"W", "M"} else []
+
+
+def _oscillator_package_names_for_freq(freq: str) -> List[str]:
+    return _uniq(DAILY_OSCILLATOR_FACTORS) if str(freq) == "D" else []
+
+
+def _overnight_package_names_for_freq(freq: str) -> List[str]:
+    return _uniq(DAILY_OVERNIGHT_FACTORS) if str(freq) == "D" else []
+
+
+def _multi_freq_package_names_for_freq(freq: str) -> List[str]:
+    f = str(freq)
+    names: List[str] = []
+    if f in {"15min", "30min", "60min", "120min", "D", "W", "M"}:
+        names.extend(BRIDGE_PRIMARY_FACTORS)
+    if f in {"30min", "60min", "120min", "D", "W", "M"}:
+        names.extend(BRIDGE_MULTISCALE_FACTORS)
+    if f == "D":
+        names.extend(DAILY_MULTI_FREQ_EXTRA_FACTORS)
+    return _uniq(names)
 
 
 def _build_default_factor_packs_by_freq() -> Dict[str, Dict[str, List[str]]]:
@@ -1031,15 +1381,58 @@ def _build_default_factor_packs_by_freq() -> Dict[str, Dict[str, List[str]]]:
     out: Dict[str, Dict[str, List[str]]] = {}
     for f in freqs:
         cols_map = _generated_columns_by_freq(f)
-        packs: Dict[str, List[str]] = {
-            "legacy_core": _legacy_package_names_for_freq(f),
-        }
+        packs: Dict[str, List[str]] = {}
         for pkg in ["trend", "reversal", "liquidity", "volatility", "structure", "context"]:
+            raw_names = _core_price_volume_package_raw_names_for_freq(f).get(pkg, [])
             cols = cols_map.get(pkg, [])
             anchors = cols[:2]
-            packs[pkg] = _template_generated_factor_names(prefix=f"g_{pkg}", cols=cols, pair_limit=6, anchors=anchors)
+            template_names = _template_generated_factor_names(prefix=f"g_{pkg}", cols=cols, pair_limit=6, anchors=anchors)
+            packs[pkg] = _uniq(list(raw_names) + list(template_names))
+        extra_pack_builders = {
+            "flow": _flow_package_names_for_freq,
+            "crowding": _crowding_package_names_for_freq,
+            "price_action": _price_action_package_names_for_freq,
+            "intraday_signature": _intraday_signature_package_names_for_freq,
+            "intraday_micro": _intraday_micro_package_names_for_freq,
+            "period_signature": _period_signature_package_names_for_freq,
+            "oscillator": _oscillator_package_names_for_freq,
+            "overnight": _overnight_package_names_for_freq,
+            "multi_freq": _multi_freq_package_names_for_freq,
+        }
+        for pkg, fn in extra_pack_builders.items():
+            names = list(fn(f))
+            names.extend(_core_price_volume_package_raw_names_for_freq(f).get(pkg, []))
+            if names:
+                packs[pkg] = _uniq(names)
         packs["bridge"] = _bridge_factor_names(f)
         packs["multiscale"] = _multiscale_factor_names(f)
+        fund_pair_limit = 9 if str(f) in {"D", "W", "M"} else 8
+        for pack_name, cat in FUNDAMENTAL_PACK_TO_CATEGORY.items():
+            cols = _fundamental_cols_for_category(f, cat)
+            packs[pack_name] = _template_generated_factor_names(
+                prefix=pack_name,
+                cols=cols,
+                pair_limit=fund_pair_limit,
+                anchors=cols[:3],
+            )
+        fusion_cols = _fundamental_hf_fusion_cols(f)
+        packs["fund_hf_fusion"] = _template_generated_factor_names(
+            prefix="fund_hf_fusion",
+            cols=fusion_cols,
+            pair_limit=fund_pair_limit,
+            anchors=fusion_cols[:3],
+        )
+        text_pair_limit = 8
+        for pack_name in TEXT_PACKAGES:
+            cols = _text_cols_for_package(f, pack_name)
+            if not cols:
+                continue
+            packs[pack_name] = _template_generated_factor_names(
+                prefix=pack_name,
+                cols=cols,
+                pair_limit=text_pair_limit,
+                anchors=cols[:3],
+            )
         out[f] = {k: _uniq(v) for k, v in packs.items()}
     return out
 
@@ -1077,6 +1470,106 @@ def resolve_default_factor_set(freq: str, package_expr: str = "") -> List[str]:
     for k in req_norm:
         chosen.extend(packs[avail_map[k]])
     return _uniq(chosen)
+
+
+_PACKAGE_PRIMARY_PRIORITY: List[str] = [
+    "trend",
+    "reversal",
+    "liquidity",
+    "volatility",
+    "structure",
+    "context",
+    "flow",
+    "crowding",
+    "price_action",
+    "intraday_signature",
+    "intraday_micro",
+    "period_signature",
+    "oscillator",
+    "overnight",
+    "multi_freq",
+    "bridge",
+    "multiscale",
+    "text_sentiment",
+    "text_attention",
+    "text_event",
+    "text_topic",
+    "text_fusion",
+    "fund_growth",
+    "fund_valuation",
+    "fund_profitability",
+    "fund_quality",
+    "fund_leverage",
+    "fund_cashflow",
+    "fund_efficiency",
+    "fund_expectation",
+    "fund_hf_fusion",
+]
+
+
+def build_factor_package_index(freq: str) -> Dict[str, List[str]]:
+    packs = DEFAULT_FACTOR_PACKS_BY_FREQ.get(str(freq), {})
+    out: Dict[str, List[str]] = {}
+    for pkg, factors in packs.items():
+        for fac in factors:
+            out.setdefault(str(fac), []).append(str(pkg))
+    return {k: _uniq(v) for k, v in out.items()}
+
+
+def _fallback_package_from_category(category: str) -> str:
+    c = str(category or "").strip()
+    if not c:
+        return "other_custom"
+    if c.startswith("fundamental_"):
+        suffix = c[len("fundamental_") :]
+        return f"fund_{suffix}"
+    if c in {
+        "trend",
+        "reversal",
+        "liquidity",
+        "volatility",
+        "structure",
+        "context",
+        "flow",
+        "crowding",
+        "price_action",
+        "intraday_signature",
+        "intraday_micro",
+        "period_signature",
+        "oscillator",
+        "overnight",
+        "multi_freq",
+        "bridge",
+        "multiscale",
+        "text_sentiment",
+        "text_attention",
+        "text_event",
+        "text_topic",
+        "text_fusion",
+    }:
+        return c
+    if c == "mined_factor":
+        return "catalog_custom"
+    if c == "auto_panel":
+        return "auto_panel"
+    return "other_custom"
+
+
+def resolve_primary_factor_package(
+    *,
+    freq: str,
+    factor: str,
+    category: str = "",
+    package_index: Dict[str, List[str]] | None = None,
+) -> tuple[str, List[str]]:
+    idx = package_index if package_index is not None else build_factor_package_index(freq)
+    memberships = list(idx.get(str(factor), []))
+    if memberships:
+        pri_map = {p: i for i, p in enumerate(_PACKAGE_PRIMARY_PRIORITY)}
+        memberships = sorted(memberships, key=lambda p: pri_map.get(p, 10_000))
+        return memberships[0], memberships
+    fb = _fallback_package_from_category(category)
+    return fb, [fb]
 
 
 def register_default_factors(library: FactorLibrary) -> None:
@@ -1125,6 +1618,42 @@ def register_default_factors(library: FactorLibrary) -> None:
                 cols=cols,
                 pair_limit=6,
                 anchors=cols[:2],
+            )
+        fund_pair_limit = 9 if str(freq) in {"D", "W", "M"} else 8
+        for pack_name, cat in FUNDAMENTAL_PACK_TO_CATEGORY.items():
+            fund_cols = _fundamental_cols_for_category(freq, cat)
+            _register_template_generated_package(
+                library=library,
+                freq=freq,
+                package=pack_name,
+                category=f"fundamental_{cat}",
+                cols=fund_cols,
+                pair_limit=fund_pair_limit,
+                anchors=fund_cols[:3],
+            )
+        fusion_cols = _fundamental_hf_fusion_cols(freq)
+        _register_template_generated_package(
+            library=library,
+            freq=freq,
+            package="fund_hf_fusion",
+            category="fundamental_hf_fusion",
+            cols=fusion_cols,
+            pair_limit=fund_pair_limit,
+            anchors=fusion_cols[:3],
+        )
+        text_pair_limit = 8
+        for pack_name in TEXT_PACKAGES:
+            text_cols = _text_cols_for_package(freq, pack_name)
+            if not text_cols:
+                continue
+            _register_template_generated_package(
+                library=library,
+                freq=freq,
+                package=pack_name,
+                category=pack_name,
+                cols=text_cols,
+                pair_limit=text_pair_limit,
+                anchors=text_cols[:3],
             )
         _register_bridge_factor_pack(library, target_freq=freq)
         _register_multiscale_factor_pack(library, target_freq=freq)

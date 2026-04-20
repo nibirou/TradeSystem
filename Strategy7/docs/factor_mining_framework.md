@@ -116,6 +116,10 @@
 - 素材包可用参数：
   - `--factor-packages`：逗号分隔，控制注入哪些默认包（空=全部）
   - `--disable-default-factor-materials`：关闭默认因子素材注入
+  - 新增金融文本因子包：`text_sentiment/text_attention/text_event/text_topic/text_fusion`
+  - 每个文本类别初始模板因子数 >=30（按频率自动注册）
+  - 新增基本面因子包：`fund_growth/fund_valuation/fund_profitability/fund_quality/fund_leverage/fund_cashflow/fund_efficiency/fund_expectation/fund_hf_fusion`
+  - 每个基本面类别初始模板因子数 >=100（按频率自动注册）
 - 对分钟框架：
   - 当 `factor_freq` 为分钟频时，注入因子直接进入分钟面板素材池
   - 当 `factor_freq=D` 且使用分钟框架时，日频素材会作为“日内常量字段”参与分钟表达式计算
@@ -137,6 +141,54 @@
   - `--stock-list-path`（旧参数 `--hs300-list-path` 仍兼容）
 - 当 `--universe all` 且提供 `--stock-list-path` 时，可在全市场历史行情上加载任意自定义股票池（例如中证1000/中证2000）。
 - `--data-root auto` 会按 `--universe` 自动映射到 `data_baostock/stock_hist/<universe>`。
+- 基本面加载与该股票池完全一致：同样按 `--universe + --stock-list-path` 过滤后再并入。
+- 金融文本加载同样按该股票池过滤；支持 `all + --stock-list-path` 构建自定义文本研究池。
+
+### 2.9 基本面数据接入（AK + Baostock）
+
+- 新增参数：
+  - `--fundamental-root-ak`（默认 `data_baostock/ak_fundamental`）
+  - `--fundamental-root-bsq`（默认 `data_baostock/baostock_fundamental_q`）
+  - `--fundamental-file-format auto|csv|parquet`
+  - `--disable-fundamental-data`
+- 数据形态与处理：
+  - `financial_indicator_em`：长表，按 `NOTICE_DATE/UPDATE_DATE/REPORT_DATE` 对齐
+  - `financial_indicator_sina`：长表，按 `日期` 对齐
+  - `financial_abstract_sina`：宽表（多列报告期），先 melt/pivot 再对齐
+  - Baostock 季频表：按 `pubDate/performanceExpPubDate/profitForcastExpPubDate` 等公告日期对齐
+- 对齐方式：
+  - 基本面事件先按 `[code, date]` 聚合
+  - 再通过 `merge_asof(direction='backward')` 回填到交易日面板
+  - 最终生成统一规范列（`fd_*`）与高频融合列（`fd_hf_*`）
+
+### 2.10 金融文本数据接入（新闻/公告/研报）
+
+- 新增参数：
+  - `--text-root-news`（默认 `data_baostock/data_em_news`）
+  - `--text-root-notice`（默认 `data_baostock/data_em_notices`）
+  - `--text-root-report-em`（默认 `data_baostock/data_em_reports`）
+  - `--text-root-report-iwencai`（默认 `data_baostock/data_iwencai_reports`）
+  - `--text-file-format auto|csv|parquet`
+  - `--disable-text-data`
+- 处理流程：
+  - 多源文本统一映射到事件流（`news/notice/em_report/iwencai`）
+  - 词典法情绪/风险/不确定性/事件与主题打标
+  - 聚合为日频文本面板（`txt_*`）并透传到分钟/周/月频
+  - 构造文本与量价/基本面融合特征（`txt_hf_* / txt_fd_* / txt_fusion_*`）
+- 数据组织与字段映射：
+  - 文件命名按股票：`sh_600000.csv` / `sz_000001.csv`（或 parquet）
+  - 目录按 universe 分层：`all/hs300/zz500/sz50`（实际覆盖因源而异）
+  - 时间列映射：
+    - `news`：`发布时间`
+    - `notice`：`公告发布时间/公告日期`
+    - `em_report`：`研报发布时间/发布日期`
+    - `iwencai`：`publish_time`
+  - 文本列映射：
+    - `news`：`新闻标题 + 新闻正文/新闻内容`
+    - `notice`：`公告标题 + 公告正文/公告摘要`
+    - `em_report`：`研报标题 + 研报正文`
+    - `iwencai`：`title + content`
+  - universe 目录不齐全时，加载器自动 fallback 到 `all -> hs300 -> zz500 -> sz50`。
 
 ## 3. 入库标准（频率分层）
 
@@ -274,7 +326,7 @@ python Strategy7/run_factor_mining.py \
 python Strategy7/run_factor_mining.py \
   --framework ml_ensemble_alpha \
   --factor-freq D \
-  --factor-packages legacy_core,trend,reversal,liquidity \
+  --factor-packages trend,reversal,liquidity,flow \
   --train-start 2021-01-01 --train-end 2023-12-31 \
   --valid-start 2024-01-01 --valid-end 2024-12-31 \
   --ml-population-size 48 --ml-generations 10 \

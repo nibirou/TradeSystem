@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+import re
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -18,10 +20,117 @@ from ..core.utils import (
     infer_board_type,
     infer_industry_bucket,
     is_main_board_symbol,
+    split_exchange_code,
     symbol_key_from_filename,
 )
 from .base import MarketDataLoader
 from .frequency import add_generic_micro_structure_features, add_multifreq_bridge_features, build_frequency_views
+from .text_nlp import (
+    TEXT_CONTEXT_COLUMNS,
+    add_text_rolling_and_fusion_features,
+    build_text_daily_features,
+    load_text_source_events_from_file,
+    pick_symbol_text_file,
+    select_text_universe_dirs,
+)
+
+FUND_CATEGORIES: List[str] = [
+    "growth",
+    "valuation",
+    "profitability",
+    "quality",
+    "leverage",
+    "cashflow",
+    "efficiency",
+    "expectation",
+]
+
+FUND_CATEGORY_KEYWORDS: Dict[str, Sequence[str]] = {
+    "growth": (
+        "growth",
+        "yoy",
+        "chg",
+        "gr",
+        "增",
+        "增长",
+    ),
+    "valuation": (
+        "pe",
+        "pb",
+        "ps",
+        "pcf",
+        "ev",
+        "mv",
+        "估值",
+        "市盈",
+        "市净",
+        "股本",
+        "share",
+    ),
+    "profitability": (
+        "profit",
+        "margin",
+        "roe",
+        "roa",
+        "eps",
+        "ebit",
+        "netprofit",
+        "净利",
+        "利润",
+        "收益",
+    ),
+    "quality": (
+        "dupont",
+        "taxburden",
+        "intburden",
+        "扣非",
+        "quality",
+        "accrual",
+        "净资产收益率",
+    ),
+    "leverage": (
+        "liability",
+        "debt",
+        "equity",
+        "assettoequity",
+        "assetstoequity",
+        "quickratio",
+        "currentratio",
+        "cashratio",
+        "负债",
+        "杠杆",
+    ),
+    "cashflow": (
+        "cash",
+        "cfo",
+        "cashflow",
+        "ebittointerest",
+        "经营现金",
+        "现金流",
+    ),
+    "efficiency": (
+        "turn",
+        "turnover",
+        "days",
+        "assetturn",
+        "invturn",
+        "nrturn",
+        "周转",
+        "效率",
+    ),
+    "expectation": (
+        "forecast",
+        "forcast",
+        "performanceexp",
+        "express",
+        "notice",
+        "预告",
+        "快报",
+    ),
+}
+
+FUND_CANONICAL_PER_CATEGORY = 12
+FUND_INTRADAY_CONTEXT_RAW_COUNT = 5
 
 
 def list_symbol_keys(daily_dir: Path, file_format: str = "auto") -> List[str]:
@@ -90,6 +199,412 @@ def load_hs300_constituent_keys(hs300_list_path: Path) -> List[str]:
     return load_stock_list_keys(hs300_list_path)
 
 
+def _normalize_code(code_or_key: object, *, dotted: bool = True) -> str:
+    ex, code = split_exchange_code(str(code_or_key))
+    if ex not in {"sh", "sz"} or not code:
+        return ""
+    return f"{ex}.{code}" if dotted else f"{ex}_{code}"
+
+
+def _safe_feature_name(name: object) -> str:
+    raw = str(name).strip()
+    txt = (
+        raw.lower()
+        .replace("%", "pct")
+        .replace("\u2030", "permille")
+        .replace("\uffe5", "cny")
+        .replace("$", "usd")
+    )
+    txt = re.sub(r"[^0-9a-zA-Z]+", "_", txt).strip("_").lower()
+    if not txt:
+        digest = hashlib.sha1(raw.encode("utf-8")).hexdigest()[:12]
+        txt = f"c_{digest}"
+    if txt[0].isdigit():
+        txt = f"f_{txt}"
+    return txt[:96]
+
+
+def _read_table_file(path: Path, file_format: str = "auto") -> pd.DataFrame:
+    fmt = str(file_format).strip().lower()
+    ext = path.suffix.lower()
+    use_parquet = (fmt == "parquet") or (fmt == "auto" and ext == ".parquet")
+    if use_parquet:
+        try:
+            return pd.read_parquet(path)
+        except Exception:
+            csv_path = path.with_suffix(".csv")
+            if csv_path.exists():
+                return pd.read_csv(csv_path, low_memory=False)
+            raise
+    return pd.read_csv(path, low_memory=False)
+
+
+def _pick_stem_file(folder: Path, stem: str, file_format: str = "auto") -> Optional[Path]:
+    if file_format == "parquet":
+        cands = [folder / f"{stem}.parquet"]
+    elif file_format == "csv":
+        cands = [folder / f"{stem}.csv"]
+    else:
+        cands = [folder / f"{stem}.parquet", folder / f"{stem}.csv"]
+    for p in cands:
+        if p.exists():
+            return p
+    return None
+
+
+def _select_fundamental_universe_dir(base_dir: Path, universe: str) -> Optional[Path]:
+    if not base_dir.exists():
+        return None
+    wanted = [str(universe).strip().lower(), "all", "hs300", "zz500", "sz50"]
+    seen: set[str] = set()
+    for u in wanted:
+        if not u or u in seen:
+            continue
+        seen.add(u)
+        cand = base_dir / u
+        if cand.exists() and cand.is_dir():
+            return cand
+    return None
+
+
+def _choose_date_column(df: pd.DataFrame, candidates: Sequence[str]) -> Optional[str]:
+    cols = {str(c): str(c).lower() for c in df.columns}
+    for cand in candidates:
+        if cand in df.columns:
+            return cand
+    cand_l = [str(c).lower() for c in candidates]
+    for c, cl in cols.items():
+        if cl in cand_l:
+            return c
+    # fallback: choose first date-like column name.
+    for c, cl in cols.items():
+        if "date" in cl or "日期" in str(c):
+            return c
+    return None
+
+
+def _extract_numeric_columns(
+    df: pd.DataFrame,
+    *,
+    exclude_cols: Iterable[str],
+    prefix: str,
+) -> pd.DataFrame:
+    excluded = {str(c) for c in exclude_cols}
+    out: Dict[str, pd.Series] = {}
+    used: set[str] = set()
+    for col in df.columns:
+        if col in excluded:
+            continue
+        s = pd.to_numeric(df[col], errors="coerce")
+        if s.notna().sum() <= 0:
+            continue
+        base = _safe_feature_name(col)
+        name = f"{prefix}{base}"
+        idx = 2
+        while name in used:
+            name = f"{prefix}{base}_{idx:02d}"
+            idx += 1
+        used.add(name)
+        out[name] = s.astype("float32")
+    if not out:
+        return pd.DataFrame(index=df.index)
+    return pd.DataFrame(out, index=df.index)
+
+
+def _load_ak_indicator_em_file(
+    path: Path,
+    symbol_key: str,
+    *,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    file_format: str,
+) -> pd.DataFrame:
+    df = _read_table_file(path, file_format=file_format)
+    if df.empty:
+        return pd.DataFrame()
+    date_col = _choose_date_column(df, ["NOTICE_DATE", "UPDATE_DATE", "REPORT_DATE"])
+    if date_col is None:
+        return pd.DataFrame()
+    code_col = next((c for c in ["SECUCODE", "SECURITY_CODE", "code", "CODE"] if c in df.columns), None)
+    if code_col is not None:
+        code = df[code_col].astype(str).map(_normalize_code)
+    else:
+        code = pd.Series([_normalize_code(symbol_key)] * len(df), index=df.index)
+    date_s = pd.to_datetime(df[date_col], errors="coerce").dt.normalize()
+    valid = date_s.notna() & code.ne("")
+    if not valid.any():
+        return pd.DataFrame()
+    out = df.loc[valid].copy()
+    out["date"] = date_s.loc[valid]
+    out["code"] = code.loc[valid]
+    out = out[(out["date"] >= start_date) & (out["date"] <= end_date)]
+    if out.empty:
+        return out
+    num = _extract_numeric_columns(
+        out,
+        exclude_cols={
+            "date",
+            "code",
+            date_col,
+            code_col or "",
+            "REPORT_DATE",
+            "NOTICE_DATE",
+            "UPDATE_DATE",
+            "SECUCODE",
+            "SECURITY_CODE",
+            "SECURITY_NAME_ABBR",
+            "ORG_CODE",
+            "ORG_TYPE",
+            "REPORT_TYPE",
+            "REPORT_DATE_NAME",
+            "SECURITY_TYPE_CODE",
+            "CURRENCY",
+            "TRADE_MARKET_CODE",
+            "TRADE_MARKET",
+        },
+        prefix="fdsrc_ak_em__",
+    )
+    out = pd.concat([out[["date", "code"]], num], axis=1)
+    if "REPORT_DATE" in df.columns:
+        rep = pd.to_datetime(df.loc[valid, "REPORT_DATE"], errors="coerce").dt.normalize().reindex(out.index)
+        out["fdsrc_ak_em__report_lag_days"] = (out["date"] - rep).dt.days.astype("float32")
+    return out.drop_duplicates(["date", "code"], keep="last").reset_index(drop=True)
+
+
+def _load_ak_indicator_sina_file(
+    path: Path,
+    symbol_key: str,
+    *,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    file_format: str,
+) -> pd.DataFrame:
+    df = _read_table_file(path, file_format=file_format)
+    if df.empty:
+        return pd.DataFrame()
+    date_col = _choose_date_column(df, ["日期", "date", "REPORT_DATE", "report_date"])
+    if date_col is None:
+        return pd.DataFrame()
+    out = df.copy()
+    out["date"] = pd.to_datetime(out[date_col], errors="coerce").dt.normalize()
+    out["code"] = _normalize_code(symbol_key)
+    out = out[(out["date"] >= start_date) & (out["date"] <= end_date)]
+    out = out.dropna(subset=["date", "code"])
+    if out.empty:
+        return out
+    num = _extract_numeric_columns(
+        out,
+        exclude_cols={"date", "code", date_col},
+        prefix="fdsrc_ak_sina__",
+    )
+    out = pd.concat([out[["date", "code"]], num], axis=1)
+    return out.drop_duplicates(["date", "code"], keep="last").reset_index(drop=True)
+
+
+def _load_ak_abstract_sina_file(
+    path: Path,
+    symbol_key: str,
+    *,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    file_format: str,
+) -> pd.DataFrame:
+    df = _read_table_file(path, file_format=file_format)
+    if df.empty:
+        return pd.DataFrame()
+    date_cols = [c for c in df.columns if re.fullmatch(r"\d{8}", str(c))]
+    if not date_cols:
+        return pd.DataFrame()
+    text_cols = [c for c in ["选项", "指标"] if c in df.columns]
+    if not text_cols:
+        text_cols = list(df.columns[:2])
+    if not text_cols:
+        return pd.DataFrame()
+    long_df = df.melt(id_vars=text_cols, value_vars=date_cols, var_name="report_date", value_name="value")
+    long_df["value"] = pd.to_numeric(long_df["value"], errors="coerce")
+    long_df = long_df.dropna(subset=["value"])
+    if long_df.empty:
+        return pd.DataFrame()
+    metric = long_df[text_cols[0]].astype(str)
+    if len(text_cols) > 1:
+        metric = metric + "_" + long_df[text_cols[1]].astype(str)
+    long_df["feature"] = metric.map(_safe_feature_name)
+    pivot = long_df.pivot_table(index="report_date", columns="feature", values="value", aggfunc="last")
+    if pivot.empty:
+        return pd.DataFrame()
+    out = pivot.reset_index()
+    out["date"] = pd.to_datetime(out["report_date"], format="%Y%m%d", errors="coerce").dt.normalize()
+    out["code"] = _normalize_code(symbol_key)
+    out = out[(out["date"] >= start_date) & (out["date"] <= end_date)]
+    out = out.dropna(subset=["date", "code"])
+    if out.empty:
+        return out
+    rename = {c: f"fdsrc_ak_abs__{_safe_feature_name(c)}" for c in out.columns if c not in {"date", "code", "report_date"}}
+    out = out.rename(columns=rename)
+    keep_cols = ["date", "code", *sorted(rename.values())]
+    out = out[keep_cols].copy()
+    for c in keep_cols[2:]:
+        out[c] = pd.to_numeric(out[c], errors="coerce").astype("float32")
+    return out.drop_duplicates(["date", "code"], keep="last").reset_index(drop=True)
+
+
+def _load_bsq_category_file(
+    path: Path,
+    symbol_key: str,
+    category: str,
+    *,
+    start_date: pd.Timestamp,
+    end_date: pd.Timestamp,
+    file_format: str,
+) -> pd.DataFrame:
+    df = _read_table_file(path, file_format=file_format)
+    if df.empty:
+        return pd.DataFrame()
+    date_candidates = ["pubDate", "statDate"]
+    if str(category) == "forecast":
+        date_candidates = ["profitForcastExpPubDate", "profitForcastExpStatDate", *date_candidates]
+    if str(category) == "perf_express":
+        date_candidates = ["performanceExpPubDate", "performanceExpUpdateDate", "performanceExpStatDate", *date_candidates]
+    date_col = _choose_date_column(df, date_candidates)
+    if date_col is None:
+        return pd.DataFrame()
+    out = df.copy()
+    out["date"] = pd.to_datetime(out[date_col], errors="coerce").dt.normalize()
+    if "code" in out.columns:
+        out["code"] = out["code"].astype(str).map(_normalize_code)
+    else:
+        out["code"] = _normalize_code(symbol_key)
+    out = out[(out["date"] >= start_date) & (out["date"] <= end_date)]
+    out = out.dropna(subset=["date", "code"])
+    out = out[out["code"].ne("")]
+    if out.empty:
+        return out
+    num = _extract_numeric_columns(
+        out,
+        exclude_cols={"date", "code", date_col, "pubDate", "statDate", "performanceExpPubDate", "performanceExpStatDate", "performanceExpUpdateDate", "profitForcastExpPubDate", "profitForcastExpStatDate"},
+        prefix=f"fdsrc_bsq_{_safe_feature_name(category)}__",
+    )
+    out = pd.concat([out[["date", "code"]], num], axis=1)
+    return out.drop_duplicates(["date", "code"], keep="last").reset_index(drop=True)
+
+
+def _merge_fundamental_asof(daily_df: pd.DataFrame, fundamental_events: pd.DataFrame) -> pd.DataFrame:
+    if daily_df.empty or fundamental_events.empty:
+        return daily_df.copy()
+    left = daily_df.copy()
+    left["date"] = pd.to_datetime(left["date"], errors="coerce").dt.normalize()
+    left["code"] = left["code"].astype(str).map(_normalize_code)
+    left = left.dropna(subset=["date", "code"])
+    left = left[left["code"].ne("")]
+    if left.empty:
+        return left
+    left["__ord"] = np.arange(len(left), dtype=np.int64)
+    left = left.sort_values(["code", "date", "__ord"]).reset_index(drop=True)
+
+    right = fundamental_events.copy()
+    right["date"] = pd.to_datetime(right["date"], errors="coerce").dt.normalize()
+    right["code"] = right["code"].astype(str).map(_normalize_code)
+    right = right.dropna(subset=["date", "code"])
+    right = right[right["code"].ne("")]
+    right = right.sort_values(["code", "date"]).drop_duplicates(["code", "date"], keep="last").reset_index(drop=True)
+    if right.empty:
+        return daily_df.copy()
+
+    value_cols = [c for c in right.columns if c not in {"date", "code"}]
+    right_map: Dict[str, pd.DataFrame] = {
+        str(code): grp.sort_values("date").reset_index(drop=True)
+        for code, grp in right.groupby("code", sort=False)
+    }
+
+    parts: List[pd.DataFrame] = []
+    for code, lgrp in left.groupby("code", sort=False):
+        lg = lgrp.sort_values("date").copy()
+        rg = right_map.get(str(code))
+        if rg is None or rg.empty:
+            for c in value_cols:
+                lg[c] = np.nan
+            parts.append(lg)
+            continue
+        merged = pd.merge_asof(
+            left=lg,
+            right=rg.drop(columns=["code"], errors="ignore"),
+            on="date",
+            direction="backward",
+            allow_exact_matches=True,
+        )
+        merged["code"] = str(code)
+        parts.append(merged)
+
+    out = pd.concat(parts, ignore_index=True).sort_values("__ord").drop(columns=["__ord"]).reset_index(drop=True)
+    return out
+
+
+def _infer_fundamental_category(col_name: str) -> str:
+    c = str(col_name).lower()
+    for cat in FUND_CATEGORIES:
+        if any(k in c for k in FUND_CATEGORY_KEYWORDS.get(cat, ())):
+            return cat
+    return ""
+
+
+def _attach_fundamental_canonical_features(
+    daily_df: pd.DataFrame,
+) -> tuple[pd.DataFrame, Dict[str, str]]:
+    out = daily_df.copy()
+    source_cols = [c for c in out.columns if c.startswith("fdsrc_")]
+    if not source_cols:
+        return out, {}
+
+    coverage = {c: int(pd.to_numeric(out[c], errors="coerce").notna().sum()) for c in source_cols}
+    global_sorted = sorted(source_cols, key=lambda c: (-coverage.get(c, 0), c))
+    cat_pool: Dict[str, List[str]] = {k: [] for k in FUND_CATEGORIES}
+    for c in source_cols:
+        cat = _infer_fundamental_category(c)
+        if cat:
+            cat_pool[cat].append(c)
+    # fallback: ensure every category has enough material.
+    for cat in FUND_CATEGORIES:
+        ranked = sorted(cat_pool.get(cat, []), key=lambda c: (-coverage.get(c, 0), c))
+        used = list(ranked[:FUND_CANONICAL_PER_CATEGORY])
+        if len(used) < FUND_CANONICAL_PER_CATEGORY:
+            for c in global_sorted:
+                if c in used:
+                    continue
+                used.append(c)
+                if len(used) >= FUND_CANONICAL_PER_CATEGORY:
+                    break
+        cat_pool[cat] = used
+
+    out = out.sort_values(["code", "date"]).reset_index(drop=True)
+    notes: Dict[str, str] = {}
+    added_cols: Dict[str, pd.Series] = {}
+    for cat in FUND_CATEGORIES:
+        selected = cat_pool.get(cat, [])
+        raw_cols: List[str] = []
+        for i, src_col in enumerate(selected, start=1):
+            c_new = f"fd_{cat}_raw_{i:02d}"
+            added_cols[c_new] = pd.to_numeric(out[src_col], errors="coerce").astype("float32")
+            raw_cols.append(c_new)
+        if not raw_cols:
+            continue
+        raw_mat = pd.DataFrame({c: added_cols[c] for c in raw_cols}, index=out.index)
+        score_col = f"fd_{cat}_score"
+        trend_col = f"fd_{cat}_trend"
+        disp_col = f"fd_{cat}_disp"
+        score = raw_mat.mean(axis=1, skipna=True).astype("float32")
+        added_cols[score_col] = score
+        added_cols[disp_col] = raw_mat.std(axis=1, skipna=True).astype("float32")
+        trend = (
+            pd.DataFrame({"code": out["code"], "__score": score})
+            .groupby("code", observed=True)["__score"]
+            .pct_change(63, fill_method=None)
+        )
+        added_cols[trend_col] = trend.astype("float32")
+        notes[f"canonical_{cat}"] = ",".join(selected[:5])  # keep notes concise
+    if added_cols:
+        out = pd.concat([out, pd.DataFrame(added_cols, index=out.index)], axis=1)
+    return out, notes
+
 @dataclass
 class MarketUniverseDataLoader(MarketDataLoader):
     """Generic loader for stock-universe daily + 5min files."""
@@ -118,20 +633,20 @@ class MarketUniverseDataLoader(MarketDataLoader):
         keys_all = list_symbol_keys(daily_dir, file_format=file_format)
         keys = keys_all
         log_progress(
-            f"开始扫描股票文件：daily_dir={daily_dir}, minute_dir={minute_dir}, total_symbols={len(keys_all)}。",
+            f"scanned market files: daily_dir={daily_dir}, minute_dir={minute_dir}, total_symbols={len(keys_all)}",
             module="loader",
             level="debug",
         )
         if stock_list_path is not None:
             listed_keys = set(load_stock_list_keys(stock_list_path))
             keys = [k for k in keys if k in listed_keys]
-            log_progress(f"按股票列表过滤后 symbols={len(keys)}。", module="loader", level="debug")
+            log_progress(f"after stock-list filter: symbols={len(keys)}", module="loader", level="debug")
         if main_board_only:
             keys = [k for k in keys if is_main_board_symbol(k)]
-            log_progress(f"按主板过滤后 symbols={len(keys)}。", module="loader", level="debug")
+            log_progress(f"after main-board filter: symbols={len(keys)}", module="loader", level="debug")
         if max_files is not None:
             keys = keys[: int(max_files)]
-            log_progress(f"按 max_files 截断后 symbols={len(keys)}。", module="loader", level="debug")
+            log_progress(f"after max-files cap: symbols={len(keys)}", module="loader", level="debug")
 
         daily_cols = [
             "date",
@@ -164,7 +679,6 @@ class MarketUniverseDataLoader(MarketDataLoader):
                 ddf = read_data_file(daily_path, daily_cols, start_date, end_date)
                 mdf = read_data_file(minute_path, minute_cols, start_date, end_date)
             except Exception:
-                # Skip broken files instead of failing the whole run.
                 broken += 1
                 continue
             if ddf.empty or mdf.empty:
@@ -183,7 +697,6 @@ class MarketUniverseDataLoader(MarketDataLoader):
             if "tradestatus" in ddf.columns:
                 ddf = ddf[ddf["tradestatus"].fillna(1) == 1].copy()
 
-            # parse datetime from baostock numeric time
             if "time" in mdf.columns:
                 tstr = mdf["time"].astype("Int64").astype(str).str.zfill(17).str.slice(0, 14)
                 mdf["datetime"] = pd.to_datetime(tstr, format="%Y%m%d%H%M%S", errors="coerce")
@@ -198,7 +711,7 @@ class MarketUniverseDataLoader(MarketDataLoader):
             loaded += 1
             if loaded % 50 == 0:
                 log_progress(
-                    f"文件读取进度：loaded={loaded}/{len(keys)}，skipped={skipped}，broken={broken}。",
+                    f"market file progress: loaded={loaded}/{len(keys)}, skipped={skipped}, broken={broken}",
                     module="loader",
                     level="debug",
                 )
@@ -208,8 +721,8 @@ class MarketUniverseDataLoader(MarketDataLoader):
         if not minute_frames:
             raise RuntimeError("no minute market data loaded.")
         log_progress(
-            f"文件读取完成：loaded={loaded}, skipped={skipped}, broken={broken}, "
-            f"daily_parts={len(daily_frames)}, minute_parts={len(minute_frames)}。",
+            f"market file loading done: loaded={loaded}, skipped={skipped}, broken={broken}, "
+            f"daily_parts={len(daily_frames)}, minute_parts={len(minute_frames)}",
             module="loader",
         )
 
@@ -218,6 +731,316 @@ class MarketUniverseDataLoader(MarketDataLoader):
         daily_df = daily_df.drop_duplicates(["code", "date"], keep="last").reset_index(drop=True)
         minute_df = minute_df.drop_duplicates(["code", "datetime"], keep="last").reset_index(drop=True)
         return daily_df, minute_df
+
+    def _load_fundamental_events(
+        self,
+        *,
+        code_universe: Sequence[str],
+        start_date: pd.Timestamp,
+        end_date: pd.Timestamp,
+    ) -> tuple[pd.DataFrame, Dict[str, str]]:
+        if not bool(self.data_cfg.enable_fundamental_data):
+            return pd.DataFrame(), {"fundamental_enabled": "false"}
+
+        keys = sorted({_normalize_code(c, dotted=False) for c in code_universe if _normalize_code(c, dotted=False)})
+        notes: Dict[str, str] = {
+            "fundamental_enabled": "true",
+            "fundamental_keys": str(len(keys)),
+            "fundamental_root_ak": str(self.data_cfg.fundamental_root_ak),
+            "fundamental_root_bsq": str(self.data_cfg.fundamental_root_bsq),
+        }
+        if not keys:
+            return pd.DataFrame(), notes
+
+        file_format = str(self.data_cfg.fundamental_file_format or "auto")
+        frames: List[pd.DataFrame] = []
+        loaded_files = 0
+        skipped_files = 0
+
+        ak_root = Path(self.data_cfg.fundamental_root_ak).expanduser()
+        ak_dataset_cfg: List[tuple[str, str]] = [
+            ("financial_indicator_em", "em"),
+            ("financial_indicator_sina", "sina"),
+            ("financial_abstract_sina", "abs"),
+        ]
+        for ds_name, ds_tag in ak_dataset_cfg:
+            ds_root = ak_root / ds_name
+            uni_dir = _select_fundamental_universe_dir(ds_root, self.data_cfg.universe)
+            if uni_dir is None:
+                notes[f"ak_{ds_tag}_status"] = "missing_dir"
+                continue
+            local_loaded = 0
+            local_rows = 0
+            for key in keys:
+                stem = f"{key}_report" if ds_name == "financial_indicator_em" else key
+                fp = _pick_stem_file(uni_dir, stem, file_format=file_format)
+                if fp is None:
+                    skipped_files += 1
+                    continue
+                try:
+                    if ds_name == "financial_indicator_em":
+                        part = _load_ak_indicator_em_file(
+                            fp,
+                            key,
+                            start_date=start_date,
+                            end_date=end_date,
+                            file_format=file_format,
+                        )
+                    elif ds_name == "financial_indicator_sina":
+                        part = _load_ak_indicator_sina_file(
+                            fp,
+                            key,
+                            start_date=start_date,
+                            end_date=end_date,
+                            file_format=file_format,
+                        )
+                    else:
+                        part = _load_ak_abstract_sina_file(
+                            fp,
+                            key,
+                            start_date=start_date,
+                            end_date=end_date,
+                            file_format=file_format,
+                        )
+                except Exception:
+                    skipped_files += 1
+                    continue
+                if part.empty:
+                    skipped_files += 1
+                    continue
+                frames.append(part)
+                local_loaded += 1
+                local_rows += int(len(part))
+            loaded_files += local_loaded
+            notes[f"ak_{ds_tag}_loaded_files"] = str(local_loaded)
+            notes[f"ak_{ds_tag}_rows"] = str(local_rows)
+
+        bsq_root = Path(self.data_cfg.fundamental_root_bsq).expanduser()
+        bsq_uni_dir = _select_fundamental_universe_dir(bsq_root, self.data_cfg.universe)
+        if bsq_uni_dir is not None:
+            cat_dirs = sorted([p for p in bsq_uni_dir.iterdir() if p.is_dir()])
+            for cat_dir in cat_dirs:
+                cat = cat_dir.name
+                local_loaded = 0
+                local_rows = 0
+                for key in keys:
+                    fp = _pick_stem_file(cat_dir, key, file_format=file_format)
+                    if fp is None:
+                        skipped_files += 1
+                        continue
+                    try:
+                        part = _load_bsq_category_file(
+                            fp,
+                            key,
+                            category=cat,
+                            start_date=start_date,
+                            end_date=end_date,
+                            file_format=file_format,
+                        )
+                    except Exception:
+                        skipped_files += 1
+                        continue
+                    if part.empty:
+                        skipped_files += 1
+                        continue
+                    frames.append(part)
+                    local_loaded += 1
+                    local_rows += int(len(part))
+                loaded_files += local_loaded
+                notes[f"bsq_{cat}_loaded_files"] = str(local_loaded)
+                notes[f"bsq_{cat}_rows"] = str(local_rows)
+        else:
+            notes["bsq_status"] = "missing_dir"
+
+        if not frames:
+            notes["fundamental_loaded_files"] = str(loaded_files)
+            notes["fundamental_skipped_files"] = str(skipped_files)
+            notes["fundamental_event_rows"] = "0"
+            return pd.DataFrame(), notes
+
+        fund = pd.concat(frames, ignore_index=True)
+        fund["date"] = pd.to_datetime(fund["date"], errors="coerce").dt.normalize()
+        fund["code"] = fund["code"].astype(str).map(_normalize_code)
+        fund = fund.dropna(subset=["date", "code"])
+        fund = fund[fund["code"].ne("")]
+        fund = fund[(fund["date"] >= start_date) & (fund["date"] <= end_date)]
+        if fund.empty:
+            notes["fundamental_loaded_files"] = str(loaded_files)
+            notes["fundamental_skipped_files"] = str(skipped_files)
+            notes["fundamental_event_rows"] = "0"
+            return pd.DataFrame(), notes
+
+        fund = (
+            fund.sort_values(["code", "date"])
+            .groupby(["code", "date"], as_index=False)
+            .last()
+            .reset_index(drop=True)
+        )
+        notes["fundamental_loaded_files"] = str(loaded_files)
+        notes["fundamental_skipped_files"] = str(skipped_files)
+        notes["fundamental_event_rows"] = str(len(fund))
+        notes["fundamental_event_cols"] = str(len(fund.columns))
+        return fund, notes
+
+    def _attach_fundamental_to_daily(
+        self,
+        daily_df: pd.DataFrame,
+        *,
+        start_date: pd.Timestamp,
+        end_date: pd.Timestamp,
+    ) -> tuple[pd.DataFrame, Dict[str, str]]:
+        fund_events, notes = self._load_fundamental_events(
+            code_universe=daily_df["code"].astype(str).unique().tolist(),
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if fund_events.empty:
+            return daily_df.copy(), notes
+        merged = _merge_fundamental_asof(daily_df, fund_events)
+        merged, canonical_notes = _attach_fundamental_canonical_features(merged)
+        notes["fundamental_merged_cols"] = str(
+            len([c for c in merged.columns if c.startswith("fdsrc_") or c.startswith("fd_")])
+        )
+        notes.update(canonical_notes)
+        return merged, notes
+
+    def _load_text_daily_panel(
+        self,
+        *,
+        code_universe: Sequence[str],
+        start_date: pd.Timestamp,
+        end_date: pd.Timestamp,
+    ) -> tuple[pd.DataFrame, Dict[str, str]]:
+        if not bool(getattr(self.data_cfg, "enable_text_data", False)):
+            return pd.DataFrame(), {"text_enabled": "false"}
+
+        keys = sorted({_normalize_code(c, dotted=False) for c in code_universe if _normalize_code(c, dotted=False)})
+        notes: Dict[str, str] = {
+            "text_enabled": "true",
+            "text_keys": str(len(keys)),
+            "text_root_news": str(getattr(self.data_cfg, "text_root_news", "")),
+            "text_root_notice": str(getattr(self.data_cfg, "text_root_notice", "")),
+            "text_root_report_em": str(getattr(self.data_cfg, "text_root_report_em", "")),
+            "text_root_report_iwencai": str(getattr(self.data_cfg, "text_root_report_iwencai", "")),
+        }
+        if not keys:
+            return pd.DataFrame(), notes
+
+        source_roots: List[tuple[str, Path]] = [
+            ("news", Path(str(getattr(self.data_cfg, "text_root_news", ""))).expanduser()),
+            ("notice", Path(str(getattr(self.data_cfg, "text_root_notice", ""))).expanduser()),
+            ("em_report", Path(str(getattr(self.data_cfg, "text_root_report_em", ""))).expanduser()),
+            ("iwencai", Path(str(getattr(self.data_cfg, "text_root_report_iwencai", ""))).expanduser()),
+        ]
+        file_format = str(getattr(self.data_cfg, "text_file_format", "auto") or "auto")
+
+        loaded_files = 0
+        skipped_files = 0
+        events_frames: List[pd.DataFrame] = []
+        for source, root in source_roots:
+            if not str(root).strip():
+                notes[f"text_{source}_status"] = "empty_root"
+                continue
+            uni_dirs = select_text_universe_dirs(root, self.data_cfg.universe)
+            if not uni_dirs:
+                notes[f"text_{source}_status"] = "missing_dir"
+                continue
+
+            local_loaded = 0
+            local_rows = 0
+            for key in keys:
+                fp = pick_symbol_text_file(uni_dirs, key, file_format=file_format)
+                if fp is None:
+                    skipped_files += 1
+                    continue
+                try:
+                    part = load_text_source_events_from_file(
+                        fp,
+                        symbol_key=key,
+                        source=source,
+                        start_date=start_date,
+                        end_date=end_date,
+                        file_format=file_format,
+                    )
+                except Exception:
+                    skipped_files += 1
+                    continue
+                if part.empty:
+                    skipped_files += 1
+                    continue
+                events_frames.append(part)
+                local_loaded += 1
+                local_rows += int(len(part))
+            loaded_files += local_loaded
+            notes[f"text_{source}_loaded_files"] = str(local_loaded)
+            notes[f"text_{source}_event_rows"] = str(local_rows)
+
+        if not events_frames:
+            notes["text_loaded_files"] = str(loaded_files)
+            notes["text_skipped_files"] = str(skipped_files)
+            notes["text_event_rows"] = "0"
+            notes["text_daily_rows"] = "0"
+            return pd.DataFrame(), notes
+
+        events = pd.concat(events_frames, ignore_index=True)
+        events["date"] = pd.to_datetime(events["date"], errors="coerce").dt.normalize()
+        events["code"] = events["code"].astype(str).map(_normalize_code)
+        events = events.dropna(subset=["date", "code"])
+        events = events[events["code"].ne("")]
+        events = events[(events["date"] >= start_date) & (events["date"] <= end_date)]
+        if events.empty:
+            notes["text_loaded_files"] = str(loaded_files)
+            notes["text_skipped_files"] = str(skipped_files)
+            notes["text_event_rows"] = "0"
+            notes["text_daily_rows"] = "0"
+            return pd.DataFrame(), notes
+
+        daily_text = build_text_daily_features(events)
+        notes["text_loaded_files"] = str(loaded_files)
+        notes["text_skipped_files"] = str(skipped_files)
+        notes["text_event_rows"] = str(len(events))
+        notes["text_daily_rows"] = str(len(daily_text))
+        notes["text_daily_cols"] = str(len(daily_text.columns))
+        return daily_text, notes
+
+    def _attach_text_to_daily(
+        self,
+        daily_df: pd.DataFrame,
+        *,
+        start_date: pd.Timestamp,
+        end_date: pd.Timestamp,
+    ) -> tuple[pd.DataFrame, Dict[str, str]]:
+        text_daily, notes = self._load_text_daily_panel(
+            code_universe=daily_df["code"].astype(str).unique().tolist(),
+            start_date=start_date,
+            end_date=end_date,
+        )
+        if text_daily.empty:
+            return daily_df.copy(), notes
+
+        left = daily_df.copy()
+        left["date"] = pd.to_datetime(left["date"], errors="coerce").dt.normalize()
+        left["code"] = left["code"].astype(str).map(_normalize_code)
+        left = left.dropna(subset=["date", "code"])
+        left = left[left["code"].ne("")]
+
+        text_daily = text_daily.copy()
+        text_daily["date"] = pd.to_datetime(text_daily["date"], errors="coerce").dt.normalize()
+        text_daily["code"] = text_daily["code"].astype(str).map(_normalize_code)
+        text_daily = text_daily.dropna(subset=["date", "code"])
+        text_daily = text_daily[text_daily["code"].ne("")]
+        text_daily = (
+            text_daily.sort_values(["code", "date"])
+            .groupby(["code", "date"], as_index=False)
+            .last()
+            .reset_index(drop=True)
+        )
+        if text_daily.empty:
+            return daily_df.copy(), notes
+
+        merged = left.merge(text_daily, on=["date", "code"], how="left")
+        notes["text_merged_cols"] = str(len([c for c in merged.columns if str(c).startswith("txt_")]))
+        return merged, notes
 
     def load(self) -> MarketBundle:
         load_start, load_end = compute_load_window(
@@ -228,8 +1051,8 @@ class MarketUniverseDataLoader(MarketDataLoader):
             factor_freq=str(self.factor_freq),
         )
         log_progress(
-            f"计算加载窗口完成：start={load_start.date()}, end={load_end.date()}, "
-            f"lookback_days={self.lookback_days}, horizon={self.horizon}, factor_freq={self.factor_freq}。",
+            f"computed load window: start={load_start.date()}, end={load_end.date()}, "
+            f"lookback_days={self.lookback_days}, horizon={self.horizon}, factor_freq={self.factor_freq}",
             module="loader",
         )
         daily_df, minute_df = self._load_market_frames(
@@ -241,6 +1064,16 @@ class MarketUniverseDataLoader(MarketDataLoader):
             stock_list_path=Path(self.data_cfg.stock_list_path) if self.data_cfg.stock_list_path else None,
             main_board_only=self.data_cfg.main_board_only,
         )
+        daily_df, fund_notes = self._attach_fundamental_to_daily(
+            daily_df,
+            start_date=load_start,
+            end_date=load_end,
+        )
+        daily_df, text_notes = self._attach_text_to_daily(
+            daily_df,
+            start_date=load_start,
+            end_date=load_end,
+        )
         codes = sorted(daily_df["code"].astype(str).drop_duplicates().tolist())
         notes = {
             "data_root": self.data_cfg.data_root,
@@ -249,8 +1082,10 @@ class MarketUniverseDataLoader(MarketDataLoader):
             "main_board_only": str(self.data_cfg.main_board_only),
             "file_format": self.data_cfg.file_format,
         }
+        notes.update({k: str(v) for k, v in fund_notes.items()})
+        notes.update({k: str(v) for k, v in text_notes.items()})
         log_progress(
-            f"市场数据组装完成：daily_rows={len(daily_df)}, minute_rows={len(minute_df)}, codes={len(codes)}。",
+            f"market bundle ready: daily_rows={len(daily_df)}, minute_rows={len(minute_df)}, codes={len(codes)}",
             module="loader",
         )
         return MarketBundle(
@@ -348,6 +1183,43 @@ def _rolling_std(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Se
     return g.transform(lambda s: s.rolling(window, min_periods=window).std())
 
 
+def _get_numeric_or_nan(df: pd.DataFrame, col: str) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series(np.nan, index=df.index, dtype=float)
+    return pd.to_numeric(df[col], errors="coerce")
+
+
+def _add_fundamental_hf_fusion_features(df: pd.DataFrame) -> pd.DataFrame:
+    out = df.copy()
+    for cat in FUND_CATEGORIES:
+        score_col = f"fd_{cat}_score"
+        trend_col = f"fd_{cat}_trend"
+        disp_col = f"fd_{cat}_disp"
+        if score_col not in out.columns:
+            continue
+        score = _get_numeric_or_nan(out, score_col)
+        trend = _get_numeric_or_nan(out, trend_col)
+        disp = _get_numeric_or_nan(out, disp_col)
+        signed_flow = _get_numeric_or_nan(out, "signed_vol_imbalance_5m")
+        jump = _get_numeric_or_nan(out, "jump_ratio_5m")
+        intraday_trend = _get_numeric_or_nan(out, "open_to_close_intraday")
+        vwap_bias = _get_numeric_or_nan(out, "close_to_vwap_day")
+        minute_up = _get_numeric_or_nan(out, "minute_up_ratio_5m")
+        minute_skew = _get_numeric_or_nan(out, "minute_ret_skew_5m")
+
+        out[f"fd_hf_{cat}_flow"] = (score * signed_flow).astype("float32")
+        out[f"fd_hf_{cat}_jump"] = (-score * jump).astype("float32")
+        out[f"fd_hf_{cat}_intraday"] = (trend * intraday_trend).astype("float32")
+        out[f"fd_hf_{cat}_vwap"] = (score * vwap_bias).astype("float32")
+        out[f"fd_hf_{cat}_sentiment"] = ((score - disp) * (minute_up + minute_skew)).astype("float32")
+
+    fusion_cols = [c for c in out.columns if c.startswith("fd_hf_")]
+    if fusion_cols:
+        out["fd_hf_fusion_score"] = out[fusion_cols].mean(axis=1, skipna=True).astype("float32")
+        out["fd_hf_fusion_disp"] = out[fusion_cols].std(axis=1, skipna=True).astype("float32")
+    return out
+
+
 def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataFrame) -> pd.DataFrame:
     """Build robust daily base features for factor library and portfolio models.
 
@@ -362,6 +1234,8 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
     df = df.dropna(subset=["date", "code", "open", "high", "low", "close", "volume"]).sort_values(["code", "date"])
+    for col in [c for c in df.columns if c.startswith("fdsrc_") or c.startswith("fd_")]:
+        df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
     if "preclose" not in df.columns:
         df["preclose"] = np.nan
     df["preclose"] = df["preclose"].where(df["preclose"].notna(), df.groupby("code")["close"].shift(1))
@@ -447,6 +1321,8 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
     df["crowding_proxy_raw"] = 0.45 * df["vol_ratio_20"].abs() + 0.35 * df["turn_ratio_5"].abs() + 0.20 * df["ret_vol_corr_20"].abs()
     df["board_type"] = df["code"].astype(str).map(infer_board_type)
     df["industry_bucket"] = df["code"].astype(str).map(infer_industry_bucket)
+    df = _add_fundamental_hf_fusion_features(df)
+    df = add_text_rolling_and_fusion_features(df)
     return df
 
 
@@ -514,6 +1390,25 @@ def _merge_daily_context_into_panel(panel: pd.DataFrame, daily_base: pd.DataFram
         "industry_bucket",
         "board_type",
     ]
+    fund_ctx: List[str] = []
+    for cat in FUND_CATEGORIES:
+        for i in range(1, FUND_INTRADAY_CONTEXT_RAW_COUNT + 1):
+            fund_ctx.append(f"fd_{cat}_raw_{i:02d}")
+        fund_ctx.extend([f"fd_{cat}_score", f"fd_{cat}_trend", f"fd_{cat}_disp"])
+        fund_ctx.extend([f"fd_hf_{cat}_flow", f"fd_hf_{cat}_jump", f"fd_hf_{cat}_intraday", f"fd_hf_{cat}_vwap", f"fd_hf_{cat}_sentiment"])
+    fund_ctx.extend(["fd_hf_fusion_score", "fd_hf_fusion_disp"])
+    text_ctx = [c for c in TEXT_CONTEXT_COLUMNS if c in daily_base.columns]
+    text_ctx_dynamic = [c for c in daily_base.columns if str(c).startswith("txt_")]
+    ctx_candidates = [*ctx_candidates, *fund_ctx, *text_ctx, *text_ctx_dynamic]
+    # de-duplicate while preserving order
+    seen_ctx: set[str] = set()
+    dedup_ctx: List[str] = []
+    for c in ctx_candidates:
+        if c in seen_ctx:
+            continue
+        seen_ctx.add(c)
+        dedup_ctx.append(c)
+    ctx_candidates = dedup_ctx
     ctx_cols = [c for c in ctx_candidates if c in daily_base.columns and c not in out.columns]
     if not ctx_cols:
         return out

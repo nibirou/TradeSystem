@@ -22,6 +22,16 @@ class DataConfig:
     data_root: str
     universe: str
     stock_list_path: str | None
+    fundamental_root_ak: str
+    fundamental_root_bsq: str
+    fundamental_file_format: str
+    enable_fundamental_data: bool
+    text_root_news: str
+    text_root_notice: str
+    text_root_report_em: str
+    text_root_report_iwencai: str
+    text_file_format: str
+    enable_text_data: bool
     index_root: str
     file_format: str
     max_files: int | None
@@ -39,6 +49,9 @@ class FactorConfig:
     factor_packages: str
     custom_factor_py: str | None
     list_factors: bool
+    export_factor_list: bool
+    factor_list_export_format: str
+    factor_list_export_path: str | None
     lookback_days: int
     min_ic_cross_section: int
     label_task: str
@@ -389,6 +402,36 @@ def _compact_output_leaf(
 DEFAULT_UNIVERSE = _normalize_universe(os.getenv("STRATEGY7_UNIVERSE", "hs300"))
 DEFAULT_DATA_ROOT = "auto"
 DEFAULT_STOCK_LIST_PATH = "auto"
+DEFAULT_FUNDAMENTAL_ROOT_AK = _autodetect_default_path(
+    ["data_baostock", "ak_fundamental"],
+    fallback=r"/workspace/Quant/data_baostock/ak_fundamental",
+    env_var="STRATEGY7_FUNDAMENTAL_ROOT_AK",
+)
+DEFAULT_FUNDAMENTAL_ROOT_BSQ = _autodetect_default_path(
+    ["data_baostock", "baostock_fundamental_q"],
+    fallback=r"/workspace/Quant/data_baostock/baostock_fundamental_q",
+    env_var="STRATEGY7_FUNDAMENTAL_ROOT_BSQ",
+)
+DEFAULT_TEXT_ROOT_NEWS = _autodetect_default_path(
+    ["data_baostock", "data_em_news"],
+    fallback=r"/workspace/Quant/data_baostock/data_em_news",
+    env_var="STRATEGY7_TEXT_ROOT_NEWS",
+)
+DEFAULT_TEXT_ROOT_NOTICE = _autodetect_default_path(
+    ["data_baostock", "data_em_notices"],
+    fallback=r"/workspace/Quant/data_baostock/data_em_notices",
+    env_var="STRATEGY7_TEXT_ROOT_NOTICE",
+)
+DEFAULT_TEXT_ROOT_REPORT_EM = _autodetect_default_path(
+    ["data_baostock", "data_em_reports"],
+    fallback=r"/workspace/Quant/data_baostock/data_em_reports",
+    env_var="STRATEGY7_TEXT_ROOT_REPORT_EM",
+)
+DEFAULT_TEXT_ROOT_REPORT_IWENCAI = _autodetect_default_path(
+    ["data_baostock", "data_iwencai_reports"],
+    fallback=r"/workspace/Quant/data_baostock/data_iwencai_reports",
+    env_var="STRATEGY7_TEXT_ROOT_REPORT_IWENCAI",
+)
 DEFAULT_INDEX_ROOT = _autodetect_default_path(
     ["data_baostock", "ak_index"],
     fallback=r"/workspace/Quant/data_baostock/ak_index",
@@ -436,6 +479,66 @@ def parse_args() -> argparse.Namespace:
             "可选股票列表文件路径（code 列），用于在 data-root 上二次过滤；"
             "auto 时 hs300/sz50/zz500 自动匹配 metadata 列表，all 默认不过滤。"
         ),
+    )
+    g_data.add_argument(
+        "--fundamental-root-ak",
+        type=str,
+        default=DEFAULT_FUNDAMENTAL_ROOT_AK,
+        help="AK 基本面数据根目录（financial_indicator_em / financial_indicator_sina / financial_abstract_sina）",
+    )
+    g_data.add_argument(
+        "--fundamental-root-bsq",
+        type=str,
+        default=DEFAULT_FUNDAMENTAL_ROOT_BSQ,
+        help="Baostock 季频财务数据根目录（balance/cash_flow/growth/profit 等）",
+    )
+    g_data.add_argument(
+        "--fundamental-file-format",
+        type=str,
+        choices=["auto", "csv", "parquet"],
+        default="auto",
+        help="基本面文件格式：auto 自动识别；csv/parquet 强制指定",
+    )
+    g_data.add_argument(
+        "--disable-fundamental-data",
+        action="store_true",
+        help="禁用基本面/财务数据加载（仅使用量价数据）",
+    )
+    g_data.add_argument(
+        "--text-root-news",
+        type=str,
+        default=DEFAULT_TEXT_ROOT_NEWS,
+        help="金融文本-新闻数据根目录（data_em_news）",
+    )
+    g_data.add_argument(
+        "--text-root-notice",
+        type=str,
+        default=DEFAULT_TEXT_ROOT_NOTICE,
+        help="金融文本-公告数据根目录（data_em_notices）",
+    )
+    g_data.add_argument(
+        "--text-root-report-em",
+        type=str,
+        default=DEFAULT_TEXT_ROOT_REPORT_EM,
+        help="金融文本-东财研报数据根目录（data_em_reports）",
+    )
+    g_data.add_argument(
+        "--text-root-report-iwencai",
+        type=str,
+        default=DEFAULT_TEXT_ROOT_REPORT_IWENCAI,
+        help="金融文本-问财研报数据根目录（data_iwencai_reports）",
+    )
+    g_data.add_argument(
+        "--text-file-format",
+        type=str,
+        choices=["auto", "csv", "parquet"],
+        default="auto",
+        help="金融文本文件格式：auto 自动识别；csv/parquet 强制指定",
+    )
+    g_data.add_argument(
+        "--disable-text-data",
+        action="store_true",
+        help="禁用金融文本数据加载（仅保留量价+基本面）",
     )
     g_data.add_argument(
         "--index-root",
@@ -519,7 +622,15 @@ def parse_args() -> argparse.Namespace:
         "--factor-packages",
         type=str,
         default="",
-        help="默认因子包过滤（逗号分隔；空=启用该频率全部默认包）",
+        help=(
+            "默认因子包过滤（逗号分隔；空=启用该频率全部默认包）。"
+            "可选：trend,reversal,liquidity,volatility,structure,context,"
+            "flow,crowding,price_action,intraday_signature,intraday_micro,period_signature,oscillator,overnight,"
+            "multi_freq,bridge,multiscale,"
+            "text_sentiment,text_attention,text_event,text_topic,text_fusion,"
+            "fund_growth,fund_valuation,fund_profitability,fund_quality,fund_leverage,fund_cashflow,"
+            "fund_efficiency,fund_expectation,fund_hf_fusion,all"
+        ),
     )
     g_factor.add_argument(
         "--custom-factor-py",
@@ -531,6 +642,24 @@ def parse_args() -> argparse.Namespace:
         "--list-factors",
         action="store_true",
         help="仅列出当前频率可用因子并退出（默认不训练不回测）",
+    )
+    g_factor.add_argument(
+        "--export-factor-list",
+        action="store_true",
+        help="在 --list-factors 模式下导出因子清单文件",
+    )
+    g_factor.add_argument(
+        "--factor-list-export-format",
+        type=str,
+        choices=["csv", "json", "markdown"],
+        default="csv",
+        help="因子清单导出格式（仅 --export-factor-list 生效）：csv/json/markdown",
+    )
+    g_factor.add_argument(
+        "--factor-list-export-path",
+        type=str,
+        default=None,
+        help="因子清单导出路径（文件路径）；为空时自动写入 output_dir/factor_lists/",
     )
     g_factor.add_argument(
         "--lookback-days",
@@ -948,6 +1077,16 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         data_root=data_root_resolved,
         universe=universe_resolved,
         stock_list_path=stock_list_path_resolved,
+        fundamental_root_ak=_resolve_path(args.fundamental_root_ak),
+        fundamental_root_bsq=_resolve_path(args.fundamental_root_bsq),
+        fundamental_file_format=str(args.fundamental_file_format),
+        enable_fundamental_data=not bool(args.disable_fundamental_data),
+        text_root_news=_resolve_path(args.text_root_news),
+        text_root_notice=_resolve_path(args.text_root_notice),
+        text_root_report_em=_resolve_path(args.text_root_report_em),
+        text_root_report_iwencai=_resolve_path(args.text_root_report_iwencai),
+        text_file_format=str(args.text_file_format),
+        enable_text_data=not bool(args.disable_text_data),
         index_root=_resolve_path(args.index_root),
         file_format=args.file_format,
         max_files=args.max_files,
@@ -963,6 +1102,13 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         factor_packages=str(args.factor_packages),
         custom_factor_py=_resolve_path(args.custom_factor_py) if args.custom_factor_py else None,
         list_factors=bool(args.list_factors),
+        export_factor_list=bool(getattr(args, "export_factor_list", False)),
+        factor_list_export_format=str(getattr(args, "factor_list_export_format", "csv")),
+        factor_list_export_path=(
+            _resolve_path(getattr(args, "factor_list_export_path"))
+            if getattr(args, "factor_list_export_path", None)
+            else None
+        ),
         lookback_days=int(args.lookback_days),
         min_ic_cross_section=int(args.min_ic_cross_section),
         label_task=args.label_task,

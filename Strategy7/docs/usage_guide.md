@@ -86,6 +86,48 @@ python -c "import torch; print(torch.__version__)"
 1. `D:/PythonProject/Quant/data_baostock/ak_index`
 2. 文件：`hs300_price/zz500_price/zz1000_price`（csv/parquet）
 
+基本面/财务数据目录（默认）：
+
+1. `--fundamental-root-ak`：`D:/PythonProject/Quant/data_baostock/ak_fundamental`
+2. `--fundamental-root-bsq`：`D:/PythonProject/Quant/data_baostock/baostock_fundamental_q`
+3. AK 子源：`financial_indicator_em / financial_indicator_sina / financial_abstract_sina`
+4. Baostock 子源：`balance / cash_flow / dupont / forecast / growth / operation / perf_express / profit`
+5. 可用 `--fundamental-file-format auto|csv|parquet` 指定格式，`--disable-fundamental-data` 可关闭基本面加载
+
+金融文本数据目录（默认）：
+
+1. `--text-root-news`：`D:/PythonProject/Quant/data_baostock/data_em_news`
+2. `--text-root-notice`：`D:/PythonProject/Quant/data_baostock/data_em_notices`
+3. `--text-root-report-em`：`D:/PythonProject/Quant/data_baostock/data_em_reports`
+4. `--text-root-report-iwencai`：`D:/PythonProject/Quant/data_baostock/data_iwencai_reports`
+5. 可用 `--text-file-format auto|csv|parquet` 指定格式，`--disable-text-data` 可关闭文本加载
+6. 文本源会自动做日频 NLP 聚合并透传到分钟/周/月频，支持与量价/基本面因子融合
+
+金融文本数据类型与格式（基于 `data_baostock` 目录扫描）：
+
+1. 数据源分类：
+   - `data_em_news`：东方财富新闻
+   - `data_em_notices`：东方财富公告
+   - `data_em_reports`：东方财富研报
+   - `data_iwencai_reports`：同花顺问财研报
+2. 文件组织：
+   - 目录按 `universe` 分层（如 `all/hs300/zz500/sz50`，实际存在的子目录因源而异）
+   - 文件按股票命名：`sh_600000.csv` / `sz_000001.csv`（或 parquet）
+3. 当前扫描到的 universe 覆盖（示例机数据）：
+   - `data_em_news`：`hs300/zz500`
+   - `data_em_notices`：`all/hs300/zz500`
+   - `data_em_reports`：`hs300`
+   - `data_iwencai_reports`：`hs300/zz500`
+4. 加载器会按 `--universe` 优先读取，并自动 fallback 到 `all -> hs300 -> zz500 -> sz50`，因此可兼容目录不齐全的情况。
+5. 字段映射（核心）：
+   - `news`：时间列优先 `发布时间`；代码列优先 `关键词/股票代码`；文本列优先 `新闻标题 + 新闻正文/新闻内容`
+   - `notice`：时间列优先 `公告发布时间/公告日期`；代码列优先 `股票代码`；文本列优先 `公告标题 + 公告正文/公告摘要`
+   - `em_report`：时间列优先 `研报发布时间/发布日期`；代码列优先 `股票代码`；文本列优先 `研报标题 + 研报正文`；评级变化优先 `评级变动`
+   - `iwencai`：时间列优先 `publish_time`；若无代码列则使用文件名反推股票代码；文本列优先 `title + content`
+6. 编码与格式：
+   - 默认按 UTF-8 读取（`csv/parquet`）；通过 `--text-file-format` 可显式限制格式。
+   - 同一路径下支持 csv/parquet 混合，`auto` 会按文件后缀自动识别。
+
 股票列表文件（可选，用于二次过滤）：
 
 1. `D:/PythonProject/Quant/data_baostock/metadata/stock_list_hs300.csv`
@@ -149,7 +191,43 @@ python Strategy7/run_strategy7.py `
 python Strategy7/run_strategy7.py --list-factors --factor-freq D
 ```
 
-说明：当前版本已支持 `--list-factors` 快速路径，不再依赖本地行情数据存在。
+说明：当前版本已支持 `--list-factors` 快速路径，不再依赖本地行情数据存在。  
+清单每行会输出以下字段，便于直接阅读和解释：
+
+1. `factor`：英文因子名（程序主键）
+2. `freq`：因子频率
+3. `factor_package`：主因子包分类（与 `--factor-packages` 一致）
+4. `factor_packages`：该因子所属全部因子包（逗号分隔）
+5. `name_cn`：中文名称（按因子结构自动生成）
+6. `meaning_cn`：中文含义（该因子想刻画的市场/基本面信息）
+7. `formula_cn`：计算公式中文解释（模板因子会给出标准公式）
+8. `description`：原始英文说明（便于交叉核对）
+
+同时在清单末尾会输出摘要：
+
+1. `Fundamental Factor Coverage`：对应频率基本面因子的 `expected/listed/missing` 覆盖情况
+2. `Factor Package Summary`：按因子包统计量价、基本面、金融文本三大类数量
+
+`--list-factors` 支持导出（可选）：
+
+1. `--export-factor-list`：开启导出
+2. `--factor-list-export-format csv|json|markdown`：导出格式
+3. `--factor-list-export-path <file>`：自定义导出文件路径（可选）
+
+示例：
+
+```powershell
+# 自动写入 output_dir/factor_lists/
+python Strategy7/run_strategy7.py `
+  --list-factors --factor-freq 30min `
+  --export-factor-list --factor-list-export-format csv
+
+# 指定导出路径（Markdown）
+python Strategy7/run_strategy7.py `
+  --list-factors --factor-freq D `
+  --export-factor-list --factor-list-export-format markdown `
+  --factor-list-export-path D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/factor_list_D.md
+```
 
 ### 5.5 股票池切换与自定义池
 
@@ -178,9 +256,9 @@ python Strategy7/run_strategy7.py `
 参数分组：
 
 1. 数据：
-   `--universe --data-root --stock-list-path(--hs300-list-path 兼容) --index-root --file-format --max-files --main-board-only`
+   `--universe --data-root --stock-list-path(--hs300-list-path 兼容) --index-root --file-format --max-files --main-board-only --fundamental-root-ak --fundamental-root-bsq --fundamental-file-format --disable-fundamental-data --text-root-news --text-root-notice --text-root-report-em --text-root-report-iwencai --text-file-format --disable-text-data`
 2. 因子：
-   `--factor-freq --factor-list --factor-packages --custom-factor-py --label-task --lookback-days`
+   `--factor-freq --factor-list --factor-packages --custom-factor-py --list-factors --export-factor-list --factor-list-export-format --factor-list-export-path --label-task --lookback-days`
 3. 选股模型：
    `--stock-model-type`（`decision_tree`/`factor_gcl`/`dafat`）
 4. 择时模型：
@@ -209,15 +287,42 @@ python Strategy7/run_strategy7.py `
 
 每个主频的默认因子池都按“包”组织，当前统一支持：
 
-1. `legacy_core`：历史兼容核心因子（原工程默认因子 + 关键扩展）
-2. `trend`：趋势/动量包
-3. `reversal`：反转/均值回复包
-4. `liquidity`：流动性/成交行为包
-5. `volatility`：波动率/风险结构包
-6. `structure`：K线结构/微观形态包
-7. `context`：上下文状态包（日频风格代理、跨阶段背景）
-8. `bridge`：跨频桥接包（高频向主频聚合）
-9. `multiscale`：多尺度差分包（快慢频对比）
+1. `trend`：趋势/动量包
+2. `reversal`：反转/均值回复包
+3. `liquidity`：流动性/成交行为包
+4. `volatility`：波动率/风险结构包
+5. `structure`：K线结构/微观形态包
+6. `context`：上下文状态包（日频风格代理、跨阶段背景）
+7. `flow`：资金流/量价协同类
+8. `crowding`：拥挤度类
+9. `price_action`：价格行为/K线形态类
+10. `intraday_signature`：日内签名类
+11. `intraday_micro`：日内微观结构类
+12. `period_signature`：周月周期签名类
+13. `oscillator`：摆动指标类
+14. `overnight`：隔夜效应类
+15. `multi_freq`：跨频主桥接族（`hf_*`）类
+16. `bridge`：跨频桥接包（高频向主频聚合）
+17. `multiscale`：多尺度差分包（快慢频对比）
+18. `text_sentiment`：金融文本情绪类（>=30 初始因子）
+19. `text_attention`：金融文本关注度类（>=30 初始因子）
+20. `text_event`：金融文本事件风险类（>=30 初始因子）
+21. `text_topic`：金融文本主题类（>=30 初始因子）
+22. `text_fusion`：金融文本融合类（文本×量价×基本面，>=30 初始因子）
+23. `fund_growth`：基本面成长类（>=100 初始因子）
+24. `fund_valuation`：基本面估值类（>=100 初始因子）
+25. `fund_profitability`：基本面盈利能力类（>=100 初始因子）
+26. `fund_quality`：基本面质量类（>=100 初始因子）
+27. `fund_leverage`：基本面杠杆/偿债类（>=100 初始因子）
+28. `fund_cashflow`：基本面现金流类（>=100 初始因子）
+29. `fund_efficiency`：基本面运营效率类（>=100 初始因子）
+30. `fund_expectation`：预期/业绩预告类（>=100 初始因子）
+31. `fund_hf_fusion`：基本面-高频量价融合类（>=100 初始因子）
+
+说明：部分包只在特定频率有非空因子，例如 `period_signature` 仅在 `W/M` 生效，`intraday_signature` 仅在分钟频生效。
+
+补充说明：当前工程已统一为“仅使用 factor package 分类”，因子清单不再单独展示 `category` 列。
+你在清单中看到的分类与 `--factor-packages` 参数使用的是同一套标准。
 
 跨频桥接因子命名规则：
 
@@ -230,6 +335,9 @@ python Strategy7/run_strategy7.py `
 2. `--factor-packages trend,reversal`：只启用趋势+反转包
 3. `--factor-packages bridge,multiscale`：只做跨频研究
 4. `--factor-packages all`：显式启用全部默认包（等价于留空）
+5. `--factor-packages fund_growth,fund_quality`：只做成长+质量基本面研究
+6. `--factor-packages text_sentiment,text_event`：只做金融文本情绪+事件研究
+7. `--factor-packages text_fusion,fund_hf_fusion,bridge`：做文本/基本面与高频桥接融合研究
 
 示例：
 
@@ -243,7 +351,32 @@ python Strategy7/run_strategy7.py `
 建议：
 
 1. 先用 `--list-factors --factor-freq <freq>` 查看当前频率可用因子清单
-2. 再通过 `--factor-list` 按研究主题筛选子集（例如偏趋势、偏流动性、偏跨频）
+2. 再通过 `--factor-list` 按研究主题筛选子集（例如偏趋势、偏流动性、偏跨频、偏文本情绪）
+
+`--factor-list` 构建示例（以 30min 为例）：
+
+1. 先查看清单并导出：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --list-factors --factor-freq 30min `
+  --export-factor-list --factor-list-export-format csv
+```
+
+2. 在导出的 `factor_list_30min_*.csv` 里按 `factor_package` 选取目标主题因子（例如 `trend` + `liquidity` + `multi_freq`），拼成逗号分隔字符串：
+
+```text
+ret_1,ret_3,ma_gap_12,amount_ratio_12,liquidity_stress,hf_noise_to_signal,hf_fast_slow_trend_diff
+```
+
+3. 回填到 `--factor-list` 运行：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --factor-freq 30min `
+  --factor-list ret_1,ret_3,ma_gap_12,amount_ratio_12,liquidity_stress,hf_noise_to_signal,hf_fast_slow_trend_diff `
+  --stock-model-type factor_gcl
+```
 
 布尔参数注意：
 
@@ -302,6 +435,8 @@ python Strategy7/run_strategy7.py `
 2. 可通过 `--factor-packages` 控制注入包（空=全部）
 3. 可通过 `--disable-default-factor-materials` 关闭默认因子素材注入
 4. `--index-root` 会加载 HS300 指数并注入市场上下文特征（收益、波动、回撤等）
+5. 基本面素材默认参与面板构建（AK+Baostock）；可通过 `--disable-fundamental-data` 关闭
+6. 金融文本素材默认参与面板构建（news/notice/report）；可通过 `--disable-text-data` 关闭
 
 示例（基本面）：
 
