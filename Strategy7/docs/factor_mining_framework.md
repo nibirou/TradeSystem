@@ -125,10 +125,15 @@
 - 对分钟框架：
   - 当 `factor_freq` 为分钟频时，注入因子直接进入分钟面板素材池
   - 当 `factor_freq=D` 且使用分钟框架时，日频素材会作为“日内常量字段”参与分钟表达式计算
-- 自动快照导出（默认开启）：
-  - 每次运行会导出“全部因子 vs 本次使用因子”对比快照
+- 自动快照导出（默认关闭）：
+  - 通过 `--auto-export-factor-snapshot` 显式开启
+  - 开启后会导出“全部因子 vs 本次使用因子”对比快照
   - 路径：`Strategy7/outputs/factor_snapshots/run_factor_mining/<timestamp_freq_tag>/`
   - 分类目录：`by_group/<price_volume|fundamental|text|mined>/<factor_package>/all.csv|used.csv`
+- 因子值缓存复用（默认关闭）：
+  - `--enable-factor-value-store` 开启后，挖掘素材因子会优先从缓存读取
+  - 缺失素材因子自动增量计算并回写缓存
+  - 仓库结构与主入口一致：`<factor_freq>/by_group/<group>/<factor_package>/<code>.parquet|csv`
 - 素材特征工程（可选，默认关闭）：
   - 开关：`--enable-material-feature-engineering`
   - 规则：训练期覆盖率过滤 + 近常数过滤 + 高相关贪心去冗余

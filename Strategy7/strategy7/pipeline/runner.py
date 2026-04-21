@@ -48,6 +48,11 @@ from ..factors.defaults import (
 )
 from ..factors.labeling import add_labels, pick_target_column, split_train_test, validate_label_frequency_alignment
 from ..factors.reporting import export_factor_snapshot, normalize_factor_package_alias
+from ..factors.store import (
+    build_factor_store_for_full_list,
+    hydrate_factor_panel_with_store,
+    resolve_factor_store_root,
+)
 from ..models import build_execution_model, build_portfolio_model, build_stock_model, build_timing_model
 from ..mining.catalog import (
     list_catalog_factor_packages,
@@ -384,7 +389,10 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     )
     # Fast path: listing factors should not require loading market data.
     # This makes `--list-factors` usable even when local data folders are unavailable.
-    if cfg.factors.list_factors:
+    if cfg.factors.list_factors and not (
+        bool(getattr(cfg.factors, "enable_factor_value_store", False))
+        and bool(getattr(cfg.factors, "factor_value_store_build_all", False))
+    ):
         log_progress("进入仅列出因子模式。", module="pipeline")
         factor_lib = FactorLibrary()
         register_default_factors(factor_lib)
@@ -487,23 +495,25 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             factor_list_arg=str(getattr(cfg.factors, "factor_list", "")),
             default_set=snapshot_default_set,
         )
-        snapshot_paths = export_factor_snapshot(
-            meta_df_view=meta_df_view,
-            used_factors=selected_for_snapshot,
-            entrypoint="run_strategy7",
-            factor_freq=cfg.factors.factor_freq,
-            output_root=Path(__file__).resolve().parents[2] / "outputs" / "factor_snapshots",
-            run_tag="list_factors",
-            extra_summary={
-                "mode": "list_factors",
-                "catalog_factor_count": int(catalog_count),
-                "selected_factor_count": int(len(selected_for_snapshot)),
-            },
-        )
-        log_progress(
-            f"自动因子快照导出完成：snapshot_dir={snapshot_paths.get('snapshot_dir', '')}",
-            module="pipeline",
-        )
+        snapshot_paths: Dict[str, object] = {}
+        if bool(getattr(cfg.factors, "auto_export_factor_snapshot", False)):
+            snapshot_paths = export_factor_snapshot(
+                meta_df_view=meta_df_view,
+                used_factors=selected_for_snapshot,
+                entrypoint="run_strategy7",
+                factor_freq=cfg.factors.factor_freq,
+                output_root=Path(__file__).resolve().parents[2] / "outputs" / "factor_snapshots",
+                run_tag="list_factors",
+                extra_summary={
+                    "mode": "list_factors",
+                    "catalog_factor_count": int(catalog_count),
+                    "selected_factor_count": int(len(selected_for_snapshot)),
+                },
+            )
+            log_progress(
+                f"自动因子快照导出完成：snapshot_dir={snapshot_paths.get('snapshot_dir', '')}",
+                module="pipeline",
+            )
         package_summary = _print_factor_category_summary(meta_df)
         pv_total = int(sum(package_summary["price_volume"].values()))
         fund_total = int(sum(package_summary["fundamental"].values()))
@@ -694,8 +704,67 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         if c in run_meta_view.columns:
             run_meta_view = run_meta_view.drop(columns=[c])
     snapshot_paths: Dict[str, object] = {}
+    factor_package_map = {
+        str(r["factor"]): str(r["factor_package"])
+        for r in run_meta_df[["factor", "factor_package"]].to_dict(orient="records")
+    }
+    factor_store_enabled = bool(getattr(cfg.factors, "enable_factor_value_store", False))
+    factor_store_root = resolve_factor_store_root(
+        data_root=str(cfg.data.data_root),
+        store_root_arg=str(getattr(cfg.factors, "factor_value_store_root", "auto")),
+    )
+    factor_store_fmt = str(getattr(cfg.factors, "factor_value_store_format", "parquet"))
+    factor_store_build_report: Dict[str, object] = {}
+    factor_store_hydrate_report: Dict[str, object] = {"cache_enabled": False}
 
-    panel = compute_factor_panel(base_df=base_df, library=factor_lib, freq=factor_freq, selected_factors=selected_factors)
+    if factor_store_enabled and bool(getattr(cfg.factors, "factor_value_store_build_all", False)):
+        all_factor_df = run_meta_df.copy()
+        if "category" in all_factor_df.columns:
+            all_factor_df = all_factor_df[all_factor_df["category"].astype(str) != "auto_panel"]
+        all_factors = sorted(set(all_factor_df.get("factor", pd.Series(dtype=str)).astype(str).tolist()))
+        log_progress(
+            f"开始构建因子值缓存仓库（完整清单）：freq={factor_freq}, factor_count={len(all_factors)}。",
+            module="pipeline",
+        )
+        factor_store_build_report = build_factor_store_for_full_list(
+            base_df=base_df,
+            library=factor_lib,
+            freq=factor_freq,
+            all_factors=all_factors,
+            store_root=factor_store_root,
+            file_format=factor_store_fmt,
+            factor_package_map=factor_package_map,
+            chunk_size=int(getattr(cfg.factors, "factor_value_store_chunk_size", 64)),
+        )
+        log_progress(
+            "因子值缓存仓库构建完成："
+            f"saved_factor_count={int(factor_store_build_report.get('saved_factor_count', 0))}, "
+            f"saved_code_files={int(factor_store_build_report.get('saved_code_files', 0))}。",
+            module="pipeline",
+        )
+        if bool(getattr(cfg.factors, "factor_value_store_build_only", False)):
+            return {
+                "status": "factor_value_store_built_only",
+                "factor_freq": str(factor_freq),
+                "factor_store_root": str(factor_store_root),
+                "factor_store_format": str(factor_store_fmt),
+                "factor_store_build_report": factor_store_build_report,
+            }
+
+    if factor_store_enabled:
+        panel, factor_store_hydrate_report = hydrate_factor_panel_with_store(
+            base_df=base_df,
+            library=factor_lib,
+            freq=factor_freq,
+            selected_factors=selected_factors,
+            store_root=factor_store_root,
+            file_format=factor_store_fmt,
+            factor_package_map=factor_package_map,
+            coverage_threshold=0.999999,
+            write_back=True,
+        )
+    else:
+        panel = compute_factor_panel(base_df=base_df, library=factor_lib, freq=factor_freq, selected_factors=selected_factors)
     log_progress(f"因子面板计算完成：rows={len(panel)}, cols={len(panel.columns)}。", module="pipeline")
 
     # 6) Cross-sectional preprocessing (winsorize / zscore / optional neutralize).
@@ -809,26 +878,29 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         if not selected_factors:
             raise RuntimeError("feature engineering removed all factors; please relax FE thresholds.")
 
-    snapshot_paths = export_factor_snapshot(
-        meta_df_view=run_meta_view,
-        used_factors=selected_factors,
-        entrypoint="run_strategy7",
-        factor_freq=factor_freq,
-        output_root=Path(__file__).resolve().parents[2] / "outputs" / "factor_snapshots",
-        run_tag=Path(cfg.output_dir).name,
-        extra_summary={
-            "mode": "run",
-            "catalog_factor_count": int(len(catalog_entries)),
-            "selected_factor_count_before_fe": int(len(selected_factors_before_fe)),
-            "selected_factor_count_after_fe": int(len(selected_factors)),
-            "feature_engineering": fe_report,
-            "output_dir": str(cfg.output_dir),
-        },
-    )
-    log_progress(
-        f"自动因子快照导出完成：snapshot_dir={snapshot_paths.get('snapshot_dir', '')}",
-        module="pipeline",
-    )
+    if bool(getattr(cfg.factors, "auto_export_factor_snapshot", False)):
+        snapshot_paths = export_factor_snapshot(
+            meta_df_view=run_meta_view,
+            used_factors=selected_factors,
+            entrypoint="run_strategy7",
+            factor_freq=factor_freq,
+            output_root=Path(__file__).resolve().parents[2] / "outputs" / "factor_snapshots",
+            run_tag=Path(cfg.output_dir).name,
+            extra_summary={
+                "mode": "run",
+                "catalog_factor_count": int(len(catalog_entries)),
+                "selected_factor_count_before_fe": int(len(selected_factors_before_fe)),
+                "selected_factor_count_after_fe": int(len(selected_factors)),
+                "feature_engineering": fe_report,
+                "factor_store_hydrate_report": factor_store_hydrate_report,
+                "factor_store_build_report": factor_store_build_report,
+                "output_dir": str(cfg.output_dir),
+            },
+        )
+        log_progress(
+            f"自动因子快照导出完成：snapshot_dir={snapshot_paths.get('snapshot_dir', '')}",
+            module="pipeline",
+        )
 
     # 9) Train pluggable models.
     log_progress("步骤 9/13：开始训练模型（选股/择时/组合/执行）。", module="pipeline")
@@ -1019,6 +1091,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "position_count": int(len(positions_df)),
             "external_rows": external_rows,
             "catalog_rows": catalog_rows,
+            "factor_store_hydrate": factor_store_hydrate_report,
+            "factor_store_build": factor_store_build_report,
         },
         "selected_factors": selected_factors,
         "model_metrics": model_metrics,
@@ -1044,6 +1118,13 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "feature_engineering_summary": fe_report,
             "selected_factor_count_before_fe": int(len(selected_factors_before_fe)),
             "selected_factor_count_after_fe": int(len(selected_factors)),
+            "factor_value_store_enabled": bool(factor_store_enabled),
+            "factor_value_store_root": str(factor_store_root) if factor_store_enabled else "",
+            "factor_value_store_format": str(factor_store_fmt) if factor_store_enabled else "",
+            "factor_value_store_build_all": bool(getattr(cfg.factors, "factor_value_store_build_all", False)),
+            "factor_value_store_build_only": bool(getattr(cfg.factors, "factor_value_store_build_only", False)),
+            "factor_value_store_build_report": factor_store_build_report,
+            "factor_value_store_hydrate_report": factor_store_hydrate_report,
             "timing_model_enabled": cfg.timing_model.model_type != "none",
             "portfolio_dynamic_enabled": cfg.portfolio_opt.mode == "dynamic_opt",
             "realistic_execution_enabled": cfg.execution_model.model_type == "realistic_fill",

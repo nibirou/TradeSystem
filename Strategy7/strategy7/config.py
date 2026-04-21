@@ -49,6 +49,7 @@ class FactorConfig:
     factor_packages: str
     custom_factor_py: str | None
     list_factors: bool
+    auto_export_factor_snapshot: bool
     export_factor_list: bool
     factor_list_export_format: str
     factor_list_export_path: str | None
@@ -65,6 +66,12 @@ class FactorConfig:
     fe_orth_method: str
     fe_pca_variance_ratio: float
     fe_pca_max_components: int
+    enable_factor_value_store: bool
+    factor_value_store_root: str
+    factor_value_store_format: str
+    factor_value_store_build_all: bool
+    factor_value_store_build_only: bool
+    factor_value_store_chunk_size: int
 
 
 @dataclass
@@ -657,6 +664,14 @@ def parse_args() -> argparse.Namespace:
         help="仅列出当前频率可用因子并退出（默认不训练不回测）",
     )
     g_factor.add_argument(
+        "--auto-export-factor-snapshot",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="是否自动导出“全部因子 vs 本次使用因子”快照（默认关闭）",
+    )
+    g_factor.add_argument(
         "--export-factor-list",
         action="store_true",
         help="在 --list-factors 模式下导出因子清单文件",
@@ -758,6 +773,49 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=128,
         help="特征工程：PCA最大主成分数量（fe-orth-method=pca 时生效）",
+    )
+    g_factor.add_argument(
+        "--enable-factor-value-store",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="启用因子值缓存仓库：优先读取已缓存因子值，缺失时计算并回写（默认关闭）",
+    )
+    g_factor.add_argument(
+        "--factor-value-store-root",
+        type=str,
+        default="auto",
+        help="因子值缓存仓库根目录；auto 时默认落到 data_baostock/factor_value_store",
+    )
+    g_factor.add_argument(
+        "--factor-value-store-format",
+        type=str,
+        choices=["parquet", "csv"],
+        default="csv",
+        help="因子值缓存文件格式（推荐 parquet）",
+    )
+    g_factor.add_argument(
+        "--factor-value-store-build-all",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="按当前频率完整因子清单（等价 --list-factors 清单）批量构建/更新缓存仓库",
+    )
+    g_factor.add_argument(
+        "--factor-value-store-build-only",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="仅执行因子值缓存仓库构建后退出（需配合 --factor-value-store-build-all）",
+    )
+    g_factor.add_argument(
+        "--factor-value-store-chunk-size",
+        type=int,
+        default=64,
+        help="批量构建缓存仓库时的分块大小（避免一次性计算过多因子）",
     )
 
     # =========================
@@ -1056,6 +1114,12 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("fe_pca_variance_ratio must be in (0,1].")
     if int(args.fe_pca_max_components) <= 0:
         raise ValueError("fe_pca_max_components must be positive.")
+    if int(args.factor_value_store_chunk_size) <= 0:
+        raise ValueError("factor_value_store_chunk_size must be positive.")
+    if bool(args.factor_value_store_build_only) and not bool(args.factor_value_store_build_all):
+        raise ValueError("factor_value_store_build_only requires factor_value_store_build_all=true.")
+    if bool(args.factor_value_store_build_all) and not bool(args.enable_factor_value_store):
+        raise ValueError("factor_value_store_build_all requires enable_factor_value_store=true.")
     if args.max_files is not None and int(args.max_files) <= 0:
         raise ValueError("max_files must be positive when provided.")
     if int(args.max_depth) <= 0:
@@ -1196,6 +1260,7 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         factor_packages=str(args.factor_packages),
         custom_factor_py=_resolve_path(args.custom_factor_py) if args.custom_factor_py else None,
         list_factors=bool(args.list_factors),
+        auto_export_factor_snapshot=bool(getattr(args, "auto_export_factor_snapshot", False)),
         export_factor_list=bool(getattr(args, "export_factor_list", False)),
         factor_list_export_format=str(getattr(args, "factor_list_export_format", "csv")),
         factor_list_export_path=(
@@ -1216,6 +1281,16 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         fe_orth_method=str(args.fe_orth_method),
         fe_pca_variance_ratio=float(args.fe_pca_variance_ratio),
         fe_pca_max_components=int(args.fe_pca_max_components),
+        enable_factor_value_store=bool(getattr(args, "enable_factor_value_store", False)),
+        factor_value_store_root=(
+            str(getattr(args, "factor_value_store_root", "auto"))
+            if str(getattr(args, "factor_value_store_root", "auto")).strip().lower() in {"", "auto", "default"}
+            else _resolve_path(str(getattr(args, "factor_value_store_root")))
+        ),
+        factor_value_store_format=str(getattr(args, "factor_value_store_format", "parquet")),
+        factor_value_store_build_all=bool(getattr(args, "factor_value_store_build_all", False)),
+        factor_value_store_build_only=bool(getattr(args, "factor_value_store_build_only", False)),
+        factor_value_store_chunk_size=int(getattr(args, "factor_value_store_chunk_size", 64)),
     )
     stock = StockModelConfig(
         model_type=args.stock_model_type,

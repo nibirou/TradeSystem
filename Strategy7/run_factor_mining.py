@@ -43,6 +43,10 @@ from strategy7.factors.defaults import (
 )
 from strategy7.factors.labeling import add_labels, validate_label_frequency_alignment
 from strategy7.factors.reporting import export_factor_snapshot, normalize_factor_package_alias
+from strategy7.factors.store import (
+    hydrate_factor_panel_with_store,
+    resolve_factor_store_root,
+)
 from strategy7.mining.catalog import (
     list_catalog_factor_packages,
     load_active_catalog_entries,
@@ -506,6 +510,11 @@ def _parse_args() -> argparse.Namespace:
         help="仅列出当前频率可用因子（默认+catalog+自定义）并退出，不加载市场数据",
     )
     g_date.add_argument(
+        "--auto-export-factor-snapshot",
+        action="store_true",
+        help="是否自动导出“全部因子 vs 本次使用因子”快照（默认关闭）",
+    )
+    g_date.add_argument(
         "--export-factor-list",
         action="store_true",
         help="在 --list-factors 模式下导出因子清单文件",
@@ -527,6 +536,24 @@ def _parse_args() -> argparse.Namespace:
         "--disable-default-factor-materials",
         action="store_true",
         help="关闭默认因子库素材注入（默认开启）",
+    )
+    g_date.add_argument(
+        "--enable-factor-value-store",
+        action="store_true",
+        help="启用因子值缓存仓库：优先读取已缓存素材因子，缺失时计算并回写（默认关闭）",
+    )
+    g_date.add_argument(
+        "--factor-value-store-root",
+        type=str,
+        default="auto",
+        help="因子值缓存仓库根目录；auto 时默认落到 data_baostock/factor_value_store",
+    )
+    g_date.add_argument(
+        "--factor-value-store-format",
+        type=str,
+        choices=["parquet", "csv"],
+        default="parquet",
+        help="因子值缓存文件格式（推荐 parquet）",
     )
     g_date.add_argument(
         "--enable-material-feature-engineering",
@@ -901,23 +928,25 @@ def main() -> None:
             factor_list_arg=str(args.factor_list),
             default_set=snapshot_default_set,
         )
-        snapshot_paths = export_factor_snapshot(
-            meta_df_view=meta_df_view,
-            used_factors=selected_for_snapshot,
-            entrypoint="run_factor_mining",
-            factor_freq=factor_freq,
-            output_root=Path(__file__).resolve().parent / "outputs" / "factor_snapshots",
-            run_tag=f"list_factors_{str(args.framework)}",
-            extra_summary={
-                "mode": "list_factors",
-                "catalog_factor_count": int(len(catalog_entries_for_list)),
-                "selected_factor_count": int(len(selected_for_snapshot)),
-            },
-        )
-        log_progress(
-            f"自动因子快照导出完成：snapshot_dir={snapshot_paths.get('snapshot_dir', '')}",
-            module="run_factor_mining",
-        )
+        snapshot_paths: Dict[str, object] = {}
+        if bool(args.auto_export_factor_snapshot):
+            snapshot_paths = export_factor_snapshot(
+                meta_df_view=meta_df_view,
+                used_factors=selected_for_snapshot,
+                entrypoint="run_factor_mining",
+                factor_freq=factor_freq,
+                output_root=Path(__file__).resolve().parent / "outputs" / "factor_snapshots",
+                run_tag=f"list_factors_{str(args.framework)}",
+                extra_summary={
+                    "mode": "list_factors",
+                    "catalog_factor_count": int(len(catalog_entries_for_list)),
+                    "selected_factor_count": int(len(selected_for_snapshot)),
+                },
+            )
+            log_progress(
+                f"自动因子快照导出完成：snapshot_dir={snapshot_paths.get('snapshot_dir', '')}",
+                module="run_factor_mining",
+            )
         pv_total = int(sum(package_summary["price_volume"].values()))
         fund_total = int(sum(package_summary["fundamental"].values()))
         text_total = int(sum(package_summary["text"].values()))
@@ -950,7 +979,8 @@ def main() -> None:
         )
         if export_path is not None:
             print(f"factor_list_export: {export_path}")
-        print(f"factor_snapshot_dir: {snapshot_paths.get('snapshot_dir', '')}")
+        if bool(args.auto_export_factor_snapshot):
+            print(f"factor_snapshot_dir: {snapshot_paths.get('snapshot_dir', '')}")
         return
 
     # Step 3) 构建数据配置并加载市场数据（含训练/验证所需回看窗口）。
@@ -1089,24 +1119,58 @@ def main() -> None:
         factor_list_arg=str(args.factor_list),
         default_set=default_set,
     )
+    factor_store_enabled = bool(args.enable_factor_value_store)
+    factor_store_root = resolve_factor_store_root(
+        data_root=str(data_root),
+        store_root_arg=str(args.factor_value_store_root),
+    )
+    factor_store_format = str(args.factor_value_store_format)
+    material_store_report: Dict[str, object] = {"cache_enabled": False}
+    material_meta_df = fac_lib.metadata(freq=factor_freq)
+    material_meta_df = _attach_factor_package_columns(material_meta_df, freq=factor_freq)
+    material_factor_package_map = {
+        str(r["factor"]): str(r["factor_package"])
+        for r in material_meta_df[["factor", "factor_package"]].to_dict(orient="records")
+    }
     if selected_material_cols:
         log_progress(
             f"开始注入挖掘素材因子：freq={factor_freq}, selected={len(selected_material_cols)}。",
             module="run_factor_mining",
         )
         before_cols = set(panel.columns)
-        panel = compute_factor_panel(
-            base_df=panel,
-            library=fac_lib,
-            freq=factor_freq,
-            selected_factors=selected_material_cols,
-        )
+        if factor_store_enabled:
+            panel, material_store_report = hydrate_factor_panel_with_store(
+                base_df=panel,
+                library=fac_lib,
+                freq=factor_freq,
+                selected_factors=selected_material_cols,
+                store_root=factor_store_root,
+                file_format=factor_store_format,
+                factor_package_map=material_factor_package_map,
+                coverage_threshold=0.999999,
+                write_back=True,
+            )
+        else:
+            panel = compute_factor_panel(
+                base_df=panel,
+                library=fac_lib,
+                freq=factor_freq,
+                selected_factors=selected_material_cols,
+            )
         added_cols = [c for c in selected_material_cols if c not in before_cols]
         log_progress(
             f"挖掘素材因子注入完成：added={len(added_cols)}, panel_cols={len(panel.columns)}, "
             f"catalog_entries={len(catalog_entries)}, catalog_rows_meta={catalog_rows}。",
             module="run_factor_mining",
         )
+        if factor_store_enabled:
+            log_progress(
+                "因子值缓存命中情况："
+                f"loaded={int(material_store_report.get('loaded_factor_count', 0))}, "
+                f"computed={int(material_store_report.get('computed_factor_count', 0))}, "
+                f"saved_files={int(material_store_report.get('saved_code_files', 0))}。",
+                module="run_factor_mining",
+            )
     else:
         log_progress("未选择任何显式素材因子，继续使用原始特征面板挖掘。", module="run_factor_mining")
 
@@ -1202,31 +1266,35 @@ def main() -> None:
                 level="debug",
             )
 
-    material_meta_df = fac_lib.metadata(freq=factor_freq)
-    material_meta_df = _attach_factor_package_columns(material_meta_df, freq=factor_freq)
     material_meta_view = enrich_factor_metadata_for_display(material_meta_df)
     if "category" in material_meta_view.columns:
         material_meta_view = material_meta_view.drop(columns=["category"])
-    material_snapshot = export_factor_snapshot(
-        meta_df_view=material_meta_view,
-        used_factors=selected_material_cols,
-        entrypoint="run_factor_mining",
-        factor_freq=factor_freq,
-        output_root=Path(__file__).resolve().parent / "outputs" / "factor_snapshots",
-        run_tag=f"run_{str(args.framework)}",
-        extra_summary={
-            "mode": "run",
-            "framework": str(args.framework),
-            "catalog_factor_count": int(len(catalog_entries)),
-            "selected_factor_count_before_material_fe": int(len(selected_material_cols_before_fe)),
-            "selected_factor_count_after_material_fe": int(len(selected_material_cols)),
-            "material_feature_engineering": material_fe_report,
-        },
-    )
-    log_progress(
-        f"自动因子快照导出完成：snapshot_dir={material_snapshot.get('snapshot_dir', '')}",
-        module="run_factor_mining",
-    )
+    material_snapshot: Dict[str, object] = {}
+    if bool(args.auto_export_factor_snapshot):
+        material_snapshot = export_factor_snapshot(
+            meta_df_view=material_meta_view,
+            used_factors=selected_material_cols,
+            entrypoint="run_factor_mining",
+            factor_freq=factor_freq,
+            output_root=Path(__file__).resolve().parent / "outputs" / "factor_snapshots",
+            run_tag=f"run_{str(args.framework)}",
+            extra_summary={
+                "mode": "run",
+                "framework": str(args.framework),
+                "catalog_factor_count": int(len(catalog_entries)),
+                "selected_factor_count_before_material_fe": int(len(selected_material_cols_before_fe)),
+                "selected_factor_count_after_material_fe": int(len(selected_material_cols)),
+                "material_feature_engineering": material_fe_report,
+                "factor_value_store_enabled": bool(factor_store_enabled),
+                "factor_value_store_root": str(factor_store_root) if factor_store_enabled else "",
+                "factor_value_store_format": str(factor_store_format) if factor_store_enabled else "",
+                "factor_value_store_report": material_store_report,
+            },
+        )
+        log_progress(
+            f"自动因子快照导出完成：snapshot_dir={material_snapshot.get('snapshot_dir', '')}",
+            module="run_factor_mining",
+        )
 
     # Step 8) 如使用 custom 框架，加载用户表达式规格。
     custom_specs = []
@@ -1335,6 +1403,10 @@ def main() -> None:
     summary["selected_material_factor_count_before_fe"] = int(len(selected_material_cols_before_fe))
     summary["selected_material_factor_count_after_fe"] = int(len(selected_material_cols))
     summary["material_feature_engineering"] = material_fe_report
+    summary["factor_value_store_enabled"] = bool(factor_store_enabled)
+    summary["factor_value_store_root"] = str(factor_store_root) if factor_store_enabled else ""
+    summary["factor_value_store_format"] = str(factor_store_format) if factor_store_enabled else ""
+    summary["factor_value_store_report"] = material_store_report
     summary["factor_snapshot_dir"] = str(material_snapshot.get("snapshot_dir", ""))
     summary["factor_snapshot_summary_path"] = str(material_snapshot.get("summary_path", ""))
     log_progress(

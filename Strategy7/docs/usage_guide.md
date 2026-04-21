@@ -258,7 +258,7 @@ python Strategy7/run_strategy7.py `
 1. 数据：
    `--universe --data-root --stock-list-path(--hs300-list-path 兼容) --index-root --file-format --max-files --main-board-only --fundamental-root-ak --fundamental-root-bsq --fundamental-file-format --disable-fundamental-data --text-root-news --text-root-notice --text-root-report-em --text-root-report-iwencai --text-file-format --disable-text-data`
 2. 因子：
-   `--factor-freq --factor-list --factor-packages --custom-factor-py --list-factors --export-factor-list --factor-list-export-format --factor-list-export-path --label-task --lookback-days --enable-factor-engineering --fe-min-coverage --fe-min-std --fe-corr-threshold --fe-preselect-top-n --fe-min-factors --fe-max-factors --fe-orth-method --fe-pca-variance-ratio --fe-pca-max-components`
+   `--factor-freq --factor-list --factor-packages --custom-factor-py --list-factors --auto-export-factor-snapshot --export-factor-list --factor-list-export-format --factor-list-export-path --label-task --lookback-days --enable-factor-engineering --fe-min-coverage --fe-min-std --fe-corr-threshold --fe-preselect-top-n --fe-min-factors --fe-max-factors --fe-orth-method --fe-pca-variance-ratio --fe-pca-max-components --enable-factor-value-store --factor-value-store-root --factor-value-store-format --factor-value-store-build-all --factor-value-store-build-only --factor-value-store-chunk-size`
 3. 选股模型：
    `--stock-model-type`（`decision_tree`/`factor_gcl`/`dafat`）
 4. 择时模型：
@@ -387,9 +387,9 @@ python Strategy7/run_strategy7.py `
   --fe-orth-method none
 ```
 
-自动因子快照导出（新增，默认开启）：
+自动因子快照导出（新增，默认关闭）：
 
-1. 两个入口 `run_strategy7.py` / `run_factor_mining.py` 每次运行都会自动导出“当前频率全部因子 + 本次使用因子”对比快照
+1. 两个入口 `run_strategy7.py` / `run_factor_mining.py` 通过 `--auto-export-factor-snapshot` 显式开启导出
 2. 导出根目录：`Strategy7/outputs/factor_snapshots/<entrypoint>/<timestamp_freq_tag>/`
 3. 目录结构按因子类型与包分类：`by_group/<price_volume|fundamental|text|mined>/<factor_package>/`
 4. 每级都会包含：
@@ -401,6 +401,38 @@ python Strategy7/run_strategy7.py `
    - `snapshot_summary.json`（统计信息）
    - `snapshot_overview.md`（直观对比概览）
 6. 之前的 `--export-factor-list` / `--factor-list-export-format` 功能继续保留（手动导出清单）
+
+因子值缓存仓库（新增，默认关闭）：
+
+1. 主入口可通过 `--enable-factor-value-store` 开启“优先读缓存，缺失再计算并回写”
+2. 默认仓库根目录（`--factor-value-store-root auto`）：`<data_baostock>/factor_value_store`
+3. 目录结构：`<factor_freq>/by_group/<price_volume|fundamental|text|mined>/<factor_package>/<code>.parquet|csv`
+4. 可按当前频率完整因子清单批量构建：`--factor-value-store-build-all true`
+5. 仅构建缓存后退出（不训练/不回测）：`--factor-value-store-build-only true`
+6. 分块大小：`--factor-value-store-chunk-size`（默认 `64`）
+7. 每次写入会自动更新跨度汇总：`<factor_freq>/factor_span_summary.csv`
+8. 若 `data_baostock` 目录不可写，请显式指定 `--factor-value-store-root` 到可写路径
+
+推荐两步法（主入口）：
+
+1. 先离线构建当前频率完整缓存：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --factor-freq D `
+  --enable-factor-value-store true `
+  --factor-value-store-build-all true `
+  --factor-value-store-build-only true
+```
+
+2. 再在研究运行中复用缓存（只算缺失增量）：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --factor-freq D `
+  --enable-factor-value-store true `
+  --factor-packages trend,liquidity,fund_growth
+```
 
 `--factor-list` 构建示例（以 30min 为例）：
 
@@ -472,7 +504,9 @@ python Strategy7/run_strategy7.py `
    - `--factor-list`：显式指定挖掘素材因子名列表
    - `--custom-factor-py`：加载自定义因子插件作为可选素材
    - `--list-factors` / `--export-factor-list`：列出并导出挖掘可用因子清单
+   - `--auto-export-factor-snapshot`：可选导出“全部因子 vs 本次使用因子”快照（默认关闭）
    - `--factor-catalog-path` / `--disable-catalog-factors`：控制 catalog 因子加载与过滤
+   - `--enable-factor-value-store --factor-value-store-root --factor-value-store-format`：启用素材因子值缓存复用（命中则直读，缺失增量计算）
 
 框架：
 
@@ -561,6 +595,17 @@ python Strategy7/run_factor_mining.py `
   --factor-freq 30min `
   --factor-list amount_ratio_12,ret_12,rv_12 `
   --factor-store-root D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/mining_test
+```
+
+示例（挖掘入口复用因子值缓存）：
+
+```powershell
+python Strategy7/run_factor_mining.py `
+  --framework fundamental_multiobj `
+  --factor-freq D `
+  --enable-factor-value-store `
+  --factor-value-store-root auto `
+  --factor-packages fund_growth,fund_quality
 ```
 
 示例（挖掘前素材去冗余，推荐在素材很多时开启）：
