@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from typing import Callable, Dict, List
+from pathlib import Path
+from typing import Callable, Dict, List, Sequence
 
 import pandas as pd
 
@@ -96,7 +97,6 @@ _CATEGORY_CN: Dict[str, str] = {
     "mined_fusion": "挖掘因子-融合",
     "mined_other": "挖掘因子-其他",
     "mined_custom": "挖掘因子-自定义",
-    "catalog_custom": "Catalog-自定义",
 }
 
 _CATEGORY_CN.update(
@@ -131,7 +131,6 @@ _PACKAGE_CN: Dict[str, str] = {
     "mined_fusion": "挖掘融合包",
     "mined_other": "挖掘其他包",
     "mined_custom": "挖掘自定义包",
-    "catalog_custom": "Catalog自定义包",
 }
 
 _PACKAGE_CN.update(
@@ -530,6 +529,146 @@ def load_custom_factor_module(library: FactorLibrary, module_path: str) -> None:
     if not hasattr(mod, "register_factors"):
         raise RuntimeError("custom factor module must provide register_factors(library)")
     mod.register_factors(library)
+
+
+def _safe_factor_token(name: str) -> str:
+    out = re.sub(r"[^0-9a-zA-Z_]+", "_", str(name).strip()).strip("_").lower()
+    if not out:
+        return "custom_factor"
+    if out[0].isdigit():
+        out = f"f_{out}"
+    return out
+
+
+def register_external_factor_table(
+    library: FactorLibrary,
+    *,
+    path: str,
+    freq: str,
+    category: str,
+    name_prefix: str = "custom",
+    factor_columns: Sequence[str] | None = None,
+    date_col: str = "date",
+    datetime_col: str = "datetime",
+    code_col: str = "code",
+    file_format: str = "auto",
+    description_prefix: str = "custom external table",
+) -> List[str]:
+    """Register factors from an external table file.
+
+    The source table should contain `code` and at least one of `date` / `datetime`.
+    Numeric columns are registered as factor functions and looked up by `[code, date]`
+    or `[code, datetime]` at compute time.
+    """
+    fp = Path(path).expanduser()
+    if not fp.exists():
+        raise FileNotFoundError(f"external factor table not found: {fp}")
+
+    fmt = str(file_format).strip().lower()
+    if fmt == "parquet" or (fmt == "auto" and fp.suffix.lower() == ".parquet"):
+        df = pd.read_parquet(fp)
+    else:
+        df = pd.read_csv(fp)
+
+    if code_col not in df.columns:
+        raise ValueError(f"external factor table missing code column: {code_col}")
+    has_date = date_col in df.columns
+    has_datetime = datetime_col in df.columns
+    if not has_date and not has_datetime:
+        raise ValueError(
+            f"external factor table must contain at least one time column: {date_col} or {datetime_col}"
+        )
+
+    raw = df.copy()
+    raw[code_col] = raw[code_col].astype(str).str.strip()
+    if has_date:
+        raw[date_col] = pd.to_datetime(raw[date_col], errors="coerce").dt.normalize()
+    if has_datetime:
+        raw[datetime_col] = pd.to_datetime(raw[datetime_col], errors="coerce")
+
+    key_cols = [code_col, datetime_col] if has_datetime else [code_col, date_col]
+    raw = raw.dropna(subset=key_cols)
+    if raw.empty:
+        return []
+
+    if factor_columns:
+        cols = [str(c).strip() for c in factor_columns if str(c).strip() in raw.columns]
+    else:
+        cols = []
+        for c in raw.columns:
+            if c in {code_col, date_col, datetime_col}:
+                continue
+            s = pd.to_numeric(raw[c], errors="coerce")
+            if s.notna().sum() <= 0:
+                continue
+            cols.append(str(c))
+    if not cols:
+        return []
+
+    if has_date:
+        daily_tbl = (
+            raw[[code_col, date_col, *cols]]
+            .sort_values([code_col, date_col])
+            .drop_duplicates([code_col, date_col], keep="last")
+            .set_index([code_col, date_col])
+        )
+    else:
+        daily_tbl = pd.DataFrame()
+    if has_datetime:
+        dt_tbl = (
+            raw[[code_col, datetime_col, *cols]]
+            .sort_values([code_col, datetime_col])
+            .drop_duplicates([code_col, datetime_col], keep="last")
+            .set_index([code_col, datetime_col])
+        )
+    else:
+        dt_tbl = pd.DataFrame()
+
+    prefix = str(name_prefix).strip().lower()
+    if not prefix:
+        prefix = "custom"
+
+    registered: List[str] = []
+    used: set[str] = set()
+    for src_col in cols:
+        safe_col = _safe_factor_token(src_col)
+        fac_name = f"{prefix}_{safe_col}"
+        i = 2
+        while fac_name in used or library.has(freq, fac_name):
+            fac_name = f"{prefix}_{safe_col}_{i:02d}"
+            i += 1
+        used.add(fac_name)
+
+        def _from_external(d: pd.DataFrame, c=src_col) -> pd.Series:
+            code_s = d["code"].astype(str).str.strip()
+            out = pd.Series(index=d.index, dtype=float)
+            if "datetime" in d.columns and not dt_tbl.empty and c in dt_tbl.columns:
+                dt_s = pd.to_datetime(d["datetime"], errors="coerce")
+                idx = pd.MultiIndex.from_arrays([code_s.to_numpy(), dt_s.to_numpy()])
+                out = pd.to_numeric(dt_tbl[c].reindex(idx), errors="coerce").set_axis(d.index)
+                if not daily_tbl.empty and c in daily_tbl.columns:
+                    miss = out.isna()
+                    if miss.any():
+                        ds = pd.to_datetime(d.loc[miss, "datetime"], errors="coerce").dt.normalize()
+                        idx_d = pd.MultiIndex.from_arrays([code_s.loc[miss].to_numpy(), ds.to_numpy()])
+                        fill = pd.to_numeric(daily_tbl[c].reindex(idx_d), errors="coerce").set_axis(out.index[miss])
+                        out.loc[miss] = fill
+                return out
+            if "date" in d.columns and not daily_tbl.empty and c in daily_tbl.columns:
+                ds = pd.to_datetime(d["date"], errors="coerce").dt.normalize()
+                idx = pd.MultiIndex.from_arrays([code_s.to_numpy(), ds.to_numpy()])
+                return pd.to_numeric(daily_tbl[c].reindex(idx), errors="coerce").set_axis(d.index)
+            return out
+
+        library.register(
+            name=fac_name,
+            category=str(category),
+            description=f"{description_prefix}: {fp.name}:{src_col}",
+            func=_from_external,
+            freq=str(freq),
+        )
+        registered.append(fac_name)
+    return registered
 
 
 def resolve_selected_factors(library: FactorLibrary, freq: str, factor_list_arg: str, default_set: List[str]) -> List[str]:

@@ -81,17 +81,30 @@ def _split_csv_items(expr: str | Sequence[str] | None) -> List[str]:
     return out
 
 
+def _normalize_package_alias(pack: str) -> str:
+    p = str(pack or "").strip()
+    if not p:
+        return ""
+    if p in {"catalog_custom", "mined_factor"}:
+        return "mined_custom"
+    if p == "custom_factor":
+        return "mined_custom"
+    if p.startswith("catalog_"):
+        return "mined_custom"
+    return p
+
+
 def _entry_factor_packages(entry: Dict[str, object]) -> Set[str]:
     out: Set[str] = set()
-    primary = str(entry.get("factor_package", "")).strip()
+    primary = _normalize_package_alias(str(entry.get("factor_package", "")).strip())
     if primary:
         out.add(primary)
 
     packs_expr = str(entry.get("factor_packages", "")).strip()
     if packs_expr:
-        out.update(_split_csv_items(packs_expr))
+        out.update(_normalize_package_alias(x) for x in _split_csv_items(packs_expr))
 
-    category = str(entry.get("category", "")).strip()
+    category = _normalize_package_alias(str(entry.get("category", "")).strip())
     if category:
         out.add(category)
     return {x for x in out if x}
@@ -134,7 +147,8 @@ def load_active_catalog_entries(
 
     name_set = {str(x).strip() for x in (factor_names or []) if str(x).strip()}
     requested_packs = _split_csv_items(package_expr)
-    requested_pack_set = {x for x in requested_packs if x.lower() != "all"}
+    requested_pack_set = {_normalize_package_alias(x) for x in requested_packs if x.lower() != "all"}
+    requested_pack_set = {x for x in requested_pack_set if x}
     package_filter_on = bool(requested_pack_set) and ("all" not in {x.lower() for x in requested_packs})
 
     for e in catalog.get("entries", []):
@@ -155,10 +169,12 @@ def load_active_catalog_entries(
         row_packs = _entry_factor_packages(row)
         if package_filter_on and not (row_packs & requested_pack_set):
             continue
-        if not str(row.get("factor_package", "")).strip():
-            row["factor_package"] = str(row.get("category", "")).strip()
-        if not str(row.get("factor_packages", "")).strip():
-            row["factor_packages"] = ",".join(sorted(row_packs))
+        normalized_primary = _normalize_package_alias(str(row.get("factor_package", "")).strip())
+        if not normalized_primary:
+            normalized_primary = _normalize_package_alias(str(row.get("category", "")).strip())
+        row["factor_package"] = normalized_primary or "mined_custom"
+        row["factor_packages"] = ",".join(sorted(row_packs)) if row_packs else row["factor_package"]
+        row["category"] = _normalize_package_alias(str(row.get("category", "")).strip()) or row["factor_package"]
         out.append(row)
     return out
 
@@ -292,7 +308,9 @@ def register_catalog_factors(library: FactorLibrary, entries: Iterable[Dict[str,
         col = str(e.get("column_name", e.get("value_col", name))).strip()
         if not name or not freq or not col:
             continue
-        category = str(e.get("category", "catalog_mined")).strip() or "catalog_mined"
+        category = _normalize_package_alias(str(e.get("factor_package", e.get("category", "mined_custom"))).strip())
+        if not category:
+            category = "mined_custom"
         desc = str(e.get("description", "")).strip() or f"catalog factor from {e.get('framework', 'unknown')}"
         library.register(name=name, category=category, description=desc, func=lambda d, c=col: d[c], freq=freq)
         registered.append(f"{freq}:{name}")

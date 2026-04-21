@@ -55,6 +55,16 @@ class FactorConfig:
     lookback_days: int
     min_ic_cross_section: int
     label_task: str
+    enable_factor_engineering: bool
+    fe_min_coverage: float
+    fe_min_std: float
+    fe_corr_threshold: float
+    fe_preselect_top_n: int
+    fe_min_factors: int
+    fe_max_factors: int
+    fe_orth_method: str
+    fe_pca_variance_ratio: float
+    fe_pca_max_components: int
 
 
 @dataclass
@@ -568,13 +578,13 @@ def parse_args() -> argparse.Namespace:
         "--extra-factor-paths",
         type=str,
         default="",
-        help="额外因子表路径，多个用逗号分隔；会按 [date,code] 左连接到主面板",
+        help="兼容参数（deprecated）：额外因子表路径，多个用逗号分隔；建议迁移到 --custom-factor-py 注册外部因子",
     )
     g_data.add_argument(
         "--extra-source-module",
         type=str,
         default=None,
-        help="自定义外部数据源插件路径，模块需实现 register_sources(registry)",
+        help="兼容参数（deprecated）：自定义外部数据源插件；建议迁移到 --custom-factor-py",
     )
     g_data.add_argument(
         "--factor-catalog-path",
@@ -631,7 +641,7 @@ def parse_args() -> argparse.Namespace:
             "fund_growth,fund_valuation,fund_profitability,fund_quality,fund_leverage,fund_cashflow,"
             "fund_efficiency,fund_expectation,fund_hf_fusion,"
             "mined_price_volume,mined_fundamental,mined_text,mined_fusion,mined_other,mined_custom,"
-            "catalog_custom,all。"
+            "all。"
             "catalog 挖掘因子还支持维度标签：mined_fw_*, mined_universe_*, mined_freq_*, mined_materialpkg_*。"
         ),
     )
@@ -685,6 +695,69 @@ def parse_args() -> argparse.Namespace:
             "训练标签类型：direction=涨跌分类；return=连续收益；"
             "volatility=连续波动率；multi_task=多任务占位（当前以 direction 为主）"
         ),
+    )
+    g_factor.add_argument(
+        "--enable-factor-engineering",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="是否在模型训练/回测前启用因子特征工程（覆盖率过滤+相关性去冗余+可选PCA正交降维）",
+    )
+    g_factor.add_argument(
+        "--fe-min-coverage",
+        type=float,
+        default=0.70,
+        help="特征工程：训练期最小覆盖率阈值（0~1）",
+    )
+    g_factor.add_argument(
+        "--fe-min-std",
+        type=float,
+        default=1e-8,
+        help="特征工程：训练期最小标准差阈值（过滤近常数因子）",
+    )
+    g_factor.add_argument(
+        "--fe-corr-threshold",
+        type=float,
+        default=0.92,
+        help="特征工程：因子两两相关性上限（绝对值，Spearman）",
+    )
+    g_factor.add_argument(
+        "--fe-preselect-top-n",
+        type=int,
+        default=2000,
+        help="特征工程：相关性去冗余前按质量评分预筛的候选因子上限（0=不预筛）",
+    )
+    g_factor.add_argument(
+        "--fe-min-factors",
+        type=int,
+        default=20,
+        help="特征工程：最终保留因子最小数量（防止过滤过度）",
+    )
+    g_factor.add_argument(
+        "--fe-max-factors",
+        type=int,
+        default=600,
+        help="特征工程：最终保留因子最大数量（0=不设上限）",
+    )
+    g_factor.add_argument(
+        "--fe-orth-method",
+        type=str,
+        choices=["none", "pca"],
+        default="none",
+        help="特征工程：正交化/降维方式（none=仅筛选；pca=基于训练集PCA投影）",
+    )
+    g_factor.add_argument(
+        "--fe-pca-variance-ratio",
+        type=float,
+        default=0.95,
+        help="特征工程：PCA累计解释方差比例阈值（fe-orth-method=pca 时生效）",
+    )
+    g_factor.add_argument(
+        "--fe-pca-max-components",
+        type=int,
+        default=128,
+        help="特征工程：PCA最大主成分数量（fe-orth-method=pca 时生效）",
     )
 
     # =========================
@@ -965,6 +1038,24 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("lookback_days must be positive.")
     if int(args.min_ic_cross_section) <= 1:
         raise ValueError("min_ic_cross_section must be greater than 1.")
+    if not (0.0 <= float(args.fe_min_coverage) <= 1.0):
+        raise ValueError("fe_min_coverage must be in [0,1].")
+    if float(args.fe_min_std) < 0.0:
+        raise ValueError("fe_min_std must be non-negative.")
+    if not (0.0 <= float(args.fe_corr_threshold) < 1.0):
+        raise ValueError("fe_corr_threshold must be in [0,1).")
+    if int(args.fe_preselect_top_n) < 0:
+        raise ValueError("fe_preselect_top_n must be non-negative.")
+    if int(args.fe_min_factors) <= 0:
+        raise ValueError("fe_min_factors must be positive.")
+    if int(args.fe_max_factors) < 0:
+        raise ValueError("fe_max_factors must be non-negative.")
+    if int(args.fe_max_factors) > 0 and int(args.fe_max_factors) < int(args.fe_min_factors):
+        raise ValueError("fe_max_factors must be >= fe_min_factors when positive.")
+    if not (0.0 < float(args.fe_pca_variance_ratio) <= 1.0):
+        raise ValueError("fe_pca_variance_ratio must be in (0,1].")
+    if int(args.fe_pca_max_components) <= 0:
+        raise ValueError("fe_pca_max_components must be positive.")
     if args.max_files is not None and int(args.max_files) <= 0:
         raise ValueError("max_files must be positive when provided.")
     if int(args.max_depth) <= 0:
@@ -1115,6 +1206,16 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         lookback_days=int(args.lookback_days),
         min_ic_cross_section=int(args.min_ic_cross_section),
         label_task=args.label_task,
+        enable_factor_engineering=bool(args.enable_factor_engineering),
+        fe_min_coverage=float(args.fe_min_coverage),
+        fe_min_std=float(args.fe_min_std),
+        fe_corr_threshold=float(args.fe_corr_threshold),
+        fe_preselect_top_n=int(args.fe_preselect_top_n),
+        fe_min_factors=int(args.fe_min_factors),
+        fe_max_factors=int(args.fe_max_factors),
+        fe_orth_method=str(args.fe_orth_method),
+        fe_pca_variance_ratio=float(args.fe_pca_variance_ratio),
+        fe_pca_max_components=int(args.fe_pca_max_components),
     )
     stock = StockModelConfig(
         model_type=args.stock_model_type,

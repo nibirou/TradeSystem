@@ -1,0 +1,74 @@
+{
+  "entrypoint": "run_strategy7",
+  "factor_freq": "D",
+  "run_tag": "_smoke_fe",
+  "generated_at": "2026-04-21T10:12:32.482925+08:00",
+  "total_factor_count": 4407,
+  "used_factor_count": 2,
+  "group_counts": {
+    "fundamental": 1965,
+    "price_volume": 1683,
+    "text": 759
+  },
+  "group_used_counts": {
+    "price_volume": 2
+  },
+  "package_counts": {
+    "auto_panel": 970,
+    "bridge": 60,
+    "context": 89,
+    "crowding": 1,
+    "flow": 3,
+    "fund_cashflow": 195,
+    "fund_efficiency": 195,
+    "fund_expectation": 195,
+    "fund_growth": 195,
+    "fund_hf_fusion": 405,
+    "fund_leverage": 195,
+    "fund_profitability": 195,
+    "fund_quality": 195,
+    "fund_valuation": 195,
+    "intraday_micro": 17,
+    "liquidity": 94,
+    "multi_freq": 16,
+    "multiscale": 40,
+    "oscillator": 1,
+    "overnight": 2,
+    "price_action": 3,
+    "reversal": 96,
+    "structure": 88,
+    "text_attention": 153,
+    "text_event": 153,
+    "text_fusion": 153,
+    "text_sentiment": 141,
+    "text_topic": 159,
+    "trend": 115,
+    "volatility": 88
+  },
+  "package_used_counts": {
+    "liquidity": 2
+  },
+  "mode": "run",
+  "catalog_factor_count": 0,
+  "selected_factor_count_before_fe": 2,
+  "selected_factor_count_after_fe": 2,
+  "feature_engineering": {
+    "enabled": true,
+    "input_factor_count": 2,
+    "coverage_kept_count": 2,
+    "variance_kept_count": 2,
+    "corr_kept_count": 2,
+    "final_factor_count": 2,
+    "orth_method": "none",
+    "removed_by_coverage": [],
+    "removed_by_variance": [],
+    "removed_by_correlation": [],
+    "pca_components": 0,
+    "pca_explained_ratio": 0.0,
+    "selected_factors": [
+      "amount_ratio_20",
+      "amihud_20"
+    ]
+  },
+  "output_dir": "Strategy7\\outputs\\_smoke_fe"
+}

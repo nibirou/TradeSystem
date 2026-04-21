@@ -2,6 +2,11 @@
 
 Usage:
 python run_strategy7.py --extra-source-module ./strategy7/plugins/custom_source_template.py
+
+Note:
+- `--extra-source-module` is kept for backward compatibility.
+- New projects should prefer `--custom-factor-py` and register factors directly
+  (including external table factors via `register_external_factor_table`).
 """
 
 from __future__ import annotations
@@ -35,4 +40,3 @@ def register_sources(registry) -> None:
             file_format="auto",
         ),
     )
-

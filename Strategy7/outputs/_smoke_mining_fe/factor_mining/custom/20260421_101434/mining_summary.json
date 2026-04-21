@@ -1,0 +1,46 @@
+{
+  "framework": "custom",
+  "factor_freq": "D",
+  "universe": "hs300",
+  "include_default_factor_materials": true,
+  "factor_packages": "",
+  "factor_list": "amihud_20",
+  "material_factor_count": 1,
+  "material_factor_names": [
+    "amihud_20"
+  ],
+  "enable_material_feature_engineering": true,
+  "material_fe_min_coverage": 0.7,
+  "material_fe_min_std": 1e-08,
+  "material_fe_corr_threshold": 0.95,
+  "material_fe_preselect_top_n": 1500,
+  "material_fe_min_factors": 1,
+  "material_fe_max_factors": 10,
+  "index_context_cols": [
+    "mkt_hs300_close",
+    "mkt_hs300_ret_1d",
+    "mkt_hs300_ret_5d",
+    "mkt_hs300_ret_20d",
+    "mkt_hs300_vol_20d",
+    "mkt_hs300_ma_gap_20d",
+    "mkt_hs300_drawdown_60d"
+  ],
+  "train_period": [
+    "2024-01-01",
+    "2024-02-29"
+  ],
+  "valid_period": [
+    "2024-03-01",
+    "2024-03-31"
+  ],
+  "population_size": 4,
+  "generations": 1,
+  "candidate_count": 1,
+  "selected_count": 0,
+  "catalog_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\_smoke_mining_fe\\factor_mining\\factor_catalog.json",
+  "factor_table_path": "Strategy7\\outputs\\_smoke_mining_fe\\factor_mining\\custom\\20260421_101434\\factor_values_D.parquet",
+  "selected_factors": [],
+  "selected_factor_packages": [],
+  "admission_profile": "D_custom_default_v1",
+  "top_candidates": []
+}

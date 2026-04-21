@@ -131,6 +131,13 @@ class FactorMiningConfig:
     factor_list: str = ""
     material_factor_count: int = 0
     material_factor_names: List[str] | None = None
+    enable_material_feature_engineering: bool = False
+    material_fe_min_coverage: float = 0.70
+    material_fe_min_std: float = 1e-8
+    material_fe_corr_threshold: float = 0.95
+    material_fe_preselect_top_n: int = 1500
+    material_fe_min_factors: int = 20
+    material_fe_max_factors: int = 800
     universe: str = ""
     index_context_cols: List[str] | None = None
 
@@ -1051,7 +1058,8 @@ def run_factor_mining(
         f"include_default_factor_materials={int(bool(cfg.include_default_factor_materials))}, "
         f"factor_packages='{cfg.factor_packages}', "
         f"factor_list='{cfg.factor_list}', "
-        f"material_factor_count={int(cfg.material_factor_count)}。",
+        f"material_factor_count={int(cfg.material_factor_count)}, "
+        f"enable_material_fe={int(bool(cfg.enable_material_feature_engineering))}。",
         module="mining",
         level="debug",
     )
@@ -1359,7 +1367,9 @@ def run_factor_mining(
         primary_package = packages[1] if len(packages) > 1 else (packages[0] if packages else "mined_other")
 
         if framework == "custom":
-            fac_name = str(spec.name)
+            fac_name = str(spec.name).strip()
+            if fac_name and not fac_name.lower().startswith("custom_"):
+                fac_name = f"custom_{fac_name}"
         else:
             fac_name = _build_mined_factor_name(
                 framework=framework,
@@ -1432,6 +1442,13 @@ def run_factor_mining(
         "factor_list": str(cfg.factor_list),
         "material_factor_count": int(cfg.material_factor_count),
         "material_factor_names": [str(x) for x in (cfg.material_factor_names or [])],
+        "enable_material_feature_engineering": bool(cfg.enable_material_feature_engineering),
+        "material_fe_min_coverage": float(cfg.material_fe_min_coverage),
+        "material_fe_min_std": float(cfg.material_fe_min_std),
+        "material_fe_corr_threshold": float(cfg.material_fe_corr_threshold),
+        "material_fe_preselect_top_n": int(cfg.material_fe_preselect_top_n),
+        "material_fe_min_factors": int(cfg.material_fe_min_factors),
+        "material_fe_max_factors": int(cfg.material_fe_max_factors),
         "index_context_cols": list(cfg.index_context_cols or []),
         "train_period": [str(pd.Timestamp(cfg.train_start).date()), str(pd.Timestamp(cfg.train_end).date())],
         "valid_period": [str(pd.Timestamp(cfg.valid_start).date()), str(pd.Timestamp(cfg.valid_end).date())],

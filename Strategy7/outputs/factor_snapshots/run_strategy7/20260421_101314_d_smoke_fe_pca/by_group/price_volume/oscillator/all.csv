@@ -1,0 +1,2 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+rsi14,D,Price-Volume / Non-Fundamental Packages,oscillator,oscillator,摆动指标·rsi14,摆动指标因子，刻画：rsi14,按定义计算：rsi14,rsi14,False,price_volume

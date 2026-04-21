@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import ast
+import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Dict, List
+from typing import Dict, List, Sequence
 
 import numpy as np
 import pandas as pd
@@ -57,6 +59,52 @@ def load_custom_specs(path: str | Path) -> List[CustomFactorSpec]:
             )
         )
     return specs
+
+
+def _safe_custom_name(source_factor: str, *, prefix: str = "custom_eval") -> str:
+    token = re.sub(r"[^0-9a-zA-Z_]+", "_", str(source_factor).strip()).strip("_").lower()
+    if not token:
+        token = "factor"
+    if token[0].isdigit():
+        token = f"f_{token}"
+    base = f"{prefix}_{token}"
+    if len(base) <= 96:
+        return base
+    digest = hashlib.sha1(str(source_factor).encode("utf-8")).hexdigest()[:8]
+    keep = max(8, 96 - len(prefix) - len(digest) - 2)
+    return f"{prefix}_{token[:keep]}_{digest}"
+
+
+def build_custom_specs_from_factor_names(
+    factor_names: Sequence[str],
+    *,
+    freq: str = "D",
+    category: str = "mined_custom",
+    name_prefix: str = "custom_eval",
+) -> List[CustomFactorSpec]:
+    """Build passthrough custom specs that evaluate existing panel factor columns."""
+    out: List[CustomFactorSpec] = []
+    used_names: set[str] = set()
+    for fac in factor_names:
+        source = str(fac).strip()
+        if not source:
+            continue
+        name = _safe_custom_name(source, prefix=name_prefix)
+        idx = 2
+        while name in used_names:
+            name = f"{_safe_custom_name(source, prefix=name_prefix)}_{idx:02d}"
+            idx += 1
+        used_names.add(name)
+        out.append(
+            CustomFactorSpec(
+                name=name,
+                expression=f'col("{source}")',
+                freq=str(freq),
+                category=str(category),
+                description=f"custom passthrough evaluate: {source}",
+            )
+        )
+    return out
 
 
 class _ExprEvaluator:
@@ -126,6 +174,14 @@ class _ExprEvaluator:
 
     def _call(self, name: str, args: List):
         fn = str(name).lower()
+
+        if fn == "col":
+            if not args:
+                raise ValueError("col(name) requires one column name argument")
+            col_name = str(args[0])
+            if col_name not in self.df.columns:
+                raise ValueError(f"column not found in panel: {col_name}")
+            return pd.to_numeric(self.df[col_name], errors="coerce")
 
         if fn == "abs":
             return self._series(args[0]).abs()

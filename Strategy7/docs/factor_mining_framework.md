@@ -116,7 +116,7 @@
 - 素材包可用参数：
   - `--factor-packages`：逗号分隔，控制注入哪些默认包（空=全部）
   - `--factor-list`：显式指定素材因子名（逗号分隔）；用于精确控制输入素材
-  - `--custom-factor-py`：加载自定义因子插件并纳入可选素材库
+  - `--custom-factor-py`：加载自定义因子插件并纳入可选素材库（支持在插件中从外部 CSV/Parquet 注册因子）
   - `--disable-default-factor-materials`：关闭默认因子素材注入
   - 新增金融文本因子包：`text_sentiment/text_attention/text_event/text_topic/text_fusion`
   - 每个文本类别初始模板因子数 >=30（按频率自动注册）
@@ -125,6 +125,15 @@
 - 对分钟框架：
   - 当 `factor_freq` 为分钟频时，注入因子直接进入分钟面板素材池
   - 当 `factor_freq=D` 且使用分钟框架时，日频素材会作为“日内常量字段”参与分钟表达式计算
+- 自动快照导出（默认开启）：
+  - 每次运行会导出“全部因子 vs 本次使用因子”对比快照
+  - 路径：`Strategy7/outputs/factor_snapshots/run_factor_mining/<timestamp_freq_tag>/`
+  - 分类目录：`by_group/<price_volume|fundamental|text|mined>/<factor_package>/all.csv|used.csv`
+- 素材特征工程（可选，默认关闭）：
+  - 开关：`--enable-material-feature-engineering`
+  - 规则：训练期覆盖率过滤 + 近常数过滤 + 高相关贪心去冗余
+  - 参数：`--material-fe-min-coverage --material-fe-min-std --material-fe-corr-threshold --material-fe-preselect-top-n --material-fe-min-factors --material-fe-max-factors`
+  - 作用：在不改变各挖掘框架目标函数定义的前提下，先压缩素材池规模，降低高维冗余导致的搜索噪声与训练耗时
 
 ### 2.6.1 挖掘因子命名与 factor package 分类（新）
 
@@ -285,7 +294,19 @@
 
 ## 5. 用户自定义因子
 
-### 5.1 自定义规格文件
+### 5.1 Custom 框架推荐用法
+
+推荐优先使用 `--factor-list` 直接评估已注册因子（包括默认因子、catalog 因子、`--custom-factor-py` 注册因子）：
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --framework custom \
+  --factor-freq 30min \
+  --custom-factor-py ./Strategy7/strategy7/plugins/custom_factor_template.py \
+  --factor-list custom_ret_accel_5_20,custom_intraday_mr
+```
+
+### 5.2 自定义规格文件（兼容模式）
 
 `--custom-spec-json` 使用 JSON 列表：
 
@@ -295,13 +316,13 @@
     "name": "custom_alpha_01",
     "expression": "cs_z(0.6*mom_20 - 0.4*amihud_20)",
     "freq": "D",
-    "category": "custom_factor",
+    "category": "mined_custom",
     "description": "示例：动量-流动性"
   }
 ]
 ```
 
-### 5.2 支持算子
+### 5.3 支持算子
 
 - 基础：`abs/log/sqrt/sign/clip/where`
 - 时序：`delay/delta/pct/ts_mean/ts_std/ts_z`
@@ -333,7 +354,19 @@ python Strategy7/run_factor_mining.py \
   --population-size 96 --generations 16 --top-n 20
 ```
 
-### 6.3 自定义因子挖掘
+### 6.3 自定义因子挖掘（推荐：按 factor-list 评估）
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --framework custom \
+  --factor-freq 30min \
+  --factor-list custom_ret_accel_5_20,custom_intraday_mr \
+  --custom-factor-py ./Strategy7/strategy7/plugins/custom_factor_template.py \
+  --train-start 2021-01-01 --train-end 2023-12-31 \
+  --valid-start 2024-01-01 --valid-end 2024-12-31
+```
+
+### 6.4 自定义表达式 JSON（兼容模式）
 
 ```bash
 python Strategy7/run_factor_mining.py \
@@ -343,7 +376,7 @@ python Strategy7/run_factor_mining.py \
   --valid-start 2024-01-01 --valid-end 2024-12-31
 ```
 
-### 6.4 分钟增强参数化挖掘
+### 6.5 分钟增强参数化挖掘
 
 ```bash
 python Strategy7/run_factor_mining.py \
@@ -353,7 +386,7 @@ python Strategy7/run_factor_mining.py \
   --population-size 96 --generations 16 --top-n 20
 ```
 
-### 6.5 ML 集成因子挖掘
+### 6.6 ML 集成因子挖掘
 
 ```bash
 python Strategy7/run_factor_mining.py \
@@ -367,7 +400,7 @@ python Strategy7/run_factor_mining.py \
   --ml-prefilter-topk 80 --ml-feature-min 10 --ml-feature-max 36
 ```
 
-### 6.6 GP 符号遗传规划因子挖掘
+### 6.7 GP 符号遗传规划因子挖掘
 
 ```bash
 python Strategy7/run_factor_mining.py \

@@ -258,7 +258,7 @@ python Strategy7/run_strategy7.py `
 1. 数据：
    `--universe --data-root --stock-list-path(--hs300-list-path 兼容) --index-root --file-format --max-files --main-board-only --fundamental-root-ak --fundamental-root-bsq --fundamental-file-format --disable-fundamental-data --text-root-news --text-root-notice --text-root-report-em --text-root-report-iwencai --text-file-format --disable-text-data`
 2. 因子：
-   `--factor-freq --factor-list --factor-packages --custom-factor-py --list-factors --export-factor-list --factor-list-export-format --factor-list-export-path --label-task --lookback-days`
+   `--factor-freq --factor-list --factor-packages --custom-factor-py --list-factors --export-factor-list --factor-list-export-format --factor-list-export-path --label-task --lookback-days --enable-factor-engineering --fe-min-coverage --fe-min-std --fe-corr-threshold --fe-preselect-top-n --fe-min-factors --fe-max-factors --fe-orth-method --fe-pca-variance-ratio --fe-pca-max-components`
 3. 选股模型：
    `--stock-model-type`（`decision_tree`/`factor_gcl`/`dafat`）
 4. 择时模型：
@@ -324,10 +324,10 @@ python Strategy7/run_strategy7.py `
 35. `mined_fusion`：挖掘因子-融合类（量价/基本面/文本混合）
 36. `mined_other`：挖掘因子-其他类
 37. `mined_custom`：挖掘因子-自定义类
-38. `catalog_custom`：catalog 历史兼容自定义类
 
 说明：部分包只在特定频率有非空因子，例如 `period_signature` 仅在 `W/M` 生效，`intraday_signature` 仅在分钟频生效。
 挖掘因子还支持维度标签包：`mined_fw_*`（挖掘框架）、`mined_universe_*`（股票池）、`mined_freq_*`（频率）、`mined_materialpkg_*`（素材包）。
+历史 catalog 中的 `catalog_custom` 已统一并入 `mined_custom`（兼容读取时自动映射）。
 
 补充说明：当前工程已统一为“仅使用 factor package 分类”，因子清单不再单独展示 `category` 列。
 你在清单中看到的分类与 `--factor-packages` 参数使用的是同一套标准。
@@ -362,6 +362,45 @@ python Strategy7/run_strategy7.py `
 
 1. 先用 `--list-factors --factor-freq <freq>` 查看当前频率可用因子清单
 2. 再通过 `--factor-list` 按研究主题筛选子集（例如偏趋势、偏流动性、偏跨频、偏文本情绪）
+
+### 6.2 训练前因子特征工程（选股/择时/组合/执行共享）
+
+当因子数量很大（上千）时，建议在训练和回测前开启特征工程：
+
+1. `--enable-factor-engineering true`：启用训练期拟合、测试期仅变换的特征工程流程
+2. `--fe-min-coverage`：先按训练期覆盖率过滤低可用因子
+3. `--fe-min-std`：再过滤近常数因子
+4. `--fe-corr-threshold`：对高相关因子做贪心去冗余（Spearman）
+5. `--fe-preselect-top-n`：去冗余前先按质量分预筛，降低大规模相关矩阵开销
+6. `--fe-orth-method pca`：可选 PCA 正交降维；`none` 时仅做筛选不过投影
+7. `--fe-pca-variance-ratio` / `--fe-pca-max-components`：控制 PCA 主成分数量
+
+示例：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --factor-freq D `
+  --enable-factor-engineering true `
+  --fe-min-coverage 0.75 `
+  --fe-corr-threshold 0.90 `
+  --fe-max-factors 500 `
+  --fe-orth-method none
+```
+
+自动因子快照导出（新增，默认开启）：
+
+1. 两个入口 `run_strategy7.py` / `run_factor_mining.py` 每次运行都会自动导出“当前频率全部因子 + 本次使用因子”对比快照
+2. 导出根目录：`Strategy7/outputs/factor_snapshots/<entrypoint>/<timestamp_freq_tag>/`
+3. 目录结构按因子类型与包分类：`by_group/<price_volume|fundamental|text|mined>/<factor_package>/`
+4. 每级都会包含：
+   - `all.csv`（该分类全部因子）
+   - `used.csv`（该分类本次使用因子）
+5. 根目录额外包含：
+   - `all_factors.csv`
+   - `used_factors.csv`
+   - `snapshot_summary.json`（统计信息）
+   - `snapshot_overview.md`（直观对比概览）
+6. 之前的 `--export-factor-list` / `--factor-list-export-format` 功能继续保留（手动导出清单）
 
 `--factor-list` 构建示例（以 30min 为例）：
 
@@ -442,7 +481,7 @@ python Strategy7/run_strategy7.py `
 3. `minute_parametric_plus`：分钟增强参数化 + NSGA-III
 4. `ml_ensemble_alpha`：集成学习因子挖掘
 5. `gplearn_symbolic_alpha`：基于 `gplearn` 的符号遗传规划挖掘
-6. `custom`：用户表达式挖掘
+6. `custom`：自定义评估模式（优先按 `--factor-list` 逐因子评估；兼容 `--custom-spec-json` 表达式）
 
 默认素材池（新）：
 
@@ -454,6 +493,9 @@ python Strategy7/run_strategy7.py `
 6. 金融文本素材默认参与面板构建（news/notice/report）；可通过 `--disable-text-data` 关闭
 7. catalog 因子素材支持按 `--factor-packages` 过滤（如 `mined_fusion`）或按 `--factor-list` 精确点名
 8. 当 `--factor-list` 非空时，挖掘素材将按显式名单解析（默认包仅作为补充可选来源）
+9. 可选素材特征工程（默认关闭）：`--enable-material-feature-engineering`
+10. 素材特征工程参数：`--material-fe-min-coverage --material-fe-min-std --material-fe-corr-threshold --material-fe-preselect-top-n --material-fe-min-factors --material-fe-max-factors`
+11. 素材特征工程只在训练期拟合筛选规则，并在挖掘前裁剪素材列，避免信息泄漏
 
 示例（基本面）：
 
@@ -473,7 +515,17 @@ python Strategy7/run_factor_mining.py `
   --population-size 96 --generations 16 --top-n 20
 ```
 
-示例（自定义表达式）：
+示例（custom 逐因子评估，推荐）：
+
+```powershell
+python Strategy7/run_factor_mining.py `
+  --framework custom `
+  --factor-freq 30min `
+  --custom-factor-py ./Strategy7/strategy7/plugins/custom_factor_template.py `
+  --factor-list custom_ret_accel_5_20,custom_intraday_mr
+```
+
+示例（自定义表达式 JSON，兼容模式）：
 
 ```powershell
 python Strategy7/run_factor_mining.py `
@@ -511,6 +563,18 @@ python Strategy7/run_factor_mining.py `
   --factor-store-root D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/mining_test
 ```
 
+示例（挖掘前素材去冗余，推荐在素材很多时开启）：
+
+```powershell
+python Strategy7/run_factor_mining.py `
+  --framework ml_ensemble_alpha `
+  --factor-freq D `
+  --enable-material-feature-engineering `
+  --material-fe-min-coverage 0.75 `
+  --material-fe-corr-threshold 0.95 `
+  --material-fe-max-factors 600
+```
+
 ## 10. 因子 catalog 与主流程联动
 
 挖掘结果会写入：
@@ -537,8 +601,18 @@ python Strategy7/run_factor_mining.py `
 接口约定：
 
 1. 自定义因子模块需实现 `register_factors(library)`
-2. 自定义数据源模块需实现 `register_sources(registry)`
+2. 自定义数据源模块需实现 `register_sources(registry)`（兼容模式，建议优先迁移到自定义因子插件）
 3. 自定义模型模块需实现 `build_model(cfg)`，并返回对应基类子类实例
+
+自定义因子插件新增推荐能力：
+
+1. 可在插件中直接读取外部 CSV/Parquet 并注册为因子
+2. 参考工具函数：`strategy7.factors.base.register_external_factor_table`
+
+参数迁移建议：
+
+1. `--extra-factor-paths`、`--extra-source-module` 仍可用，但已标记为 deprecated
+2. 新增外部因子建议统一在 `--custom-factor-py` 中注册（可直接从外部 CSV/Parquet 注册）
 
 ## 12. 常见问题排查
 

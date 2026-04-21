@@ -1,0 +1,2 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+fe_pca_001,D,Price-Volume / Non-Fundamental Packages,unknown,unknown,feature_engineering_derived_factor,"derived by feature engineering (for example, PCA projection)",fitted on train split and transformed on test split,derived_feature_engineering_factor,True,price_volume

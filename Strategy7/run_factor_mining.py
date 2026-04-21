@@ -25,6 +25,7 @@ from strategy7.config import (
 )
 from strategy7.core.constants import INTRADAY_FREQS, SUPPORTED_FREQS
 from strategy7.core.utils import log_progress, set_log_level
+from strategy7.data.feature_engineering import FactorEngineeringOptions, apply_factor_engineering
 from strategy7.data.loaders import MarketUniverseDataLoader, build_feature_bundle, load_index_benchmark_data
 from strategy7.factors.base import (
     FactorLibrary,
@@ -41,13 +42,14 @@ from strategy7.factors.defaults import (
     resolve_default_factor_set,
 )
 from strategy7.factors.labeling import add_labels, validate_label_frequency_alignment
+from strategy7.factors.reporting import export_factor_snapshot, normalize_factor_package_alias
 from strategy7.mining.catalog import (
     list_catalog_factor_packages,
     load_active_catalog_entries,
     merge_catalog_factors,
     register_catalog_factors,
 )
-from strategy7.mining.custom import load_custom_specs
+from strategy7.mining.custom import build_custom_specs_from_factor_names, load_custom_specs
 from strategy7.mining.runner import FactorMiningConfig, run_factor_mining
 
 
@@ -101,6 +103,28 @@ def _build_hs300_context_features(index_hs300: pd.DataFrame) -> pd.DataFrame:
 
 def _parse_factor_name_list(expr: str) -> List[str]:
     return [x.strip() for x in str(expr).split(",") if x.strip()]
+
+
+def _split_mask_by_freq(frame: pd.DataFrame, start: pd.Timestamp, end: pd.Timestamp, *, time_col: str, freq: str) -> pd.Series:
+    ts = pd.to_datetime(frame[time_col], errors="coerce")
+    if str(freq).lower() in INTRADAY_FREQS:
+        ts = ts.dt.normalize()
+    return (ts >= pd.Timestamp(start)) & (ts <= pd.Timestamp(end))
+
+
+def _resolve_used_factors_for_snapshot(
+    *,
+    library: FactorLibrary,
+    freq: str,
+    factor_list_arg: str,
+    default_set: List[str],
+) -> List[str]:
+    if str(factor_list_arg).strip():
+        requested = [x.strip() for x in str(factor_list_arg).split(",") if x.strip()]
+    else:
+        requested = list(default_set)
+    available = set(library.names(freq))
+    return [x for x in requested if x in available]
 
 
 def _resolve_catalog_path(
@@ -172,8 +196,8 @@ def _attach_factor_package_columns(meta_df: pd.DataFrame, freq: str) -> pd.DataF
             category=cat,
             package_index=package_index,
         )
-        primary_packages.append(str(pri))
-        all_packages.append(",".join([str(x) for x in members]))
+        primary_packages.append(normalize_factor_package_alias(pri))
+        all_packages.append(",".join([normalize_factor_package_alias(x) for x in members]))
     out["factor_package"] = primary_packages
     out["factor_packages"] = all_packages
     return out
@@ -185,7 +209,8 @@ def _summarize_factor_packages(meta_df: pd.DataFrame) -> Dict[str, Dict[str, int
         return {"all": {}, "price_volume": {}, "fundamental": {}, "text": {}, "mined": {}}
 
     counts = (
-        meta_df.groupby(group_col)
+        meta_df.assign(_pkg_norm=meta_df[group_col].map(normalize_factor_package_alias))
+        .groupby("_pkg_norm")
         .size()
         .sort_values(ascending=False)
         .astype(int)
@@ -193,7 +218,7 @@ def _summarize_factor_packages(meta_df: pd.DataFrame) -> Dict[str, Dict[str, int
     all_counts = {str(k): int(v) for k, v in counts.items()}
     fund_counts = {k: v for k, v in all_counts.items() if str(k).startswith("fund_") or str(k).startswith("fundamental_")}
     text_counts = {k: v for k, v in all_counts.items() if str(k).startswith("text_")}
-    mined_counts = {k: v for k, v in all_counts.items() if str(k).startswith("mined_") or str(k).startswith("catalog_")}
+    mined_counts = {k: v for k, v in all_counts.items() if str(k).startswith("mined_")}
     pv_counts = {
         k: v
         for k, v in all_counts.items()
@@ -202,7 +227,6 @@ def _summarize_factor_packages(meta_df: pd.DataFrame) -> Dict[str, Dict[str, int
             or str(k).startswith("fundamental_")
             or str(k).startswith("text_")
             or str(k).startswith("mined_")
-            or str(k).startswith("catalog_")
         )
     }
     return {
@@ -221,7 +245,7 @@ def _print_factor_package_summary(meta_df: pd.DataFrame) -> Dict[str, Dict[str, 
         ("[Price-Volume / Non-Fundamental Packages]", "price_volume"),
         ("[Fundamental Packages]", "fundamental"),
         ("[Text Packages]", "text"),
-        ("[Mined/Catalog Packages]", "mined"),
+        ("[Mined Packages]", "mined"),
     ]:
         print(title)
         part = summary[key]
@@ -460,7 +484,7 @@ def _parse_args() -> argparse.Namespace:
             "fund_growth,fund_valuation,fund_profitability,fund_quality,fund_leverage,fund_cashflow,"
             "fund_efficiency,fund_expectation,fund_hf_fusion,"
             "mined_price_volume,mined_fundamental,mined_text,mined_fusion,mined_other,mined_custom,"
-            "catalog_custom,all。"
+            "all。"
             "catalog 挖掘因子还支持维度标签：mined_fw_*, mined_universe_*, mined_freq_*, mined_materialpkg_*。"
         ),
     )
@@ -503,6 +527,47 @@ def _parse_args() -> argparse.Namespace:
         "--disable-default-factor-materials",
         action="store_true",
         help="关闭默认因子库素材注入（默认开启）",
+    )
+    g_date.add_argument(
+        "--enable-material-feature-engineering",
+        action="store_true",
+        help="是否在因子挖掘前对素材因子做特征工程筛选（训练期覆盖率+相关性去冗余，默认关闭）",
+    )
+    g_date.add_argument(
+        "--material-fe-min-coverage",
+        type=float,
+        default=0.70,
+        help="素材特征工程：训练期最小覆盖率阈值（0~1）",
+    )
+    g_date.add_argument(
+        "--material-fe-min-std",
+        type=float,
+        default=1e-8,
+        help="素材特征工程：训练期最小标准差阈值",
+    )
+    g_date.add_argument(
+        "--material-fe-corr-threshold",
+        type=float,
+        default=0.95,
+        help="素材特征工程：两两相关性上限（绝对值，Spearman）",
+    )
+    g_date.add_argument(
+        "--material-fe-preselect-top-n",
+        type=int,
+        default=1500,
+        help="素材特征工程：相关性去冗余前按质量评分预筛数量上限（0=不预筛）",
+    )
+    g_date.add_argument(
+        "--material-fe-min-factors",
+        type=int,
+        default=20,
+        help="素材特征工程：最终保留素材因子最小数量",
+    )
+    g_date.add_argument(
+        "--material-fe-max-factors",
+        type=int,
+        default=800,
+        help="素材特征工程：最终保留素材因子最大数量（0=不设上限）",
     )
     g_date.add_argument(
         "--horizon",
@@ -591,8 +656,8 @@ def _parse_args() -> argparse.Namespace:
         type=str,
         default="",
         help=(
-            "自定义因子规格 JSON 文件路径。"
-            "当 framework=custom 时必填，文件内容需为列表或 {items:[...]}。"
+            "自定义因子规格 JSON 文件路径（兼容模式，建议优先使用 --factor-list + --custom-factor-py）。"
+            "当提供该参数时，framework=custom 会按 JSON 表达式评估；为空时将评估 --factor-list 指定的因子。"
         ),
     )
 
@@ -716,6 +781,20 @@ def main() -> None:
         raise ValueError("gp_max_samples must be in (0,1]")
     if args.max_files is not None and int(args.max_files) <= 0:
         raise ValueError("max_files must be positive when provided")
+    if not (0.0 <= float(args.material_fe_min_coverage) <= 1.0):
+        raise ValueError("material_fe_min_coverage must be in [0,1]")
+    if float(args.material_fe_min_std) < 0.0:
+        raise ValueError("material_fe_min_std must be non-negative")
+    if not (0.0 <= float(args.material_fe_corr_threshold) < 1.0):
+        raise ValueError("material_fe_corr_threshold must be in [0,1)")
+    if int(args.material_fe_preselect_top_n) < 0:
+        raise ValueError("material_fe_preselect_top_n must be non-negative")
+    if int(args.material_fe_min_factors) <= 0:
+        raise ValueError("material_fe_min_factors must be positive")
+    if int(args.material_fe_max_factors) < 0:
+        raise ValueError("material_fe_max_factors must be non-negative")
+    if int(args.material_fe_max_factors) > 0 and int(args.material_fe_max_factors) < int(args.material_fe_min_factors):
+        raise ValueError("material_fe_max_factors must be >= material_fe_min_factors when positive")
     log_progress(
         f"参数校验通过：framework={args.framework}, train={train_start.date()}~{train_end.date()}, "
         f"valid={valid_start.date()}~{valid_end.date()}。",
@@ -801,6 +880,48 @@ def main() -> None:
         print(meta_df_view.to_string(index=False))
 
         package_summary = _print_factor_package_summary(meta_df)
+        snapshot_default_set = _resolve_default_materials_by_package(
+            freq=factor_freq,
+            package_expr=str(args.factor_packages),
+        )
+        snapshot_catalog_set: List[str] = []
+        if not explicit_factor_names:
+            if not str(args.factor_packages).strip():
+                snapshot_catalog_set = [
+                    str(e.get("name", "")).strip() for e in catalog_entries_for_list if str(e.get("name", "")).strip()
+                ]
+            elif catalog_pkg_expr:
+                snapshot_catalog_set = [
+                    str(e.get("name", "")).strip() for e in catalog_entries_for_list if str(e.get("name", "")).strip()
+                ]
+        snapshot_default_set = sorted(set(snapshot_default_set) | set(snapshot_catalog_set))
+        selected_for_snapshot = _resolve_used_factors_for_snapshot(
+            library=fac_lib,
+            freq=factor_freq,
+            factor_list_arg=str(args.factor_list),
+            default_set=snapshot_default_set,
+        )
+        snapshot_paths = export_factor_snapshot(
+            meta_df_view=meta_df_view,
+            used_factors=selected_for_snapshot,
+            entrypoint="run_factor_mining",
+            factor_freq=factor_freq,
+            output_root=Path(__file__).resolve().parent / "outputs" / "factor_snapshots",
+            run_tag=f"list_factors_{str(args.framework)}",
+            extra_summary={
+                "mode": "list_factors",
+                "catalog_factor_count": int(len(catalog_entries_for_list)),
+                "selected_factor_count": int(len(selected_for_snapshot)),
+            },
+        )
+        log_progress(
+            f"自动因子快照导出完成：snapshot_dir={snapshot_paths.get('snapshot_dir', '')}",
+            module="run_factor_mining",
+        )
+        pv_total = int(sum(package_summary["price_volume"].values()))
+        fund_total = int(sum(package_summary["fundamental"].values()))
+        text_total = int(sum(package_summary["text"].values()))
+        mined_total = int(sum(package_summary["mined"].values()))
         export_path: Path | None = None
         if bool(args.export_factor_list):
             export_path = _export_factor_list(
@@ -818,6 +939,10 @@ def main() -> None:
         log_progress(
             (
                 f"因子清单输出完成：freq={factor_freq}, total_factor_count={len(meta_df)}, "
+                f"price_volume_factor_count={pv_total}, "
+                f"fundamental_factor_count={fund_total}, "
+                f"text_factor_count={text_total}, "
+                f"mined_factor_count={mined_total}, "
                 f"factor_package_count={len(package_summary['all'])}, "
                 f"catalog_factor_count={len(catalog_entries_for_list)}。"
             ),
@@ -825,6 +950,7 @@ def main() -> None:
         )
         if export_path is not None:
             print(f"factor_list_export: {export_path}")
+        print(f"factor_snapshot_dir: {snapshot_paths.get('snapshot_dir', '')}")
         return
 
     # Step 3) 构建数据配置并加载市场数据（含训练/验证所需回看窗口）。
@@ -1008,16 +1134,127 @@ def main() -> None:
         module="run_factor_mining",
     )
 
+    selected_material_cols_before_fe = list(selected_material_cols)
+    material_fe_report: Dict[str, object] = {
+        "enabled": False,
+        "input_factor_count": int(len(selected_material_cols_before_fe)),
+        "final_factor_count": int(len(selected_material_cols_before_fe)),
+        "orth_method": "none",
+    }
+    if bool(args.enable_material_feature_engineering) and selected_material_cols:
+        train_mask_fe = _split_mask_by_freq(
+            panel,
+            train_start,
+            train_end,
+            time_col=time_col,
+            freq=factor_freq,
+        )
+        valid_mask_fe = _split_mask_by_freq(
+            panel,
+            valid_start,
+            valid_end,
+            time_col=time_col,
+            freq=factor_freq,
+        )
+        if int(train_mask_fe.sum()) > 0 and int(valid_mask_fe.sum()) > 0:
+            fe_opts = FactorEngineeringOptions(
+                enabled=True,
+                min_coverage=float(args.material_fe_min_coverage),
+                min_std=float(args.material_fe_min_std),
+                corr_threshold=float(args.material_fe_corr_threshold),
+                preselect_top_n=int(args.material_fe_preselect_top_n),
+                min_factors=int(args.material_fe_min_factors),
+                max_factors=int(args.material_fe_max_factors),
+                orth_method="none",
+                pca_variance_ratio=0.95,
+                pca_max_components=128,
+            )
+            _, _, selected_after_fe, material_fe_report = apply_factor_engineering(
+                train_df=panel.loc[train_mask_fe].copy(),
+                test_df=panel.loc[valid_mask_fe].copy(),
+                factor_cols=selected_material_cols,
+                options=fe_opts,
+                target_col="future_ret_n",
+                raw_train_df=panel.loc[train_mask_fe].copy(),
+            )
+            if selected_after_fe:
+                removed = sorted(set(selected_material_cols) - set(selected_after_fe))
+                if removed:
+                    panel = panel.drop(columns=[c for c in removed if c in panel.columns], errors="ignore")
+                selected_material_cols = list(selected_after_fe)
+                log_progress(
+                    "素材特征工程完成："
+                    f"input={int(material_fe_report.get('input_factor_count', len(selected_material_cols_before_fe)))}, "
+                    f"final={int(material_fe_report.get('final_factor_count', len(selected_material_cols)))}, "
+                    f"removed={len(removed)}。",
+                    module="run_factor_mining",
+                )
+            else:
+                log_progress(
+                    "素材特征工程未保留任何因子，已自动回退到原始素材清单。",
+                    module="run_factor_mining",
+                )
+                selected_material_cols = list(selected_material_cols_before_fe)
+        else:
+            log_progress(
+                "素材特征工程跳过：训练/验证样本不足（无法拟合筛选规则）。",
+                module="run_factor_mining",
+                level="debug",
+            )
+
+    material_meta_df = fac_lib.metadata(freq=factor_freq)
+    material_meta_df = _attach_factor_package_columns(material_meta_df, freq=factor_freq)
+    material_meta_view = enrich_factor_metadata_for_display(material_meta_df)
+    if "category" in material_meta_view.columns:
+        material_meta_view = material_meta_view.drop(columns=["category"])
+    material_snapshot = export_factor_snapshot(
+        meta_df_view=material_meta_view,
+        used_factors=selected_material_cols,
+        entrypoint="run_factor_mining",
+        factor_freq=factor_freq,
+        output_root=Path(__file__).resolve().parent / "outputs" / "factor_snapshots",
+        run_tag=f"run_{str(args.framework)}",
+        extra_summary={
+            "mode": "run",
+            "framework": str(args.framework),
+            "catalog_factor_count": int(len(catalog_entries)),
+            "selected_factor_count_before_material_fe": int(len(selected_material_cols_before_fe)),
+            "selected_factor_count_after_material_fe": int(len(selected_material_cols)),
+            "material_feature_engineering": material_fe_report,
+        },
+    )
+    log_progress(
+        f"自动因子快照导出完成：snapshot_dir={material_snapshot.get('snapshot_dir', '')}",
+        module="run_factor_mining",
+    )
+
     # Step 8) 如使用 custom 框架，加载用户表达式规格。
     custom_specs = []
     if str(args.framework).lower() == "custom":
-        if not str(args.custom_spec_json).strip():
-            raise RuntimeError("framework=custom requires --custom-spec-json")
-        log_progress(f"开始加载 custom 规格：{args.custom_spec_json}", module="run_factor_mining")
-        custom_specs = load_custom_specs(args.custom_spec_json)
-        if not custom_specs:
-            raise RuntimeError(f"no valid custom specs loaded from: {args.custom_spec_json}")
-        log_progress(f"custom 规格加载完成：{len(custom_specs)} 条。", module="run_factor_mining")
+        custom_spec_json = str(args.custom_spec_json).strip()
+        if custom_spec_json:
+            log_progress(f"开始加载 custom 规格（兼容模式）：{custom_spec_json}", module="run_factor_mining")
+            custom_specs = load_custom_specs(custom_spec_json)
+            if not custom_specs:
+                raise RuntimeError(f"no valid custom specs loaded from: {custom_spec_json}")
+            log_progress(f"custom 规格加载完成：{len(custom_specs)} 条。", module="run_factor_mining")
+        else:
+            factor_names_for_custom = explicit_factor_names if explicit_factor_names else list(selected_material_cols)
+            if not factor_names_for_custom:
+                raise RuntimeError(
+                    "framework=custom requires --factor-list (or provide --custom-spec-json in compatibility mode)"
+                )
+            custom_specs = build_custom_specs_from_factor_names(
+                factor_names_for_custom,
+                freq=str(args.factor_freq),
+                category="mined_custom",
+                name_prefix="custom_eval",
+            )
+            log_progress(
+                f"custom 逐因子评估模式：source_factor_count={len(factor_names_for_custom)}, "
+                f"generated_spec_count={len(custom_specs)}。",
+                module="run_factor_mining",
+            )
 
     # Step 9) 汇总挖掘配置并执行核心 runner。
     mine_cfg = FactorMiningConfig(
@@ -1077,6 +1314,13 @@ def main() -> None:
         factor_list=str(args.factor_list),
         material_factor_count=int(len(selected_material_cols)),
         material_factor_names=[str(x) for x in selected_material_cols],
+        enable_material_feature_engineering=bool(args.enable_material_feature_engineering),
+        material_fe_min_coverage=float(args.material_fe_min_coverage),
+        material_fe_min_std=float(args.material_fe_min_std),
+        material_fe_corr_threshold=float(args.material_fe_corr_threshold),
+        material_fe_preselect_top_n=int(args.material_fe_preselect_top_n),
+        material_fe_min_factors=int(args.material_fe_min_factors),
+        material_fe_max_factors=int(args.material_fe_max_factors),
         universe=str(universe),
         index_context_cols=index_ctx_cols,
     )
@@ -1088,6 +1332,11 @@ def main() -> None:
         minute_df=market_bundle.minute5,
         custom_specs=custom_specs,
     )
+    summary["selected_material_factor_count_before_fe"] = int(len(selected_material_cols_before_fe))
+    summary["selected_material_factor_count_after_fe"] = int(len(selected_material_cols))
+    summary["material_feature_engineering"] = material_fe_report
+    summary["factor_snapshot_dir"] = str(material_snapshot.get("snapshot_dir", ""))
+    summary["factor_snapshot_summary_path"] = str(material_snapshot.get("summary_path", ""))
     log_progress(
         f"挖掘完成：candidate_count={summary.get('candidate_count', 0)}, "
         f"selected_count={summary.get('selected_count', 0)}, "

@@ -1,0 +1,18 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+close_to_vwap_day,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·收盘toVWAPday,日内微观结构因子，刻画：收盘-VWAP,按定义计算：收盘-VWAP,close-vwap,True,price_volume
+intraday_sentiment_divergence,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·日内情绪divergence,日内微观结构因子，刻画：signed volume 减 up-比值,按定义计算：signed volume 减 up-比值,signed volume minus up-ratio,True,price_volume
+jump_ratio_5m,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·跳跃ratio5m,日内微观结构因子，刻画：跳跃 比值 取负,按定义计算：跳跃 比值 取负,jump ratio negative,True,price_volume
+jump_risk_discount,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·跳跃风险discount,日内微观结构因子，刻画：跳跃 风险 discount,按定义计算：跳跃 风险 discount,jump risk discount,True,price_volume
+last30_momentum,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·last30动量,日内微观结构因子，刻画：last30 动量,按定义计算：last30 动量,last30 momentum,True,price_volume
+micro_macro_conflict,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·微观宏观conflict,日内微观结构因子，刻画：morning 趋势 减 日频 ret1,按定义计算：morning 趋势 减 日频 ret1,morning trend minus daily ret1,True,price_volume
+minute_realized_vol_5m,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·minuterealized成交量5m,日内微观结构因子，刻画：5m 实现波动率 取负,按定义计算：5m 实现波动率 取负,5m rv negative,True,price_volume
+minute_ret_kurt_5m,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·minute收益kurt5m,日内微观结构因子，刻画：5m kurt 取负,按定义计算：5m kurt 取负,5m kurt negative,True,price_volume
+minute_ret_skew_5m,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·minute收益skew5m,日内微观结构因子，刻画：5m skew,按定义计算：5m skew,5m skew,True,price_volume
+minute_up_ratio_5m,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·minuteupratio5m,日内微观结构因子，刻画：5m up 比值,按定义计算：5m up 比值,5m up ratio,True,price_volume
+morning_momentum_30m,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·morning动量30m,日内微观结构因子，刻画：morning 动量,按定义计算：morning 动量,morning momentum,True,price_volume
+open_to_close_intraday,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·开盘to收盘日内,日内微观结构因子，刻画：开盘-收盘 动量,按定义计算：开盘-收盘 动量,open-close momentum,True,price_volume
+opening_drive_vs_close,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·openingdrivevs收盘,日内微观结构因子，刻画：morning drive 减 last30,按定义计算：morning drive 减 last30,morning drive minus last30,True,price_volume
+signed_vol_imbalance_5m,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·signed成交量imbalance5m,日内微观结构因子，刻画：signed volume imbalance,按定义计算：signed volume imbalance,signed volume imbalance,True,price_volume
+skew_carry_intraday,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·skew延续日内,日内微观结构因子，刻画：日内 skew 延续,按定义计算：日内 skew 延续,intraday skew carry,True,price_volume
+vwap30_vs_day,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·vwap30vsday,日内微观结构因子，刻画：vwap30-VWAP day,按定义计算：vwap30-VWAP day,vwap30-vwap day,True,price_volume
+vwap_reversion_day,D,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·VWAPreversionday,日内微观结构因子，刻画：收盘-VWAP reversion weighted 按 VWAP 价差,按定义计算：收盘-VWAP reversion weighted 按 VWAP 价差,close-vwap reversion weighted by vwap spread,True,price_volume

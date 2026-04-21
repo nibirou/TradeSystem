@@ -1,0 +1,3 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+overnight_gap,D,Price-Volume / Non-Fundamental Packages,overnight,overnight,隔夜·overnight偏离,隔夜因子，刻画：overnight 偏离,按定义计算：overnight 偏离,overnight gap,False,price_volume
+overnight_intraday_rotation,D,Price-Volume / Non-Fundamental Packages,overnight,overnight,隔夜·overnight日内rotation,隔夜因子，刻画：overnight 减 日内 趋势,按定义计算：overnight 减 日内 趋势,overnight minus intraday trend,False,price_volume

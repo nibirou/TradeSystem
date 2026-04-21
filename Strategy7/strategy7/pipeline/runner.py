@@ -22,6 +22,7 @@ from ..core.constants import INTRADAY_FREQS
 from ..core.time_utils import infer_periods_per_year
 from ..core.utils import dump_json, ensure_dir, log_progress
 from ..data.loaders import MarketUniverseDataLoader, build_feature_bundle, load_index_benchmark_data
+from ..data.feature_engineering import FactorEngineeringOptions, apply_factor_engineering
 from ..data.preprocess import (
     PreprocessOptions,
     apply_cross_section_pipeline,
@@ -46,6 +47,7 @@ from ..factors.defaults import (
     resolve_default_factor_set,
 )
 from ..factors.labeling import add_labels, pick_target_column, split_train_test, validate_label_frequency_alignment
+from ..factors.reporting import export_factor_snapshot, normalize_factor_package_alias
 from ..models import build_execution_model, build_portfolio_model, build_stock_model, build_timing_model
 from ..mining.catalog import (
     list_catalog_factor_packages,
@@ -71,6 +73,21 @@ def _safe_trade_dates_from_panel(panel: pd.DataFrame, factor_freq: str) -> pd.Da
 
 def _parse_factor_names_expr(expr: str) -> List[str]:
     return [x.strip() for x in str(expr).split(",") if x.strip()]
+
+
+def _resolve_used_factors_for_snapshot(
+    *,
+    library: FactorLibrary,
+    freq: str,
+    factor_list_arg: str,
+    default_set: List[str],
+) -> List[str]:
+    if str(factor_list_arg).strip():
+        requested = [x.strip() for x in str(factor_list_arg).split(",") if x.strip()]
+    else:
+        requested = list(default_set)
+    available = set(library.names(freq))
+    return [x for x in requested if x in available]
 
 
 def _split_package_tokens_for_default_and_catalog(freq: str, package_expr: str) -> tuple[List[str], str]:
@@ -113,7 +130,8 @@ def _summarize_factor_categories(meta_df: pd.DataFrame) -> Dict[str, Dict[str, i
         return {"all": {}, "price_volume": {}, "fundamental": {}, "text": {}, "mined": {}}
 
     counts = (
-        meta_df.groupby(group_col)
+        meta_df.assign(_pkg_norm=meta_df[group_col].map(normalize_factor_package_alias))
+        .groupby("_pkg_norm")
         .size()
         .sort_values(ascending=False)
         .astype(int)
@@ -121,7 +139,7 @@ def _summarize_factor_categories(meta_df: pd.DataFrame) -> Dict[str, Dict[str, i
     all_counts = {str(k): int(v) for k, v in counts.items()}
     fund_counts = {k: v for k, v in all_counts.items() if str(k).startswith("fund_") or str(k).startswith("fundamental_")}
     text_counts = {k: v for k, v in all_counts.items() if str(k).startswith("text_")}
-    mined_counts = {k: v for k, v in all_counts.items() if str(k).startswith("mined_") or str(k).startswith("catalog_")}
+    mined_counts = {k: v for k, v in all_counts.items() if str(k).startswith("mined_")}
     pv_counts = {
         k: v
         for k, v in all_counts.items()
@@ -130,7 +148,6 @@ def _summarize_factor_categories(meta_df: pd.DataFrame) -> Dict[str, Dict[str, i
             or str(k).startswith("fundamental_")
             or str(k).startswith("text_")
             or str(k).startswith("mined_")
-            or str(k).startswith("catalog_")
         )
     }
     return {
@@ -167,10 +184,10 @@ def _print_factor_category_summary(meta_df: pd.DataFrame) -> Dict[str, Dict[str,
     else:
         print("\n[Text Packages]\n(none)")
     if mined_counts:
-        print("\n[Mined/Catalog Packages]")
+        print("\n[Mined Packages]")
         print(pd.Series(mined_counts, dtype=int).sort_values(ascending=False).to_string())
     else:
-        print("\n[Mined/Catalog Packages]\n(none)")
+        print("\n[Mined Packages]\n(none)")
     return summary
 
 
@@ -193,8 +210,8 @@ def _attach_factor_package_columns(meta_df: pd.DataFrame, freq: str) -> pd.DataF
             category=cat,
             package_index=package_index,
         )
-        primary_packages.append(str(pri))
-        all_packages.append(",".join([str(x) for x in members]))
+        primary_packages.append(normalize_factor_package_alias(pri))
+        all_packages.append(",".join([normalize_factor_package_alias(x) for x in members]))
     out["factor_package"] = primary_packages
     out["factor_packages"] = all_packages
     return out
@@ -335,10 +352,19 @@ def _ensure_fundamental_factor_coverage(
 
 def _build_external_source_registry(cfg: RunConfig) -> DataSourceRegistry:
     reg = DataSourceRegistry()
+    if cfg.data.extra_factor_paths:
+        log_progress(
+            "检测到 --extra-factor-paths（兼容模式）。建议迁移到 --custom-factor-py 并使用 register_external_factor_table。",
+            module="pipeline",
+        )
     for i, p in enumerate(cfg.data.extra_factor_paths):
         name = f"extra_table_{i+1}"
         reg.register(name, TableFileSource(name=name, path=p, date_col="date", code_col="code", prefix=name))
     if cfg.data.extra_source_module:
+        log_progress(
+            "检测到 --extra-source-module（兼容模式）。建议迁移到 --custom-factor-py 注册外部因子。",
+            module="pipeline",
+        )
         load_custom_source_module(reg, cfg.data.extra_source_module)
     return reg
 
@@ -382,6 +408,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
                     level="debug",
                 )
         catalog_count = 0
+        entries: List[Dict[str, object]] = []
         should_load_catalog_list = bool(cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path)
         if should_load_catalog_list and str(getattr(cfg.factors, "factor_packages", "")).strip() and not catalog_pkg_expr and not explicit_factor_names:
             should_load_catalog_list = False
@@ -443,6 +470,40 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         if fund_coverage["missing"]:
             print("missing factors:")
             print(pd.Series(fund_coverage["missing"], dtype=str).to_string(index=False))
+        snapshot_default_set = _resolve_default_factors_by_packages(
+            freq=cfg.factors.factor_freq,
+            package_expr=str(getattr(cfg.factors, "factor_packages", "")),
+        )
+        snapshot_catalog_set: List[str] = []
+        if not explicit_factor_names:
+            if not str(getattr(cfg.factors, "factor_packages", "")).strip():
+                snapshot_catalog_set = [str(e.get("name", "")).strip() for e in entries if str(e.get("name", "")).strip()]
+            elif catalog_pkg_expr:
+                snapshot_catalog_set = [str(e.get("name", "")).strip() for e in entries if str(e.get("name", "")).strip()]
+        snapshot_default_set = sorted(set(snapshot_default_set) | set(snapshot_catalog_set))
+        selected_for_snapshot = _resolve_used_factors_for_snapshot(
+            library=factor_lib,
+            freq=cfg.factors.factor_freq,
+            factor_list_arg=str(getattr(cfg.factors, "factor_list", "")),
+            default_set=snapshot_default_set,
+        )
+        snapshot_paths = export_factor_snapshot(
+            meta_df_view=meta_df_view,
+            used_factors=selected_for_snapshot,
+            entrypoint="run_strategy7",
+            factor_freq=cfg.factors.factor_freq,
+            output_root=Path(__file__).resolve().parents[2] / "outputs" / "factor_snapshots",
+            run_tag="list_factors",
+            extra_summary={
+                "mode": "list_factors",
+                "catalog_factor_count": int(catalog_count),
+                "selected_factor_count": int(len(selected_for_snapshot)),
+            },
+        )
+        log_progress(
+            f"自动因子快照导出完成：snapshot_dir={snapshot_paths.get('snapshot_dir', '')}",
+            module="pipeline",
+        )
         package_summary = _print_factor_category_summary(meta_df)
         pv_total = int(sum(package_summary["price_volume"].values()))
         fund_total = int(sum(package_summary["fundamental"].values()))
@@ -492,6 +553,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "factor_list_export_format": str(getattr(cfg.factors, "factor_list_export_format", "csv")),
             "factor_list_export_path": str(export_path) if export_path is not None else "",
             "factor_list_exported": bool(export_path is not None),
+            "factor_snapshot_dir": str(snapshot_paths.get("snapshot_dir", "")),
+            "factor_snapshot_summary_path": str(snapshot_paths.get("summary_path", "")),
         }
 
     output_dir = ensure_dir(cfg.output_dir)
@@ -617,6 +680,21 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     )
     log_progress(f"已选因子数量：{len(selected_factors)}。", module="pipeline")
 
+    run_meta_df = factor_lib.metadata(freq=factor_freq)
+    run_meta_df, _ = _ensure_fundamental_factor_coverage(
+        meta_df=run_meta_df,
+        factor_lib=factor_lib,
+        freq=factor_freq,
+    )
+    run_meta_df = _attach_factor_package_columns(run_meta_df, freq=factor_freq)
+    run_meta_view = enrich_factor_metadata_for_display(run_meta_df)
+    if "category" in run_meta_view.columns:
+        run_meta_view = run_meta_view.drop(columns=["category"])
+    for c in ["category_l1", "category_l1_cn"]:
+        if c in run_meta_view.columns:
+            run_meta_view = run_meta_view.drop(columns=[c])
+    snapshot_paths: Dict[str, object] = {}
+
     panel = compute_factor_panel(base_df=base_df, library=factor_lib, freq=factor_freq, selected_factors=selected_factors)
     log_progress(f"因子面板计算完成：rows={len(panel)}, cols={len(panel.columns)}。", module="pipeline")
 
@@ -671,6 +749,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     if test_df.empty:
         raise RuntimeError("test set is empty.")
     log_progress(f"样本切分完成：train_rows={len(train_df)}, test_rows={len(test_df)}。", module="pipeline")
+    target_col = pick_target_column(cfg.factors.label_task)
+    raw_train_df = train_df.copy()
 
     # 8) Train-fitted feature fill values are reused on test set.
     # This avoids using future-period statistics to fill missing values.
@@ -689,8 +769,66 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         reference_fill_values=fill_values,
     )
     log_progress("缺失值填充完成。", module="pipeline")
+    selected_factors_before_fe = list(selected_factors)
+    fe_report: Dict[str, object] = {
+        "enabled": False,
+        "input_factor_count": int(len(selected_factors_before_fe)),
+        "final_factor_count": int(len(selected_factors_before_fe)),
+        "orth_method": "none",
+    }
+    if bool(getattr(cfg.factors, "enable_factor_engineering", False)):
+        log_progress("步骤 8.5/13：执行因子特征工程（覆盖率/相关性/正交化）。", module="pipeline")
+        fe_opts = FactorEngineeringOptions(
+            enabled=True,
+            min_coverage=float(getattr(cfg.factors, "fe_min_coverage", 0.70)),
+            min_std=float(getattr(cfg.factors, "fe_min_std", 1e-8)),
+            corr_threshold=float(getattr(cfg.factors, "fe_corr_threshold", 0.92)),
+            preselect_top_n=int(getattr(cfg.factors, "fe_preselect_top_n", 2000)),
+            min_factors=int(getattr(cfg.factors, "fe_min_factors", 20)),
+            max_factors=int(getattr(cfg.factors, "fe_max_factors", 600)),
+            orth_method=str(getattr(cfg.factors, "fe_orth_method", "none")),
+            pca_variance_ratio=float(getattr(cfg.factors, "fe_pca_variance_ratio", 0.95)),
+            pca_max_components=int(getattr(cfg.factors, "fe_pca_max_components", 128)),
+        )
+        train_df, test_df, selected_factors, fe_report = apply_factor_engineering(
+            train_df=train_df,
+            test_df=test_df,
+            factor_cols=selected_factors,
+            options=fe_opts,
+            target_col=target_col,
+            raw_train_df=raw_train_df,
+        )
+        log_progress(
+            "因子特征工程完成："
+            f"input={int(fe_report.get('input_factor_count', len(selected_factors_before_fe)))}, "
+            f"final={int(fe_report.get('final_factor_count', len(selected_factors)))}, "
+            f"orth={fe_report.get('orth_method', 'none')}, "
+            f"pca_components={int(fe_report.get('pca_components', 0))}。",
+            module="pipeline",
+        )
+        if not selected_factors:
+            raise RuntimeError("feature engineering removed all factors; please relax FE thresholds.")
 
-    target_col = pick_target_column(cfg.factors.label_task)
+    snapshot_paths = export_factor_snapshot(
+        meta_df_view=run_meta_view,
+        used_factors=selected_factors,
+        entrypoint="run_strategy7",
+        factor_freq=factor_freq,
+        output_root=Path(__file__).resolve().parents[2] / "outputs" / "factor_snapshots",
+        run_tag=Path(cfg.output_dir).name,
+        extra_summary={
+            "mode": "run",
+            "catalog_factor_count": int(len(catalog_entries)),
+            "selected_factor_count_before_fe": int(len(selected_factors_before_fe)),
+            "selected_factor_count_after_fe": int(len(selected_factors)),
+            "feature_engineering": fe_report,
+            "output_dir": str(cfg.output_dir),
+        },
+    )
+    log_progress(
+        f"自动因子快照导出完成：snapshot_dir={snapshot_paths.get('snapshot_dir', '')}",
+        module="pipeline",
+    )
 
     # 9) Train pluggable models.
     log_progress("步骤 9/13：开始训练模型（选股/择时/组合/执行）。", module="pipeline")
@@ -902,6 +1040,10 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             ),
             "feature_fill_method": pp_opt.fill_method,
             "feature_fill_fit_scope": "train_only",
+            "feature_engineering_enabled": bool(getattr(cfg.factors, "enable_factor_engineering", False)),
+            "feature_engineering_summary": fe_report,
+            "selected_factor_count_before_fe": int(len(selected_factors_before_fe)),
+            "selected_factor_count_after_fe": int(len(selected_factors)),
             "timing_model_enabled": cfg.timing_model.model_type != "none",
             "portfolio_dynamic_enabled": cfg.portfolio_opt.mode == "dynamic_opt",
             "realistic_execution_enabled": cfg.execution_model.model_type == "realistic_fill",
@@ -912,6 +1054,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "catalog_factors_enabled": bool(cfg.data.auto_load_catalog_factors),
             "catalog_factor_count": int(len(catalog_entries)),
             "factor_catalog_path": str(cfg.data.factor_catalog_path) if cfg.data.factor_catalog_path else "",
+            "factor_snapshot_dir": str(snapshot_paths.get("snapshot_dir", "")),
+            "factor_snapshot_summary_path": str(snapshot_paths.get("summary_path", "")),
             "ic_eval_mode": eval_mode,
             "ic_eval_stride": int(eval_stride),
             "ic_periods_per_year": float(ic_periods_per_year),

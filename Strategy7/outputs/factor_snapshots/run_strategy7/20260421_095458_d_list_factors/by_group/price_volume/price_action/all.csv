@@ -1,0 +1,4 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+body_ratio,D,Price-Volume / Non-Fundamental Packages,price_action,price_action,价格行为·bodyratio,价格行为因子，刻画：body 比值,按定义计算：body 比值,body ratio,True,price_volume
+candle_imbalance_alpha,D,Price-Volume / Non-Fundamental Packages,price_action,price_action,价格行为·candleimbalancealpha,价格行为因子，刻画：body*收盘-position imbalance,按定义计算：body*收盘-position imbalance,body*close-position imbalance,True,price_volume
+close_pos,D,Price-Volume / Non-Fundamental Packages,price_action,price_action,价格行为·收盘pos,价格行为因子，刻画：收盘 position in 振幅,按定义计算：收盘 position in 振幅,close position in range,True,price_volume

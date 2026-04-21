@@ -1510,7 +1510,6 @@ _PACKAGE_PRIMARY_PRIORITY: List[str] = [
     "mined_fusion",
     "mined_other",
     "mined_custom",
-    "catalog_custom",
 ]
 
 
@@ -1526,12 +1525,9 @@ def build_factor_package_index(freq: str) -> Dict[str, List[str]]:
 def _fallback_package_from_category(category: str) -> str:
     c = str(category or "").strip()
     if not c:
-        return "other_custom"
-    if c.startswith("mined_") or c.startswith("catalog_"):
-        return c
-    if c.startswith("fundamental_"):
-        suffix = c[len("fundamental_") :]
-        return f"fund_{suffix}"
+        return "mined_custom"
+    if c.startswith("custom_"):
+        c = c[len("custom_") :]
     if c in {
         "trend",
         "reversal",
@@ -1555,13 +1551,36 @@ def _fallback_package_from_category(category: str) -> str:
         "text_event",
         "text_topic",
         "text_fusion",
+        "fund_growth",
+        "fund_valuation",
+        "fund_profitability",
+        "fund_quality",
+        "fund_leverage",
+        "fund_cashflow",
+        "fund_efficiency",
+        "fund_expectation",
+        "fund_hf_fusion",
+        "mined_price_volume",
+        "mined_fundamental",
+        "mined_text",
+        "mined_fusion",
+        "mined_other",
+        "mined_custom",
+        "auto_panel",
     }:
         return c
+    if c.startswith("mined_"):
+        return c
+    if c.startswith("catalog_"):
+        return "mined_custom"
+    if c == "custom_factor":
+        return "mined_custom"
+    if c.startswith("fundamental_"):
+        suffix = c[len("fundamental_") :]
+        return f"fund_{suffix}"
     if c == "mined_factor":
-        return "catalog_custom"
-    if c == "auto_panel":
-        return "auto_panel"
-    return "other_custom"
+        return "mined_custom"
+    return "mined_custom"
 
 
 def resolve_primary_factor_package(

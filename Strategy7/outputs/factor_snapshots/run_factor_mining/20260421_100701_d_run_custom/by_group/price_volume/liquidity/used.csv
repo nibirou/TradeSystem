@@ -1,0 +1,2 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+amihud_20,D,Price-Volume / Non-Fundamental Packages,liquidity,"liquidity,context",流动性·amihud20,流动性因子，刻画：取负 amihud20,按定义计算：取负 amihud20,negative amihud20,True,price_volume

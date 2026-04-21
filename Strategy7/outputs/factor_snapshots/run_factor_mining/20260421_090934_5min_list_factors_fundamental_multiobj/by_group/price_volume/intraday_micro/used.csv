@@ -1,0 +1,9 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+micro_break_efficiency,5min,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·微观breakefficiency,日内微观结构因子，刻画：均线gap6/(rv12+振幅),按定义计算：均线gap6/(rv12+振幅),ma_gap6/(rv12+range),True,price_volume
+micro_crowding_pressure,5min,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·微观拥挤压力,日内微观结构因子，刻画：-拥挤*成交量变化,按定义计算：-拥挤*成交量变化,-crowding*vol_chg,True,price_volume
+micro_flow_accel,5min,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·微观资金流accel,日内微观结构因子，刻画：成交量变化*(ret3-ret1),按定义计算：成交量变化*(ret3-ret1),vol_chg*(ret3-ret1),True,price_volume
+micro_liquidity_shock,5min,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·微观流动性shock,日内微观结构因子，刻画：(成交额ratio-1)*振幅,按定义计算：(成交额ratio-1)*振幅,(amount_ratio-1)*range,True,price_volume
+micro_noise_filter,5min,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·微观噪声filter,日内微观结构因子，刻画：-rv12/|ret6|,按定义计算：-rv12/|ret6|,-rv12/|ret6|,True,price_volume
+micro_reversal_flow,5min,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·微观reversal资金流,日内微观结构因子，刻画：-ret1*成交量chg1,按定义计算：-ret1*成交量chg1,-ret1*vol_chg1,True,price_volume
+micro_trend_convexity,5min,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·微观趋势convexity,日内微观结构因子，刻画：ret1-0.7*ret3+0.3*ret6,按定义计算：ret1-0.7*ret3+0.3*ret6,ret1-0.7*ret3+0.3*ret6,True,price_volume
+micro_vol_breakout,5min,Price-Volume / Non-Fundamental Packages,intraday_micro,intraday_micro,日内微观结构·微观成交量突破,日内微观结构因子，刻画：振幅*成交额ratio,按定义计算：振幅*成交额ratio,range*amount_ratio,True,price_volume

@@ -1,0 +1,9 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+intraday_adaptive_breakout,5min,Price-Volume / Non-Fundamental Packages,intraday_signature,intraday_signature,日内特征签名·日内adaptive突破,日内特征签名因子，刻画：均线gap6*(1+成交额ratio/scale),按定义计算：均线gap6*(1+成交额ratio/scale),ma_gap6*(1+amount_ratio/scale),True,price_volume
+intraday_breakout_quality,5min,Price-Volume / Non-Fundamental Packages,intraday_signature,intraday_signature,日内特征签名·日内突破质量,日内特征签名因子，刻画：均线gap12 normalized 按 振幅,按定义计算：均线gap12 normalized 按 振幅,ma_gap12 normalized by range,True,price_volume
+intraday_crowding_stress,5min,Price-Volume / Non-Fundamental Packages,intraday_signature,intraday_signature,日内特征签名·日内拥挤压力,日内特征签名因子，刻画：-拥挤*ret3*scale,按定义计算：-拥挤*ret3*scale,-crowding*ret3*scale,True,price_volume
+intraday_flow_fragility,5min,Price-Volume / Non-Fundamental Packages,intraday_signature,intraday_signature,日内特征签名·日内资金流fragility,日内特征签名因子，刻画：-|成交量变化|*|振幅|*scale,按定义计算：-|成交量变化|*|振幅|*scale,-|vol_chg|*|range|*scale,True,price_volume
+intraday_liquidity_recovery,5min,Price-Volume / Non-Fundamental Packages,intraday_signature,intraday_signature,日内特征签名·日内流动性recovery,日内特征签名因子，刻画：(成交额ratio-1)-|成交量变化|,按定义计算：(成交额ratio-1)-|成交量变化|,(amount_ratio-1)-|vol_chg|,True,price_volume
+intraday_signal_density,5min,Price-Volume / Non-Fundamental Packages,intraday_signature,intraday_signature,日内特征签名·日内信号density,日内特征签名因子，刻画：ret1/(rv12*scale),按定义计算：ret1/(rv12*scale),ret1/(rv12*scale),True,price_volume
+intraday_trend_persistence,5min,Price-Volume / Non-Fundamental Packages,intraday_signature,intraday_signature,日内特征签名·日内趋势persistence,日内特征签名因子，刻画：ret12-ret3,按定义计算：ret12-ret3,ret12-ret3,True,price_volume
+intraday_volatility_drag,5min,Price-Volume / Non-Fundamental Packages,intraday_signature,intraday_signature,日内特征签名·日内volatilitydrag,日内特征签名因子，刻画：ret6-rv12*scale,按定义计算：ret6-rv12*scale,ret6-rv12*scale,True,price_volume

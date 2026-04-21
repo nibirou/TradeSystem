@@ -1,0 +1,41 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+ms_15min_vs_120min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs120min收盘,多尺度因子，刻画：15min vs 120min 收盘 偏离,按定义计算：15min vs 120min 收盘 偏离,15min vs 120min close deviation,True,price_volume
+ms_15min_vs_120min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs120min流动性,多尺度因子，刻画：15min vs 120min 流动性,按定义计算：15min vs 120min 流动性,15min vs 120min liquidity,True,price_volume
+ms_15min_vs_120min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs120min噪声,多尺度因子，刻画：15min vs 120min 噪声,按定义计算：15min vs 120min 噪声,15min vs 120min noise,True,price_volume
+ms_15min_vs_120min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs120min趋势,多尺度因子，刻画：15min vs 120min 趋势,按定义计算：15min vs 120min 趋势,15min vs 120min trend,True,price_volume
+ms_15min_vs_30min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs30min收盘,多尺度因子，刻画：15min vs 30min 收盘 偏离,按定义计算：15min vs 30min 收盘 偏离,15min vs 30min close deviation,True,price_volume
+ms_15min_vs_30min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs30min流动性,多尺度因子，刻画：15min vs 30min 流动性,按定义计算：15min vs 30min 流动性,15min vs 30min liquidity,True,price_volume
+ms_15min_vs_30min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs30min噪声,多尺度因子，刻画：15min vs 30min 噪声,按定义计算：15min vs 30min 噪声,15min vs 30min noise,True,price_volume
+ms_15min_vs_30min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs30min趋势,多尺度因子，刻画：15min vs 30min 趋势,按定义计算：15min vs 30min 趋势,15min vs 30min trend,True,price_volume
+ms_15min_vs_60min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs60min收盘,多尺度因子，刻画：15min vs 60min 收盘 偏离,按定义计算：15min vs 60min 收盘 偏离,15min vs 60min close deviation,True,price_volume
+ms_15min_vs_60min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs60min流动性,多尺度因子，刻画：15min vs 60min 流动性,按定义计算：15min vs 60min 流动性,15min vs 60min liquidity,True,price_volume
+ms_15min_vs_60min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs60min噪声,多尺度因子，刻画：15min vs 60min 噪声,按定义计算：15min vs 60min 噪声,15min vs 60min noise,True,price_volume
+ms_15min_vs_60min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms15minvs60min趋势,多尺度因子，刻画：15min vs 60min 趋势,按定义计算：15min vs 60min 趋势,15min vs 60min trend,True,price_volume
+ms_30min_vs_120min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms30minvs120min收盘,多尺度因子，刻画：30min vs 120min 收盘 偏离,按定义计算：30min vs 120min 收盘 偏离,30min vs 120min close deviation,True,price_volume
+ms_30min_vs_120min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms30minvs120min流动性,多尺度因子，刻画：30min vs 120min 流动性,按定义计算：30min vs 120min 流动性,30min vs 120min liquidity,True,price_volume
+ms_30min_vs_120min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms30minvs120min噪声,多尺度因子，刻画：30min vs 120min 噪声,按定义计算：30min vs 120min 噪声,30min vs 120min noise,True,price_volume
+ms_30min_vs_120min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms30minvs120min趋势,多尺度因子，刻画：30min vs 120min 趋势,按定义计算：30min vs 120min 趋势,30min vs 120min trend,True,price_volume
+ms_30min_vs_60min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms30minvs60min收盘,多尺度因子，刻画：30min vs 60min 收盘 偏离,按定义计算：30min vs 60min 收盘 偏离,30min vs 60min close deviation,True,price_volume
+ms_30min_vs_60min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms30minvs60min流动性,多尺度因子，刻画：30min vs 60min 流动性,按定义计算：30min vs 60min 流动性,30min vs 60min liquidity,True,price_volume
+ms_30min_vs_60min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms30minvs60min噪声,多尺度因子，刻画：30min vs 60min 噪声,按定义计算：30min vs 60min 噪声,30min vs 60min noise,True,price_volume
+ms_30min_vs_60min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms30minvs60min趋势,多尺度因子，刻画：30min vs 60min 趋势,按定义计算：30min vs 60min 趋势,30min vs 60min trend,True,price_volume
+ms_5min_vs_120min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs120min收盘,多尺度因子，刻画：5min vs 120min 收盘 偏离,按定义计算：5min vs 120min 收盘 偏离,5min vs 120min close deviation,True,price_volume
+ms_5min_vs_120min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs120min流动性,多尺度因子，刻画：5min vs 120min 流动性,按定义计算：5min vs 120min 流动性,5min vs 120min liquidity,True,price_volume
+ms_5min_vs_120min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs120min噪声,多尺度因子，刻画：5min vs 120min 噪声,按定义计算：5min vs 120min 噪声,5min vs 120min noise,True,price_volume
+ms_5min_vs_120min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs120min趋势,多尺度因子，刻画：5min vs 120min 趋势,按定义计算：5min vs 120min 趋势,5min vs 120min trend,True,price_volume
+ms_5min_vs_15min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs15min收盘,多尺度因子，刻画：5min vs 15min 收盘 偏离,按定义计算：5min vs 15min 收盘 偏离,5min vs 15min close deviation,True,price_volume
+ms_5min_vs_15min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs15min流动性,多尺度因子，刻画：5min vs 15min 流动性,按定义计算：5min vs 15min 流动性,5min vs 15min liquidity,True,price_volume
+ms_5min_vs_15min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs15min噪声,多尺度因子，刻画：5min vs 15min 噪声,按定义计算：5min vs 15min 噪声,5min vs 15min noise,True,price_volume
+ms_5min_vs_15min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs15min趋势,多尺度因子，刻画：5min vs 15min 趋势,按定义计算：5min vs 15min 趋势,5min vs 15min trend,True,price_volume
+ms_5min_vs_30min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs30min收盘,多尺度因子，刻画：5min vs 30min 收盘 偏离,按定义计算：5min vs 30min 收盘 偏离,5min vs 30min close deviation,True,price_volume
+ms_5min_vs_30min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs30min流动性,多尺度因子，刻画：5min vs 30min 流动性,按定义计算：5min vs 30min 流动性,5min vs 30min liquidity,True,price_volume
+ms_5min_vs_30min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs30min噪声,多尺度因子，刻画：5min vs 30min 噪声,按定义计算：5min vs 30min 噪声,5min vs 30min noise,True,price_volume
+ms_5min_vs_30min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs30min趋势,多尺度因子，刻画：5min vs 30min 趋势,按定义计算：5min vs 30min 趋势,5min vs 30min trend,True,price_volume
+ms_5min_vs_60min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs60min收盘,多尺度因子，刻画：5min vs 60min 收盘 偏离,按定义计算：5min vs 60min 收盘 偏离,5min vs 60min close deviation,True,price_volume
+ms_5min_vs_60min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs60min流动性,多尺度因子，刻画：5min vs 60min 流动性,按定义计算：5min vs 60min 流动性,5min vs 60min liquidity,True,price_volume
+ms_5min_vs_60min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs60min噪声,多尺度因子，刻画：5min vs 60min 噪声,按定义计算：5min vs 60min 噪声,5min vs 60min noise,True,price_volume
+ms_5min_vs_60min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs60min趋势,多尺度因子，刻画：5min vs 60min 趋势,按定义计算：5min vs 60min 趋势,5min vs 60min trend,True,price_volume
+ms_60min_vs_120min_close,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms60minvs120min收盘,多尺度因子，刻画：60min vs 120min 收盘 偏离,按定义计算：60min vs 120min 收盘 偏离,60min vs 120min close deviation,True,price_volume
+ms_60min_vs_120min_liq,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms60minvs120min流动性,多尺度因子，刻画：60min vs 120min 流动性,按定义计算：60min vs 120min 流动性,60min vs 120min liquidity,True,price_volume
+ms_60min_vs_120min_noise,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms60minvs120min噪声,多尺度因子，刻画：60min vs 120min 噪声,按定义计算：60min vs 120min 噪声,60min vs 120min noise,True,price_volume
+ms_60min_vs_120min_trend,D,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms60minvs120min趋势,多尺度因子，刻画：60min vs 120min 趋势,按定义计算：60min vs 120min 趋势,60min vs 120min trend,True,price_volume
