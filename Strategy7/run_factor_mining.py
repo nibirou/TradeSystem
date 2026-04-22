@@ -23,7 +23,7 @@ from strategy7.config import (
     DateConfig,
     resolve_market_data_scope,
 )
-from strategy7.core.constants import INTRADAY_FREQS, SUPPORTED_FREQS
+from strategy7.core.constants import EXECUTION_SCHEMES, INTRADAY_FREQS, SUPPORTED_FREQS
 from strategy7.core.utils import log_progress, set_log_level
 from strategy7.data.feature_engineering import FactorEngineeringOptions, apply_factor_engineering
 from strategy7.data.loaders import MarketUniverseDataLoader, build_feature_bundle, load_index_benchmark_data
@@ -605,6 +605,7 @@ def _parse_args() -> argparse.Namespace:
     g_date.add_argument(
         "--execution-scheme",
         type=str,
+        choices=sorted(EXECUTION_SCHEMES.keys()),
         default="vwap30_vwap30",
         help="标签价格规则（与主回测执行方案保持一致）",
     )
@@ -760,54 +761,49 @@ def _parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def main() -> None:
-    # Step 1) 参数解析与日志级别初始化。
-    args = _parse_args()
-    effective_log_level = set_log_level(level=str(args.log_level), quiet=bool(args.quiet), verbose=bool(args.verbose))
-    log_progress(f"日志级别：{effective_log_level}", module="run_factor_mining")
-    log_progress("开始解析与校验挖掘参数。", module="run_factor_mining")
-
-    train_start = _parse_date(args.train_start)
-    train_end = _parse_date(args.train_end)
-    valid_start = _parse_date(args.valid_start)
-    valid_end = _parse_date(args.valid_end)
-
+def _validate_args(
+    args: argparse.Namespace,
+    *,
+    train_start: pd.Timestamp,
+    train_end: pd.Timestamp,
+    valid_start: pd.Timestamp,
+    valid_end: pd.Timestamp,
+) -> None:
     if not (train_start <= train_end < valid_start <= valid_end):
         raise ValueError("date constraint: train_start <= train_end < valid_start <= valid_end")
-    if int(args.ml_population_size) <= 0 or int(args.ml_generations) <= 0:
-        raise ValueError("ml_population_size and ml_generations must be positive")
-    if int(args.ml_feature_min) <= 0 or int(args.ml_feature_max) <= 0:
-        raise ValueError("ml_feature_min and ml_feature_max must be positive")
-    if int(args.ml_feature_min) > int(args.ml_feature_max):
-        raise ValueError("ml_feature_min must be <= ml_feature_max")
-    if not (0.0 < float(args.ml_train_sample_frac) <= 1.0):
-        raise ValueError("ml_train_sample_frac must be in (0,1]")
-    if int(args.ml_max_train_rows) < 2000:
-        raise ValueError("ml_max_train_rows must be >= 2000")
-    if int(args.gp_population_size) <= 0 or int(args.gp_generations) <= 0:
-        raise ValueError("gp_population_size and gp_generations must be positive")
-    if int(args.gp_num_runs) <= 0:
-        raise ValueError("gp_num_runs must be positive")
-    if int(args.gp_n_components) <= 0 or int(args.gp_hall_of_fame) <= 0:
-        raise ValueError("gp_n_components and gp_hall_of_fame must be positive")
-    if int(args.gp_tournament_size) <= 1:
-        raise ValueError("gp_tournament_size must be > 1")
-    if int(args.gp_prefilter_topk) <= 0:
-        raise ValueError("gp_prefilter_topk must be positive")
-    if float(args.gp_parsimony) < 0.0:
-        raise ValueError("gp_parsimony must be >= 0")
-    if int(args.gp_num_jobs) == 0:
-        raise ValueError("gp_num_jobs cannot be 0; use -1 or a positive integer")
-    if not (0.0 < float(args.gp_train_sample_frac) <= 1.0):
-        raise ValueError("gp_train_sample_frac must be in (0,1]")
-    if int(args.gp_max_train_rows) < 3000:
-        raise ValueError("gp_max_train_rows must be >= 3000")
-    if int(args.gp_max_depth) < 2:
-        raise ValueError("gp_max_depth must be >= 2")
-    if not (0.0 < float(args.gp_max_samples) <= 1.0):
-        raise ValueError("gp_max_samples must be in (0,1]")
+
+    if int(args.horizon) <= 0:
+        raise ValueError("horizon must be positive")
+    if int(args.population_size) <= 0 or int(args.generations) <= 0:
+        raise ValueError("population_size and generations must be positive")
+    if int(args.elite_size) <= 0:
+        raise ValueError("elite_size must be positive")
+    if int(args.elite_size) > int(args.population_size):
+        raise ValueError("elite_size must be <= population_size")
+    if not (0.0 <= float(args.mutation_rate) <= 1.0):
+        raise ValueError("mutation_rate must be in [0,1]")
+    if not (0.0 <= float(args.crossover_rate) <= 1.0):
+        raise ValueError("crossover_rate must be in [0,1]")
+    if int(args.top_n) <= 0:
+        raise ValueError("top_n must be positive")
+    if not (0.0 <= float(args.corr_threshold) < 1.0):
+        raise ValueError("corr_threshold must be in [0,1)")
+    if int(args.min_cross_section) <= 1:
+        raise ValueError("min_cross_section must be greater than 1")
+    if not (0.0 < float(args.top_frac) <= 1.0):
+        raise ValueError("top_frac must be in (0,1]")
     if args.max_files is not None and int(args.max_files) <= 0:
         raise ValueError("max_files must be positive when provided")
+
+    if args.min_abs_ic_mean is not None and float(args.min_abs_ic_mean) < 0.0:
+        raise ValueError("min_abs_ic_mean must be >= 0")
+    if args.min_ic_win_rate is not None and not (0.0 <= float(args.min_ic_win_rate) <= 1.0):
+        raise ValueError("min_ic_win_rate must be in [0,1]")
+    if args.min_long_win_rate is not None and not (0.0 <= float(args.min_long_win_rate) <= 1.0):
+        raise ValueError("min_long_win_rate must be in [0,1]")
+    if args.min_coverage is not None and not (0.0 <= float(args.min_coverage) <= 1.0):
+        raise ValueError("min_coverage must be in [0,1]")
+
     if not (0.0 <= float(args.material_fe_min_coverage) <= 1.0):
         raise ValueError("material_fe_min_coverage must be in [0,1]")
     if float(args.material_fe_min_std) < 0.0:
@@ -822,6 +818,68 @@ def main() -> None:
         raise ValueError("material_fe_max_factors must be non-negative")
     if int(args.material_fe_max_factors) > 0 and int(args.material_fe_max_factors) < int(args.material_fe_min_factors):
         raise ValueError("material_fe_max_factors must be >= material_fe_min_factors when positive")
+
+    framework = str(args.framework).strip().lower()
+    if framework == "ml_ensemble_alpha":
+        if int(args.ml_population_size) <= 0 or int(args.ml_generations) <= 0:
+            raise ValueError("ml_population_size and ml_generations must be positive")
+        if int(args.ml_feature_min) <= 0 or int(args.ml_feature_max) <= 0:
+            raise ValueError("ml_feature_min and ml_feature_max must be positive")
+        if int(args.ml_feature_min) > int(args.ml_feature_max):
+            raise ValueError("ml_feature_min must be <= ml_feature_max")
+        if int(args.ml_prefilter_topk) <= 0:
+            raise ValueError("ml_prefilter_topk must be positive")
+        if int(args.ml_num_jobs) == 0:
+            raise ValueError("ml_num_jobs cannot be 0; use -1 or a positive integer")
+        if not (0.0 < float(args.ml_train_sample_frac) <= 1.0):
+            raise ValueError("ml_train_sample_frac must be in (0,1]")
+        if int(args.ml_max_train_rows) < 2000:
+            raise ValueError("ml_max_train_rows must be >= 2000")
+
+    if framework == "gplearn_symbolic_alpha":
+        if int(args.gp_population_size) <= 0 or int(args.gp_generations) <= 0:
+            raise ValueError("gp_population_size and gp_generations must be positive")
+        if int(args.gp_num_runs) <= 0:
+            raise ValueError("gp_num_runs must be positive")
+        if int(args.gp_n_components) <= 0 or int(args.gp_hall_of_fame) <= 0:
+            raise ValueError("gp_n_components and gp_hall_of_fame must be positive")
+        if int(args.gp_tournament_size) <= 1:
+            raise ValueError("gp_tournament_size must be > 1")
+        if int(args.gp_prefilter_topk) <= 0:
+            raise ValueError("gp_prefilter_topk must be positive")
+        if float(args.gp_parsimony) < 0.0:
+            raise ValueError("gp_parsimony must be >= 0")
+        if int(args.gp_num_jobs) == 0:
+            raise ValueError("gp_num_jobs cannot be 0; use -1 or a positive integer")
+        if not (0.0 < float(args.gp_train_sample_frac) <= 1.0):
+            raise ValueError("gp_train_sample_frac must be in (0,1]")
+        if int(args.gp_max_train_rows) < 3000:
+            raise ValueError("gp_max_train_rows must be >= 3000")
+        if int(args.gp_max_depth) < 2:
+            raise ValueError("gp_max_depth must be >= 2")
+        if not (0.0 < float(args.gp_max_samples) <= 1.0):
+            raise ValueError("gp_max_samples must be in (0,1]")
+
+
+def main() -> None:
+    # Step 1) 参数解析与日志级别初始化。
+    args = _parse_args()
+    effective_log_level = set_log_level(level=str(args.log_level), quiet=bool(args.quiet), verbose=bool(args.verbose))
+    log_progress(f"日志级别：{effective_log_level}", module="run_factor_mining")
+    log_progress("开始解析与校验挖掘参数。", module="run_factor_mining")
+
+    train_start = _parse_date(args.train_start)
+    train_end = _parse_date(args.train_end)
+    valid_start = _parse_date(args.valid_start)
+    valid_end = _parse_date(args.valid_end)
+
+    _validate_args(
+        args,
+        train_start=train_start,
+        train_end=train_end,
+        valid_start=valid_start,
+        valid_end=valid_end,
+    )
     log_progress(
         f"参数校验通过：framework={args.framework}, train={train_start.date()}~{train_end.date()}, "
         f"valid={valid_start.date()}~{valid_end.date()}。",
@@ -959,7 +1017,7 @@ def main() -> None:
                 factor_freq=factor_freq,
                 export_format=str(args.factor_list_export_format),
                 export_path_arg=str(args.factor_list_export_path),
-                default_dir=Path(__file__).resolve().parent / "outputs" / "factor_lists",
+                default_dir=Path(store_root).expanduser() / "factor_mining" / "factor_lists",
             )
             log_progress(
                 f"因子清单导出完成：format={args.factor_list_export_format}, path={export_path}",

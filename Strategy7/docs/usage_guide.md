@@ -247,6 +247,51 @@ python Strategy7/run_strategy7.py `
   --stock-list-path D:/PythonProject/Quant/data_baostock/metadata/stock_list_custom.csv
 ```
 
+### 5.6 组合优化 + 现实执行完整示例
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --train-start 2024-01-01 --train-end 2024-12-31 `
+  --test-start 2025-01-01 --test-end 2025-12-31 `
+  --factor-freq D `
+  --stock-model-type decision_tree `
+  --timing-model-type volatility_regime `
+  --timing-vol-threshold 0.0 `
+  --timing-momentum-threshold 0.0 `
+  --portfolio-model-type dynamic_opt `
+  --opt-max-weight 0.20 `
+  --opt-max-turnover 1.00 `
+  --opt-risk-aversion 1.20 `
+  --opt-style-penalty 0.80 `
+  --execution-model-type realistic_fill `
+  --max-participation-rate 0.12 `
+  --base-fill-rate 0.92 `
+  --latency-bars 1 `
+  --execution-scheme vwap30_vwap30 `
+  --save-models true
+```
+
+### 5.7 主流程“全功能组合”示例（catalog + 因子缓存 + 快照）
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --train-start 2024-01-01 --train-end 2024-12-31 `
+  --test-start 2025-01-01 --test-end 2025-12-31 `
+  --factor-freq D `
+  --factor-packages trend,liquidity,fund_growth,mined_fusion `
+  --factor-catalog-path auto `
+  --enable-factor-value-store true `
+  --factor-value-store-root auto `
+  --factor-value-store-format parquet `
+  --auto-export-factor-snapshot true `
+  --stock-model-type factor_gcl `
+  --label-task return `
+  --fgcl-epochs 120 `
+  --fgcl-device auto `
+  --output-dir auto `
+  --save-models true
+```
+
 ## 6. 常用参数说明（主流程）
 
 参数闭环审计文档：
@@ -549,6 +594,35 @@ python Strategy7/run_factor_mining.py `
   --population-size 96 --generations 16 --top-n 20
 ```
 
+示例（分钟增强参数化）：
+
+```powershell
+python Strategy7/run_factor_mining.py `
+  --framework minute_parametric_plus `
+  --factor-freq 30min `
+  --train-start 2021-01-01 --train-end 2023-12-31 `
+  --valid-start 2024-01-01 --valid-end 2024-12-31 `
+  --population-size 96 --generations 16 --top-n 20
+```
+
+示例（ML 集成挖掘）：
+
+```powershell
+python Strategy7/run_factor_mining.py `
+  --framework ml_ensemble_alpha `
+  --factor-freq D `
+  --factor-packages trend,reversal,liquidity,flow `
+  --train-start 2021-01-01 --train-end 2023-12-31 `
+  --valid-start 2024-01-01 --valid-end 2024-12-31 `
+  --ml-population-size 48 --ml-generations 10 `
+  --ml-model-pool rf,et,hgbt `
+  --ml-prefilter-topk 80 `
+  --ml-feature-min 10 --ml-feature-max 36 `
+  --ml-train-sample-frac 0.40 `
+  --ml-max-train-rows 220000 `
+  --ml-num-jobs -1
+```
+
 示例（custom 逐因子评估，推荐）：
 
 ```powershell
@@ -586,6 +660,11 @@ python Strategy7/run_factor_mining.py `
   --factor-packages mined_fusion `
   --export-factor-list --factor-list-export-format csv
 ```
+
+说明：
+
+1. 若不显式传 `--factor-list-export-path`，导出默认目录为：`<factor-store-root>/factor_mining/factor_lists/`。
+2. `--execution-scheme` 与主流程保持一致，可选值：`open5_open5`、`vwap30_vwap30`、`open5_twap_last30`、`daily_close_daily_close`。
 
 示例（显式指定挖掘素材因子）：
 
@@ -632,6 +711,21 @@ python Strategy7/run_factor_mining.py `
 1. `--factor-catalog-path auto`（默认）
 2. `--disable-catalog-factors`（关闭）
 
+主流程验证示例：
+
+```powershell
+# 使用 catalog 因子（默认）
+python Strategy7/run_strategy7.py `
+  --factor-freq D `
+  --factor-packages mined_fusion `
+  --factor-catalog-path auto
+
+# 显式关闭 catalog 因子
+python Strategy7/run_strategy7.py `
+  --factor-freq D `
+  --disable-catalog-factors
+```
+
 ## 11. 插件扩展
 
 插件模板目录：
@@ -659,6 +753,30 @@ python Strategy7/run_factor_mining.py `
 1. `--extra-factor-paths`、`--extra-source-module` 仍可用，但已标记为 deprecated
 2. 新增外部因子建议统一在 `--custom-factor-py` 中注册（可直接从外部 CSV/Parquet 注册）
 
+插件调用示例：
+
+```powershell
+# 自定义因子插件
+python Strategy7/run_strategy7.py `
+  --custom-factor-py Strategy7/strategy7/plugins/custom_factor_template.py
+
+# 自定义选股模型
+python Strategy7/run_strategy7.py `
+  --custom-stock-model-py Strategy7/strategy7/plugins/custom_stock_model_template.py
+
+# 自定义择时模型
+python Strategy7/run_strategy7.py `
+  --custom-timing-model-py Strategy7/strategy7/plugins/custom_timing_model_template.py
+
+# 自定义组合模型
+python Strategy7/run_strategy7.py `
+  --custom-portfolio-model-py Strategy7/strategy7/plugins/custom_portfolio_model_template.py
+
+# 自定义执行模型
+python Strategy7/run_strategy7.py `
+  --custom-execution-model-py Strategy7/strategy7/plugins/custom_execution_model_template.py
+```
+
 ## 12. 常见问题排查
 
 1. `ModuleNotFoundError: pandas/torch`
@@ -684,4 +802,3 @@ python Strategy7/run_factor_mining.py `
 1. [FactorGCL 说明](./factor_gcl.md)
 2. [DAFAT 复现与工程实现说明](./dafat_transformer.md)
 3. [因子挖掘框架说明](./factor_mining_framework.md)
-

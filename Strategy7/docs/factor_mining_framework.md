@@ -418,7 +418,7 @@ python Strategy7/run_factor_mining.py \
   --gp-prefilter-topk 80
 ```
 
-### 6.7 列出挖掘可用因子（支持 catalog + package 过滤）
+### 6.8 列出挖掘可用因子（支持 catalog + package 过滤）
 
 ```bash
 python Strategy7/run_factor_mining.py \
@@ -428,7 +428,12 @@ python Strategy7/run_factor_mining.py \
   --export-factor-list --factor-list-export-format csv
 ```
 
-### 6.8 显式素材列表挖掘（`--factor-list`）
+说明：
+
+- 不指定 `--factor-list-export-path` 时，导出默认目录是 `<factor-store-root>/factor_mining/factor_lists/`。
+- `--execution-scheme` 可选值与主流程一致：`open5_open5` / `vwap30_vwap30` / `open5_twap_last30` / `daily_close_daily_close`。
+
+### 6.9 显式素材列表挖掘（`--factor-list`）
 
 ```bash
 python Strategy7/run_factor_mining.py \
@@ -436,6 +441,31 @@ python Strategy7/run_factor_mining.py \
   --factor-freq 30min \
   --factor-list amount_ratio_12,ret_12,rv_12 \
   --factor-store-root D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/mining_test
+```
+
+### 6.10 开启自动因子快照导出
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --framework fundamental_multiobj \
+  --factor-freq D \
+  --auto-export-factor-snapshot \
+  --factor-store-root D:/PythonProject/Quant/data_baostock
+```
+
+### 6.11 素材缓存复用 + 素材特征工程（推荐大规模素材池）
+
+```bash
+python Strategy7/run_factor_mining.py \
+  --framework ml_ensemble_alpha \
+  --factor-freq D \
+  --enable-factor-value-store \
+  --factor-value-store-root auto \
+  --factor-value-store-format parquet \
+  --enable-material-feature-engineering \
+  --material-fe-min-coverage 0.75 \
+  --material-fe-corr-threshold 0.95 \
+  --material-fe-max-factors 600
 ```
 
 依赖说明：
@@ -448,6 +478,8 @@ python Strategy7/run_factor_mining.py \
 - 当前工程使用通用可解释参数化结构复现研报核心流程（参数化表达式 + 多目标进化 + 分层准入 + 因子入库）。
 - 若你的数据源已补充更丰富的基本面字段/分钟字段，框架会自动扩大可选搜索空间。
 - 若需进一步“逐表逐字段”严格对齐研报原始 71 指标/26 指标定义，可在数据源层增补字段后直接复用本框架挖掘引擎。
+- 当前 CLI 已补齐关键边界校验（例如 `horizon/top_n/top_frac`、`mutation_rate/crossover_rate`、`execution_scheme`）。
+- `ml_*` 与 `gp_*` 参数按框架条件校验：仅在对应 `framework` 下触发。
 
 ### Admission Threshold Overrides
 
