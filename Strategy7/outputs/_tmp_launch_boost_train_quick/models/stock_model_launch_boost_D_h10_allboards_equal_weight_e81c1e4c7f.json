@@ -1,0 +1,19 @@
+{
+  "model_type": "launch_boost",
+  "max_depth": 4,
+  "min_samples_leaf": 200,
+  "learning_rate": 0.05,
+  "max_iter": 320,
+  "l2_regularization": 1.0,
+  "return_head_weight": 0.35,
+  "random_state": 42,
+  "factor_count": 77,
+  "train_summary": {
+    "train_rows": 188.0,
+    "cls_rows": 188.0,
+    "ret_rows": 188.0,
+    "cls_pos_rate": 0.723404255319149,
+    "ret_std": 0.03063871290042549,
+    "has_return_head": 1.0
+  }
+}

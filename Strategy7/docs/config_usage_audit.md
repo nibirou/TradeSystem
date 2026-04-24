@@ -11,7 +11,7 @@
    - 发现并修复了 `--index-root` 先前未实际参与挖掘流程的问题。  
    - 现在 `--index-root` 会加载 HS300 指数并注入市场上下文素材列。  
 3. 条件生效参数说明：  
-   - 某些参数仅在对应模型/框架下生效（如 `fgcl_*`、`dafat_*`、`gp_*`、`ml_*`），这是设计行为，不是空转。
+   - 某些参数仅在对应模型/框架下生效（如 `launch_boost_*`、`fgcl_*`、`dafat_*`、`gp_*`、`ml_*`），这是设计行为，不是空转。
 
 ## 2. 本次修复项（重点）
 
@@ -69,7 +69,7 @@
 2. 因子参数（`factor-freq/factor-list/factor-packages/custom-factor-py/list-factors/lookback-days/min-ic-cross-section/label-task`）  
 生效模块：`pipeline/runner.py`、`factors/defaults.py`、`factors/labeling.py`、`backtest` 评估。
 
-3. 选股模型参数（`stock-model-type` + `fgcl_*` + `dafat_*` + 决策树参数）  
+3. 选股模型参数（`stock-model-type` + `launch_boost_*` + `fgcl_*` + `dafat_*` + 决策树参数）  
 生效模块：`models/stock_selection/factory.py` -> 各模型实现。
 
 4. 择时参数（`timing-model-type/timing-*`）  
@@ -123,7 +123,7 @@
 ## 5. 关键说明
 
 1. 条件生效不等于未使用：  
-`fgcl_*` 在非 `factor_gcl` 下不会生效，`gp_*` 在非 `gplearn_symbolic_alpha` 下不会生效，这是预期设计。  
+`launch_boost_*` 在非 `launch_boost` 下不会生效，`fgcl_*` 在非 `factor_gcl` 下不会生效，`gp_*` 在非 `gplearn_symbolic_alpha` 下不会生效，这是预期设计。  
 
 2. 运行时参数（如日志级别）不会进入 `RunConfig/FactorMiningConfig`，但已在入口处实际生效。  
 
@@ -168,7 +168,7 @@
    - `off`：跳过 FE（即使 `enable_factor_engineering=true`）
 4. `models/loading.py` 负责：
    - 从 `summary_*.json` / 模型目录 / 显式路径解析模型文件
-   - 加载内置四类模型（含 tree/factor_gcl/dafat + timing/portfolio/execution）
+   - 加载内置四类模型（含 tree/launch_boost/factor_gcl/dafat + timing/portfolio/execution）
    - `peek_stock_model_factor_cols` 在 `custom_stock_model_py` 场景优先走插件探测，不再错误按内置 `pickle` 反序列化
 5. `pipeline/runner.py` 在回测后按 `enable_next_bar_inference` 生成：
    - `next_bar_candidates_*.csv`
@@ -204,3 +204,4 @@
 1. `run_strategy7_v2_01..11` 全部可跑通（`06` 需按设计传 `-ModelsLoadDir`）。
 2. `run_factor_mining_v2_01..07` 全部可跑通。
 3. 产物统一落盘到 `Strategy7/outputs/smoke_v2/...`，可直接复核 summary/metrics/模型文件/因子导出。
+

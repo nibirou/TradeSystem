@@ -401,7 +401,7 @@ python Strategy7/run_strategy7.py `
 新版模板目录：`Strategy7/scripts/v2`。  
 当前模板规模：
 
-1. 主流程 `run_strategy7_v2_*.ps1` 共 `01~19`
+1. 主流程 `run_strategy7_v2_*.ps1` 共 `01~21`
 2. 挖掘入口 `run_factor_mining_v2_*.ps1` 共 `01~14`
 
 完整模板索引与每个模板覆盖点详见：`Strategy7/scripts/v2/README.md`。
@@ -413,6 +413,7 @@ python Strategy7/run_strategy7.py `
 3. `08~09`：深度模型冒烟（FactorGCL、DAFAT）
 4. `10~11`：`--list-factors` 导出、factor value store build-only
 5. `12~19`：扩展链路（W/M/30min、price-only+main_board、custom factor plugin、value store hydrate、显式四路径 load、30min JSON 导出）
+6. `20~21`：全市场低位启动10日研究链路（`launch_boost` + `bottom_launch`，train/load）
 
 挖掘模板（`run_factor_mining_v2_*.ps1`）速览：
 
@@ -432,6 +433,7 @@ python Strategy7/run_strategy7.py `
 8. 值仓库路径（build-only/hydrate/materials 联动）：`run_strategy7_v2_11` / `16` / `run_factor_mining_v2_08`
 9. 挖掘参数扩展（custom spec、禁默认素材+指定因子）：`run_factor_mining_v2_09` / `13`
 10. 因子清单导出（json/markdown）：`run_strategy7_v2_10` / `19` / `run_factor_mining_v2_07` / `12`
+11. 全市场低位启动10日策略：`run_strategy7_v2_20` / `run_strategy7_v2_21`
 
 建议执行方式（`env_quant`）：
 
@@ -455,6 +457,63 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2
 powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2.ps1 -IncludeExtended -SkipMining
 ```
 
+补充：
+
+1. `run_strategy7_v2_20/21` 是研究型全市场模板，默认不纳入 `run_smoke_suite_v2.ps1` 执行列表（执行耗时通常显著高于 smoke 模板）。
+
+### 5.11 全市场“低位启动10日”趋势选股策略（推荐链路）
+
+策略目标：
+
+1. 在全市场范围内优先识别“处于阶段低位、且 10 个交易日内具备启动概率”的个股。
+
+推荐研究频率：
+
+1. `factor_freq=D`（日频最适配“10 个交易日”窗口，且可稳定复用全市场长期历史）。
+
+推荐标签与核心参数：
+
+1. `label_task=return`
+2. `horizon=10`
+3. `top_k=25`（可按资金规模再调）
+4. `long_threshold=0.60`
+
+推荐因子包组合：
+
+1. 核心低位启动包：`bottom_launch`（低位、反弹、压缩、启动确认）
+2. 量价主干：`trend,reversal,liquidity,volatility,price_action,crowding,oscillator,overnight,multi_freq,context`
+3. 风险过滤与确认：`fund_quality,fund_cashflow,text_event,text_sentiment`
+
+推荐选股模型：
+
+1. `stock_model_type=launch_boost`
+2. 结构：上涨概率分类头 + 收益排序回归头 + 启动信号校准
+3. 推荐超参起点：
+   `--launch-boost-max-depth 5 --launch-boost-learning-rate 0.04 --launch-boost-max-iter 400 --launch-boost-l2 1.5 --launch-boost-return-head-weight 0.40`
+
+模板：
+
+1. train：`Strategy7/scripts/v2/run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1`
+2. load：`Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1`（需传 `-ModelSummaryJson`）
+3. 两个模板均支持可选参数：`-DataRoot`（默认 `auto`）、`-IndexRoot`（默认空=主入口默认）、`-TrainStart/-TrainEnd/-TestStart/-TestEnd`（可改成短窗口调试）、`-MaxFiles`（小样本调试）
+
+示例：
+
+```powershell
+# 训练并保存模型
+powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1 `
+  -TrainStart 2024-01-01 -TrainEnd 2024-06-30 `
+  -TestStart 2024-07-01 -TestEnd 2024-09-30 `
+  -MaxFiles 200
+
+# 基于已训练 summary 直接 load 回测/推理
+powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1 `
+  -ModelSummaryJson D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_20_train_allmarket_bottom_launch_10d/summary_xxx.json `
+  -TrainStart 2024-01-01 -TrainEnd 2024-06-30 `
+  -TestStart 2024-07-01 -TestEnd 2024-09-30 `
+  -MaxFiles 200
+```
+
 ## 6. 常用参数说明（主流程）
 
 参数闭环审计文档：
@@ -468,7 +527,8 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2
 2. 因子：
    `--factor-freq --factor-list --factor-packages --custom-factor-py --list-factors --auto-export-factor-snapshot --export-factor-list --factor-list-export-format --factor-list-export-path --label-task --lookback-days --enable-factor-engineering --fe-min-coverage --fe-min-std --fe-corr-threshold --fe-preselect-top-n --fe-min-factors --fe-max-factors --fe-orth-method --fe-pca-variance-ratio --fe-pca-max-components --enable-factor-value-store --factor-value-store-root --factor-value-store-format --factor-value-store-build-all --factor-value-store-build-only --factor-value-store-chunk-size`
 3. 选股模型：
-   `--stock-model-type`（`decision_tree`/`factor_gcl`/`dafat`）
+   `--stock-model-type`（`decision_tree`/`launch_boost`/`factor_gcl`/`dafat`）
+   `launch_boost` 超参：`--launch-boost-max-depth --launch-boost-learning-rate --launch-boost-max-iter --launch-boost-l2 --launch-boost-return-head-weight`
 4. 择时模型：
    `--timing-model-type`（`none`/`volatility_regime`）
 5. 组合模型：
@@ -511,29 +571,30 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2
 12. `period_signature`：周月周期签名类
 13. `oscillator`：摆动指标类
 14. `overnight`：隔夜效应类
-15. `multi_freq`：跨频主桥接族（`hf_*`）类
-16. `bridge`：跨频桥接包（高频向主频聚合）
-17. `multiscale`：多尺度差分包（快慢频对比）
-18. `text_sentiment`：金融文本情绪类（>=30 初始因子）
-19. `text_attention`：金融文本关注度类（>=30 初始因子）
-20. `text_event`：金融文本事件风险类（>=30 初始因子）
-21. `text_topic`：金融文本主题类（>=30 初始因子）
-22. `text_fusion`：金融文本融合类（文本×量价×基本面，>=30 初始因子）
-23. `fund_growth`：基本面成长类（>=100 初始因子）
-24. `fund_valuation`：基本面估值类（>=100 初始因子）
-25. `fund_profitability`：基本面盈利能力类（>=100 初始因子）
-26. `fund_quality`：基本面质量类（>=100 初始因子）
-27. `fund_leverage`：基本面杠杆/偿债类（>=100 初始因子）
-28. `fund_cashflow`：基本面现金流类（>=100 初始因子）
-29. `fund_efficiency`：基本面运营效率类（>=100 初始因子）
-30. `fund_expectation`：预期/业绩预告类（>=100 初始因子）
-31. `fund_hf_fusion`：基本面-高频量价融合类（>=100 初始因子）
-32. `mined_price_volume`：挖掘因子-量价类
-33. `mined_fundamental`：挖掘因子-基本面类
-34. `mined_text`：挖掘因子-金融文本类
-35. `mined_fusion`：挖掘因子-融合类（量价/基本面/文本混合）
-36. `mined_other`：挖掘因子-其他类
-37. `mined_custom`：挖掘因子-自定义类
+15. `bottom_launch`：低位启动类（10日启动相关因子包）
+16. `multi_freq`：跨频主桥接族（`hf_*`）类
+17. `bridge`：跨频桥接包（高频向主频聚合）
+18. `multiscale`：多尺度差分包（快慢频对比）
+19. `text_sentiment`：金融文本情绪类（>=30 初始因子）
+20. `text_attention`：金融文本关注度类（>=30 初始因子）
+21. `text_event`：金融文本事件风险类（>=30 初始因子）
+22. `text_topic`：金融文本主题类（>=30 初始因子）
+23. `text_fusion`：金融文本融合类（文本×量价×基本面，>=30 初始因子）
+24. `fund_growth`：基本面成长类（>=100 初始因子）
+25. `fund_valuation`：基本面估值类（>=100 初始因子）
+26. `fund_profitability`：基本面盈利能力类（>=100 初始因子）
+27. `fund_quality`：基本面质量类（>=100 初始因子）
+28. `fund_leverage`：基本面杠杆/偿债类（>=100 初始因子）
+29. `fund_cashflow`：基本面现金流类（>=100 初始因子）
+30. `fund_efficiency`：基本面运营效率类（>=100 初始因子）
+31. `fund_expectation`：预期/业绩预告类（>=100 初始因子）
+32. `fund_hf_fusion`：基本面-高频量价融合类（>=100 初始因子）
+33. `mined_price_volume`：挖掘因子-量价类
+34. `mined_fundamental`：挖掘因子-基本面类
+35. `mined_text`：挖掘因子-金融文本类
+36. `mined_fusion`：挖掘因子-融合类（量价/基本面/文本混合）
+37. `mined_other`：挖掘因子-其他类
+38. `mined_custom`：挖掘因子-自定义类
 
 说明：部分包只在特定频率有非空因子，例如 `period_signature` 仅在 `W/M` 生效，`intraday_signature` 仅在分钟频生效。
 挖掘因子还支持维度标签包：`mined_fw_*`（挖掘框架）、`mined_universe_*`（股票池）、`mined_freq_*`（频率）、`mined_materialpkg_*`（素材包）。
@@ -558,6 +619,7 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2
 7. `--factor-packages text_fusion,fund_hf_fusion,bridge`：做文本/基本面与高频桥接融合研究
 8. `--factor-packages mined_fusion`：只启用 catalog 中“挖掘融合类”因子
 9. `--factor-packages mined_fw_gpl,mined_universe_hs300`：只启用特定挖掘框架/股票池标签下的挖掘因子
+10. `--factor-packages bottom_launch,trend,reversal,liquidity`：低位启动趋势选股核心组合
 
 示例：
 
@@ -989,9 +1051,10 @@ python Strategy7/run_strategy7.py `
 ## 13. 性能与复现实务建议
 
 1. 先用 `--max-files` 做小样本烟雾测试，再跑全量
-2. 固定 `--random-state` 便于复现
-3. 对深度模型先用小 `epochs` 验证流程，再扩到正式训练
-4. 多次挖掘后定期审阅 `factor_catalog.json`，下线失效因子
+2. `--max-files` 按“最多加载的有效股票样本数”生效（不是简单截取前 N 个文件），可降低全市场小样本调试的随机空样本风险
+3. 固定 `--random-state` 便于复现
+4. 对深度模型先用小 `epochs` 验证流程，再扩到正式训练
+5. 多次挖掘后定期审阅 `factor_catalog.json`，下线失效因子
 
 ## 14. 推荐阅读
 

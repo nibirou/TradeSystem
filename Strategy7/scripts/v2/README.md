@@ -25,6 +25,8 @@
 | `run_strategy7_v2_17_load_explicit_paths_off.ps1` | 显式四路径 load 回测 | `--stock/timing/portfolio/execution-model-path` |
 | `run_strategy7_v2_18_train_monthly_multitask_catalog_off.ps1` | 月频多任务训练回测 | `factor_freq=M`、`label_task=multi_task`、`enable_factor_catalog=false` |
 | `run_strategy7_v2_19_list_factors_30min_json_export.ps1` | 30min 因子清单 JSON 导出 | `--list-factors` + `factor_freq=30min` + JSON export |
+| `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1` | 全市场低位启动10日训练回测 | `factor_freq=D`、`horizon=10`、`stock_model_type=launch_boost`、`factor_packages` 含 `bottom_launch` |
+| `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1` | 全市场低位启动10日 load 回测 | `model_run_mode=load`、`model_summary_json`、`launch_boost`、next-bar |
 
 ## 2) 挖掘入口模板（run_factor_mining.py）
 
@@ -63,11 +65,13 @@
 | 因子清单导出（json/markdown） | `run_strategy7_v2_10_list_factors_export.ps1`、`run_strategy7_v2_19_list_factors_30min_json_export.ps1`、`run_factor_mining_v2_07_list_factors_export.ps1`、`run_factor_mining_v2_12_list_factors_markdown_export.ps1` |
 | 挖掘框架覆盖（fundamental/minute/ml/gp/custom） | `run_factor_mining_v2_01..06` |
 | 挖掘参数扩展（custom spec / 30min / 关闭默认素材） | `run_factor_mining_v2_09_custom_spec_json_smoke.ps1`、`run_factor_mining_v2_10_minute_parametric_30min_smoke.ps1`、`run_factor_mining_v2_13_disable_default_materials_with_factor_list.ps1` |
+| 低位启动10日趋势选股（全市场） | `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1`、`run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1` |
 
 ## 4) 一键回归
 
 - `run_smoke_suite_v2.ps1`：按“先 train 再 load”顺序逐条执行模板并输出通过/失败清单。
 - 默认执行核心模板（`run_strategy7:01~11`、`run_factor_mining:01~07`）；如需覆盖新增模板，附加 `-IncludeExtended`。
+- `run_strategy7_v2_20/21` 是研究型全市场模板（执行时间通常较长），默认不加入 `run_smoke_suite_v2.ps1`。
 - 可按需提速：
   - `-SkipDeepModels`
   - `-SkipMining`
@@ -97,3 +101,8 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2
   - `powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_strategy7_v2_06_load_from_models_dir_off.ps1 -ModelsLoadDir D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_01_train_tree/models -ModelsLoadRunTag 510c1cd320`
 - `run_strategy7_v2_17_load_explicit_paths_off.ps1` 需要显式传四类模型路径：
   - `-StockModelPath -TimingModelPath -PortfolioModelPath -ExecutionModelPath`
+- `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1` / `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1` 支持：
+  - `-DataRoot`（默认 `auto`，按主入口自动解析全市场数据目录）
+  - `-IndexRoot`（默认空，留空则走主入口默认）
+  - `-TrainStart/-TrainEnd/-TestStart/-TestEnd`（默认长期研究窗口，可按需改成短窗口调试）
+  - `-MaxFiles`（可选小样本调试）

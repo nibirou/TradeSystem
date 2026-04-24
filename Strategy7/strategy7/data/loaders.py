@@ -644,9 +644,14 @@ class MarketUniverseDataLoader(MarketDataLoader):
         if main_board_only:
             keys = [k for k in keys if is_main_board_symbol(k)]
             log_progress(f"after main-board filter: symbols={len(keys)}", module="loader", level="debug")
+        target_loaded: Optional[int] = None
         if max_files is not None:
-            keys = keys[: int(max_files)]
-            log_progress(f"after max-files cap: symbols={len(keys)}", module="loader", level="debug")
+            target_loaded = int(max_files)
+            log_progress(
+                f"max-files target (effective loaded symbols): {target_loaded}",
+                module="loader",
+                level="debug",
+            )
 
         daily_cols = [
             "date",
@@ -668,7 +673,9 @@ class MarketUniverseDataLoader(MarketDataLoader):
         loaded = 0
         skipped = 0
         broken = 0
-        for key in keys:
+        for idx, key in enumerate(keys, start=1):
+            if target_loaded is not None and loaded >= target_loaded:
+                break
             daily_path = pick_existing_file(daily_dir, key, "d", file_format=file_format)
             minute_path = pick_existing_file(minute_dir, key, "5", file_format=file_format)
             if daily_path is None or minute_path is None:
@@ -710,8 +717,10 @@ class MarketUniverseDataLoader(MarketDataLoader):
             minute_frames.append(mdf)
             loaded += 1
             if loaded % 50 == 0:
+                target_desc = str(target_loaded) if target_loaded is not None else str(len(keys))
                 log_progress(
-                    f"market file progress: loaded={loaded}/{len(keys)}, skipped={skipped}, broken={broken}",
+                    f"market file progress: loaded={loaded}/{target_desc}, "
+                    f"scanned={idx}/{len(keys)}, skipped={skipped}, broken={broken}",
                     module="loader",
                     level="debug",
                 )

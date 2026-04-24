@@ -24,6 +24,7 @@ from .execution.engines import IdealFillExecutionModel, RealisticFillExecutionMo
 from .portfolio.weighting import DynamicOptimizationPortfolioModel, EqualWeightPortfolioModel
 from .stock_selection.dafat_transformer_model import DAFATStockModel
 from .stock_selection.factor_gcl_model import FactorGCLStockModel
+from .stock_selection.launch_boost_model import LaunchBoostStockModel
 from .stock_selection.tree_model import TreeStockModel
 from .timing.models import NoTimingModel, VolatilityRegimeTimingModel
 
@@ -43,6 +44,8 @@ def _normalize_stock_model_type(model_type: str) -> str:
         return "factor_gcl"
     if t in {"dafat", "dafat_transformer", "transformer_dafat"}:
         return "dafat"
+    if t in {"launch_boost", "bottom_launch_boost", "low_start_boost", "launch10_boost"}:
+        return "launch_boost"
     return t
 
 
@@ -108,6 +111,8 @@ def _candidate_name(component: str, model_type: str, run_tag: str | None) -> str
         m = _normalize_stock_model_type(model_type)
         if m == "decision_tree":
             return f"stock_model_tree{suffix}.pkl"
+        if m == "launch_boost":
+            return f"stock_model_launch_boost{suffix}.pkl"
         if m == "factor_gcl":
             return f"stock_model_factor_gcl{suffix}.pt"
         if m == "dafat":
@@ -320,6 +325,15 @@ def peek_stock_model_factor_cols(cfg: StockModelConfig, model_path: str | None) 
                 return [str(x) for x in list(raw_model.feature_names_in_)]
         return []
 
+    if canonical == "launch_boost":
+        with open(p, "rb") as f:
+            payload = pickle.load(f)
+        if isinstance(payload, dict):
+            cols = payload.get("factor_cols", [])
+            if isinstance(cols, list):
+                return [str(x) for x in cols if str(x).strip()]
+        return []
+
     if canonical in {"factor_gcl", "dafat"}:
         torch, _nn, _F = (
             FactorGCLStockModel._require_torch() if canonical == "factor_gcl" else DAFATStockModel._require_torch()
@@ -375,6 +389,39 @@ def load_stock_model(cfg: StockModelConfig, model_path: str | None) -> Tuple[Sto
             model._factor_cols = [str(x) for x in list(model._model.feature_names_in_)]
         if model._model is None:
             raise RuntimeError("decision_tree payload missing `model`.")
+        return model, "artifact_file"
+
+    if canonical == "launch_boost":
+        if p.suffix.lower() not in {".pkl", ".pickle"}:
+            raise ValueError(f"launch_boost load mode expects .pkl/.pickle file, got: {p.suffix}")
+        with open(p, "rb") as f:
+            payload = pickle.load(f)
+        if isinstance(payload, LaunchBoostStockModel):
+            return payload, "pickle_launch_boost_object"
+        if not isinstance(payload, dict):
+            raise TypeError("unexpected launch_boost model payload type.")
+        model = LaunchBoostStockModel(
+            max_depth=int(cfg.launch_boost_max_depth),
+            min_samples_leaf=int(cfg.min_samples_leaf),
+            learning_rate=float(cfg.launch_boost_learning_rate),
+            max_iter=int(cfg.launch_boost_max_iter),
+            l2_regularization=float(cfg.launch_boost_l2),
+            return_head_weight=float(cfg.launch_boost_return_head_weight),
+            random_state=int(cfg.random_state),
+        )
+        model._cls_model = payload.get("cls_model")
+        model._reg_model = payload.get("reg_model")
+        model._has_return_head = bool(payload.get("has_return_head", False))
+        const_prob = payload.get("constant_cls_prob")
+        model._constant_cls_prob = float(const_prob) if const_prob is not None else None
+        fill_values = payload.get("fill_values")
+        model._fill_values = fill_values if isinstance(fill_values, pd.Series) else pd.Series(fill_values or {}, dtype=float)
+        model._target_col = str(payload.get("target_col", "target_return"))
+        factor_cols = payload.get("factor_cols", [])
+        model._factor_cols = [str(x) for x in factor_cols if str(x).strip()] if isinstance(factor_cols, list) else []
+        model._train_summary = dict(payload.get("train_summary", {}) or {})
+        if model._cls_model is None and model._constant_cls_prob is None:
+            raise RuntimeError("launch_boost payload missing classifier head and constant probability.")
         return model, "artifact_file"
 
     if canonical == "factor_gcl":

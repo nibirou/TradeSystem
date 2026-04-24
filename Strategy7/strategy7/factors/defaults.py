@@ -44,6 +44,22 @@ def _safe_div(numer: pd.Series, denom: pd.Series) -> pd.Series:
     return pd.to_numeric(numer, errors="coerce") / (pd.to_numeric(denom, errors="coerce") + EPS)
 
 
+def _rolling_min_by_code(df: pd.DataFrame, col: str, window: int) -> pd.Series:
+    s = _col(df, col)
+    if "code" not in df.columns:
+        return s.rolling(int(window), min_periods=int(window)).min()
+    code = df["code"].astype(str)
+    return s.groupby(code).transform(lambda x: x.rolling(int(window), min_periods=int(window)).min())
+
+
+def _rolling_max_by_code(df: pd.DataFrame, col: str, window: int) -> pd.Series:
+    s = _col(df, col)
+    if "code" not in df.columns:
+        return s.rolling(int(window), min_periods=int(window)).max()
+    code = df["code"].astype(str)
+    return s.groupby(code).transform(lambda x: x.rolling(int(window), min_periods=int(window)).max())
+
+
 def _hf_name(source_freq: str, target_freq: str, agg: str, base_col: str) -> str:
     return f"hf_{source_freq}_to_{target_freq}_{agg}_{base_col}"
 
@@ -272,6 +288,22 @@ DAILY_OSCILLATOR_FACTORS: List[str] = [
     "rsi14",
 ]
 
+DAILY_BOTTOM_LAUNCH_FACTORS: List[str] = [
+    "bottom_drawdown_60",
+    "bottom_rebound_20",
+    "bottom_rebound_10",
+    "bottom_distance_to_low_60",
+    "launch_breakout_pressure_10",
+    "launch_trend_turn_5_20",
+    "launch_volume_dryup_20",
+    "launch_turnover_calm_20",
+    "launch_vol_compress_20",
+    "launch_rsi_repair_14",
+    "launch_intraday_confirm",
+    "launch_crowding_clear",
+    "launch_quality_score",
+]
+
 DAILY_MULTI_FREQ_EXTRA_FACTORS: List[str] = [
     "hf_ultra_noise_5m_day",
     "hf_fast_slow_liquidity_diff_day",
@@ -417,7 +449,13 @@ def _text_cols_for_package(freq: str, package: str) -> List[str]:
 
 
 DEFAULT_FACTOR_SET_BY_FREQ: Dict[str, List[str]] = {
-    "D": _uniq(DAILY_BASE_FACTORS + DAILY_ALPHA_EXTENSION + BRIDGE_PRIMARY_FACTORS + BRIDGE_MULTISCALE_FACTORS),
+    "D": _uniq(
+        DAILY_BASE_FACTORS
+        + DAILY_ALPHA_EXTENSION
+        + DAILY_BOTTOM_LAUNCH_FACTORS
+        + BRIDGE_PRIMARY_FACTORS
+        + BRIDGE_MULTISCALE_FACTORS
+    ),
     "5min": _uniq(GENERIC_CORE_FACTORS + INTRADAY_SIGNATURE_FACTORS + MICRO_5MIN_EXTRA_FACTORS),
     "15min": _uniq(GENERIC_CORE_FACTORS + INTRADAY_SIGNATURE_FACTORS + BRIDGE_PRIMARY_FACTORS),
     "30min": _uniq(GENERIC_CORE_FACTORS + INTRADAY_SIGNATURE_FACTORS + BRIDGE_PRIMARY_FACTORS + BRIDGE_MULTISCALE_FACTORS),
@@ -518,6 +556,66 @@ def register_default_daily_factors(library: FactorLibrary) -> None:
     r("liquidity_regime_switch", "liquidity", "vol ratio short-long spread", lambda d: _col(d, "vol_ratio_5") - _col(d, "vol_ratio_20"), freq="D")
     r("trend_vol_regime", "trend", "trend over vol regime", lambda d: _safe_div(_col(d, "ma_gap_20"), _col(d, "realized_vol_20").abs() + EPS), freq="D")
     r("micro_macro_conflict", "intraday_micro", "morning trend minus daily ret1", lambda d: _col(d, "morning_momentum_30m") - _col(d, "ret_1d"), freq="D")
+    r(
+        "bottom_drawdown_60",
+        "reversal",
+        "drawdown from rolling 60-day high",
+        lambda d: _safe_div(_col(d, "close"), _rolling_max_by_code(d, "high", 60)) - 1.0,
+        freq="D",
+    )
+    r(
+        "bottom_rebound_20",
+        "reversal",
+        "rebound from rolling 20-day low",
+        lambda d: _safe_div(_col(d, "close"), _rolling_min_by_code(d, "low", 20)) - 1.0,
+        freq="D",
+    )
+    r(
+        "bottom_rebound_10",
+        "reversal",
+        "rebound from rolling 10-day low",
+        lambda d: _safe_div(_col(d, "close"), _rolling_min_by_code(d, "low", 10)) - 1.0,
+        freq="D",
+    )
+    r(
+        "bottom_distance_to_low_60",
+        "reversal",
+        "negative distance to rolling 60-day low",
+        lambda d: -(_safe_div(_col(d, "close"), _rolling_min_by_code(d, "low", 60)) - 1.0).abs(),
+        freq="D",
+    )
+    r(
+        "launch_breakout_pressure_10",
+        "trend",
+        "close over rolling 10-day high",
+        lambda d: _safe_div(_col(d, "close"), _rolling_max_by_code(d, "high", 10)) - 1.0,
+        freq="D",
+    )
+    r("launch_trend_turn_5_20", "trend", "ret5-ret20 trend turn", lambda d: _col(d, "ret_5d") - _col(d, "ret_20d"), freq="D")
+    r("launch_volume_dryup_20", "liquidity", "volume dry-up proxy", lambda d: 1.0 - _col(d, "vol_ratio_20"), freq="D")
+    r("launch_turnover_calm_20", "liquidity", "turnover calm proxy", lambda d: 1.0 - (_col(d, "turn_ratio_5") - 1.0).abs(), freq="D")
+    r("launch_vol_compress_20", "volatility", "volatility compression", lambda d: -_col(d, "realized_vol_20"), freq="D")
+    r("launch_rsi_repair_14", "oscillator", "RSI mean-repair around 0.5", lambda d: 1.0 - ((_col(d, "rsi14") / 100.0) - 0.5).abs(), freq="D")
+    r(
+        "launch_intraday_confirm",
+        "intraday_micro",
+        "intraday trend confirmation",
+        lambda d: (_col(d, "morning_momentum_30m") + _col(d, "open_to_close_intraday") + _col(d, "close_to_vwap_day")) / 3.0,
+        freq="D",
+    )
+    r("launch_crowding_clear", "crowding", "negative crowding proxy", lambda d: -_col(d, "crowding_proxy_raw"), freq="D")
+    r(
+        "launch_quality_score",
+        "trend",
+        "composite low-start launch score",
+        lambda d: (
+            0.35 * (-(_safe_div(_col(d, "close"), _rolling_max_by_code(d, "high", 60)) - 1.0))
+            + 0.30 * (_safe_div(_col(d, "close"), _rolling_min_by_code(d, "low", 20)) - 1.0)
+            + 0.20 * (1.0 - _col(d, "vol_ratio_20"))
+            + 0.15 * (_safe_div(_col(d, "close"), _rolling_max_by_code(d, "high", 10)) - 1.0)
+        ),
+        freq="D",
+    )
     r(
         "hf_ultra_noise_5m_day",
         "multi_freq",
@@ -1260,6 +1358,7 @@ def _core_price_volume_package_raw_names_for_freq(freq: str) -> Dict[str, List[s
             "intraday_micro": DAILY_INTRADAY_MICRO_FACTORS,
             "oscillator": DAILY_OSCILLATOR_FACTORS,
             "overnight": DAILY_OVERNIGHT_FACTORS,
+            "bottom_launch": DAILY_BOTTOM_LAUNCH_FACTORS,
             "multi_freq": DAILY_MULTI_FREQ_EXTRA_FACTORS + BRIDGE_PRIMARY_FACTORS + BRIDGE_MULTISCALE_FACTORS,
             "context": [
                 "ret_20d",
@@ -1364,6 +1463,10 @@ def _overnight_package_names_for_freq(freq: str) -> List[str]:
     return _uniq(DAILY_OVERNIGHT_FACTORS) if str(freq) == "D" else []
 
 
+def _bottom_launch_package_names_for_freq(freq: str) -> List[str]:
+    return _uniq(DAILY_BOTTOM_LAUNCH_FACTORS) if str(freq) == "D" else []
+
+
 def _multi_freq_package_names_for_freq(freq: str) -> List[str]:
     f = str(freq)
     names: List[str] = []
@@ -1397,6 +1500,7 @@ def _build_default_factor_packs_by_freq() -> Dict[str, Dict[str, List[str]]]:
             "period_signature": _period_signature_package_names_for_freq,
             "oscillator": _oscillator_package_names_for_freq,
             "overnight": _overnight_package_names_for_freq,
+            "bottom_launch": _bottom_launch_package_names_for_freq,
             "multi_freq": _multi_freq_package_names_for_freq,
         }
         for pkg, fn in extra_pack_builders.items():
@@ -1487,6 +1591,7 @@ _PACKAGE_PRIMARY_PRIORITY: List[str] = [
     "period_signature",
     "oscillator",
     "overnight",
+    "bottom_launch",
     "multi_freq",
     "bridge",
     "multiscale",
@@ -1543,6 +1648,7 @@ def _fallback_package_from_category(category: str) -> str:
         "period_signature",
         "oscillator",
         "overnight",
+        "bottom_launch",
         "multi_freq",
         "bridge",
         "multiscale",

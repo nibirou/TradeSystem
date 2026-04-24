@@ -81,6 +81,11 @@ class StockModelConfig:
     min_samples_leaf: int
     random_state: int
     custom_model_py: str | None
+    launch_boost_max_depth: int
+    launch_boost_learning_rate: float
+    launch_boost_max_iter: int
+    launch_boost_l2: float
+    launch_boost_return_head_weight: float
     fgcl_seq_len: int
     fgcl_future_look: int
     fgcl_hidden_size: int
@@ -842,7 +847,7 @@ def parse_args() -> argparse.Namespace:
         "--stock-model-type",
         type=str,
         default="decision_tree",
-        help="选股模型类型：decision_tree / factor_gcl / dafat / 自定义插件",
+        help="选股模型类型：decision_tree / launch_boost / factor_gcl / dafat / 自定义插件",
     )
     g_stock.add_argument(
         "--custom-stock-model-py",
@@ -853,6 +858,16 @@ def parse_args() -> argparse.Namespace:
     g_stock.add_argument("--max-depth", type=int, default=6, help="决策树最大深度（仅 decision_tree 生效）")
     g_stock.add_argument("--min-samples-leaf", type=int, default=200, help="决策树叶节点最小样本数")
     g_stock.add_argument("--random-state", type=int, default=42, help="随机种子（影响模型训练与采样）")
+    g_stock.add_argument("--launch-boost-max-depth", type=int, default=4, help="LaunchBoost 树深度（仅 launch_boost 生效）")
+    g_stock.add_argument("--launch-boost-learning-rate", type=float, default=0.05, help="LaunchBoost 学习率")
+    g_stock.add_argument("--launch-boost-max-iter", type=int, default=320, help="LaunchBoost 迭代轮数")
+    g_stock.add_argument("--launch-boost-l2", type=float, default=1.0, help="LaunchBoost L2 正则强度")
+    g_stock.add_argument(
+        "--launch-boost-return-head-weight",
+        type=float,
+        default=0.35,
+        help="LaunchBoost 回归头分数权重（0~0.9，剩余权重给分类头）",
+    )
     g_stock.add_argument("--fgcl-seq-len", type=int, default=30, help="FactorGCL 历史序列长度")
     g_stock.add_argument("--fgcl-future-look", type=int, default=20, help="FactorGCL 未来对比分支长度")
     g_stock.add_argument("--fgcl-hidden-size", type=int, default=128, help="FactorGCL 隐层维度")
@@ -1200,6 +1215,16 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("max_depth must be positive.")
     if int(args.min_samples_leaf) <= 0:
         raise ValueError("min_samples_leaf must be positive.")
+    if int(args.launch_boost_max_depth) <= 0:
+        raise ValueError("launch_boost_max_depth must be positive.")
+    if float(args.launch_boost_learning_rate) <= 0.0:
+        raise ValueError("launch_boost_learning_rate must be positive.")
+    if int(args.launch_boost_max_iter) <= 0:
+        raise ValueError("launch_boost_max_iter must be positive.")
+    if float(args.launch_boost_l2) < 0.0:
+        raise ValueError("launch_boost_l2 must be non-negative.")
+    if not (0.0 <= float(args.launch_boost_return_head_weight) <= 0.9):
+        raise ValueError("launch_boost_return_head_weight must be in [0, 0.9].")
     if int(args.fgcl_seq_len) <= 1:
         raise ValueError("fgcl_seq_len must be greater than 1.")
     if int(args.fgcl_future_look) <= 0:
@@ -1395,6 +1420,11 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         min_samples_leaf=int(args.min_samples_leaf),
         random_state=int(args.random_state),
         custom_model_py=_resolve_path(args.custom_stock_model_py) if args.custom_stock_model_py else None,
+        launch_boost_max_depth=int(args.launch_boost_max_depth),
+        launch_boost_learning_rate=float(args.launch_boost_learning_rate),
+        launch_boost_max_iter=int(args.launch_boost_max_iter),
+        launch_boost_l2=float(args.launch_boost_l2),
+        launch_boost_return_head_weight=float(args.launch_boost_return_head_weight),
         fgcl_seq_len=int(args.fgcl_seq_len),
         fgcl_future_look=int(args.fgcl_future_look),
         fgcl_hidden_size=int(args.fgcl_hidden_size),
