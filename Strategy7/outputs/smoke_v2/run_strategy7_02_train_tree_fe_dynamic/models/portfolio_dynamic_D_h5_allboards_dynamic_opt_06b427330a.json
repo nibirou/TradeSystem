@@ -1,0 +1,19 @@
+{
+  "model_type": "dynamic_opt",
+  "config": {
+    "mode": "dynamic_opt",
+    "max_weight": 0.25,
+    "max_turnover": 1.2,
+    "liquidity_scale": 3.0,
+    "expected_return_weight": 1.0,
+    "risk_aversion": 1.2,
+    "style_penalty": 0.8,
+    "industry_penalty": 0.7,
+    "crowding_penalty": 0.5,
+    "transaction_cost_penalty": 0.6,
+    "max_iter": 220,
+    "step_size": 0.08,
+    "tolerance": 1e-06,
+    "custom_model_py": null
+  }
+}

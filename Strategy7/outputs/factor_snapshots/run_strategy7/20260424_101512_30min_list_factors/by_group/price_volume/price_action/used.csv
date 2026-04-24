@@ -1,0 +1,2 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+range_break_signal,30min,Price-Volume / Non-Fundamental Packages,price_action,price_action,价格行为·振幅break信号,价格行为因子，刻画：均线gap6/振幅,按定义计算：均线gap6/振幅,ma_gap6/range,True,price_volume

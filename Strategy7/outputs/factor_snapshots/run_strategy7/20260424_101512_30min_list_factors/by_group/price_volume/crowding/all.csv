@@ -1,0 +1,3 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+crowding_proxy_raw,30min,Price-Volume / Non-Fundamental Packages,crowding,crowding,拥挤度·拥挤度原始代理,拥挤度因子，刻画：拥挤 代理 取负,按定义计算：拥挤 代理 取负,crowding proxy negative,False,price_volume
+crowding_unwind,30min,Price-Volume / Non-Fundamental Packages,crowding,crowding,拥挤度·拥挤unwind,拥挤度因子，刻画：拥挤 反转,按定义计算：拥挤 反转,crowding unwind,False,price_volume

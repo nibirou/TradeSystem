@@ -2,10 +2,17 @@
 
 Usage:
 python run_strategy7.py --custom-portfolio-model-py ./strategy7/plugins/custom_portfolio_model_template.py
+
+# load mode:
+# python run_strategy7.py \
+#   --model-run-mode load \
+#   --custom-portfolio-model-py ./strategy7/plugins/custom_portfolio_model_template.py \
+#   --portfolio-model-path <your_saved_json_path>
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -33,11 +40,24 @@ class Top1PortfolioModel(PortfolioModel):
 
     def save(self, folder: Path, run_tag: str) -> Dict[str, str]:
         folder.mkdir(parents=True, exist_ok=True)
-        p = folder / f"custom_portfolio_top1_{run_tag}.txt"
-        p.write_text("top1 portfolio model", encoding="utf-8")
-        return {"note_file": str(p)}
+        p = folder / f"custom_portfolio_top1_{run_tag}.json"
+        payload = {
+            "model_type": "custom_portfolio_top1",
+            "selection_rule": "top1",
+        }
+        p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"meta_json": str(p)}
 
 
 def build_model(cfg) -> PortfolioModel:
     return Top1PortfolioModel()
 
+
+def load_model(cfg, model_path: str | None) -> PortfolioModel:
+    if model_path:
+        p = Path(model_path).expanduser()
+        if not p.exists():
+            raise FileNotFoundError(f"custom portfolio model file not found: {p}")
+        # keep this template simple: only validate file and allow future extension
+        json.loads(p.read_text(encoding="utf-8"))
+    return Top1PortfolioModel()

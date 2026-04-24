@@ -1,0 +1,144 @@
+{
+  "version": 1,
+  "entries": [
+    {
+      "name": "custom_eval_atr_norm_14",
+      "freq": "D",
+      "category": "mined_custom",
+      "factor_package": "mined_custom",
+      "factor_packages": "mined,mined_custom,mined_fw_cus,mined_freq_d,mined_universe_hs300,mined_materiallist_explicit",
+      "description": "custom admitted factor #1; profile=D_custom_default_v1",
+      "source": "custom",
+      "framework": "custom",
+      "mined_factor_type": "custom",
+      "mined_universe": "hs300",
+      "mined_freq": "D",
+      "material_factor_packages": "",
+      "material_factor_list": "breakout_20,amihud_20,atr_norm_14",
+      "material_factor_count": 3,
+      "status": "active",
+      "table_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\smoke_v2\\factor_mining_store\\factor_mining\\custom\\20260423_191655\\factor_values_D.parquet",
+      "value_col": "custom_eval_atr_norm_14",
+      "score_sign": 1.0,
+      "metrics_train": {
+        "obs": 352.0,
+        "coverage": 1.0,
+        "ic_mean": -0.03722766260864554,
+        "rank_ic_mean": 0.007574333561175663,
+        "abs_ic_mean": 0.007574333561175663,
+        "ic_win_rate": 0.5284090909090909,
+        "ic_ir": 0.18331294754839386,
+        "ndcg_k": 0.478927062286669,
+        "long_ret_mean": 0.0016242451385015968,
+        "long_ret_annualized": 0.07255817191570602,
+        "long_sharpe": 0.5267622299382293,
+        "long_win_rate": 0.5596590909090909,
+        "long_excess_mean": -0.00036078675352637713,
+        "long_excess_annualized": -0.02653634974044672
+      },
+      "metrics_valid": {
+        "obs": 124.0,
+        "coverage": 1.0,
+        "ic_mean": 0.04292502216948608,
+        "rank_ic_mean": 0.11149648314334223,
+        "abs_ic_mean": 0.11149648314334223,
+        "ic_win_rate": 0.6370967741935484,
+        "ic_ir": 3.022768404980337,
+        "ndcg_k": 0.5590566956599196,
+        "long_ret_mean": 0.0023712723647192646,
+        "long_ret_annualized": 0.12139233209410727,
+        "long_sharpe": 1.2143596564491257,
+        "long_win_rate": 0.6370967741935484,
+        "long_excess_mean": 0.005747413128465272,
+        "long_excess_annualized": 0.3304268423979235
+      },
+      "admission": {
+        "profile": "D_custom_default_v1",
+        "passed": true,
+        "failures": {}
+      },
+      "formula": {
+        "name": "custom_eval_atr_norm_14",
+        "expression": "col(\"atr_norm_14\")",
+        "freq": "D",
+        "category": "mined_custom",
+        "description": "custom passthrough evaluate: atr_norm_14"
+      },
+      "material_columns": [
+        "atr_norm_14",
+        "col"
+      ],
+      "created_at": "2026-04-23T19:16:55.916060+08:00"
+    },
+    {
+      "name": "custom_eval_liq_vol_mix",
+      "freq": "D",
+      "category": "mined_price_volume",
+      "factor_package": "mined_price_volume",
+      "factor_packages": "mined,mined_price_volume,mined_fw_cus,mined_freq_d,mined_universe_hs300,mined_materialpkg_trend,mined_materialpkg_reversal,mined_materialpkg_liquidity,mined_materialpkg_volatility,mined_custom",
+      "description": "custom admitted factor #1; profile=D_custom_default_v1",
+      "source": "custom",
+      "framework": "custom",
+      "mined_factor_type": "price_volume",
+      "mined_universe": "hs300",
+      "mined_freq": "D",
+      "material_factor_packages": "trend,reversal,liquidity,volatility",
+      "material_factor_list": "",
+      "material_factor_count": 393,
+      "status": "active",
+      "table_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\smoke_v2\\factor_mining_store\\factor_mining\\custom\\20260424_102056\\factor_values_D.parquet",
+      "value_col": "custom_eval_liq_vol_mix",
+      "score_sign": 1.0,
+      "metrics_train": {
+        "obs": 352.0,
+        "coverage": 1.0,
+        "ic_mean": -0.03722766286905485,
+        "rank_ic_mean": 0.007574333561175663,
+        "abs_ic_mean": 0.007574333561175663,
+        "ic_win_rate": 0.5284090909090909,
+        "ic_ir": 0.18331294754839386,
+        "ndcg_k": 0.478927062286669,
+        "long_ret_mean": 0.0016242451385015968,
+        "long_ret_annualized": 0.07255817191570602,
+        "long_sharpe": 0.5267622299382293,
+        "long_win_rate": 0.5596590909090909,
+        "long_excess_mean": -0.00036078675352637713,
+        "long_excess_annualized": -0.02653634974044672
+      },
+      "metrics_valid": {
+        "obs": 124.0,
+        "coverage": 1.0,
+        "ic_mean": 0.042925021804279574,
+        "rank_ic_mean": 0.11149648314334223,
+        "abs_ic_mean": 0.11149648314334223,
+        "ic_win_rate": 0.6370967741935484,
+        "ic_ir": 3.022768404980337,
+        "ndcg_k": 0.5590566956599196,
+        "long_ret_mean": 0.0023712723647192646,
+        "long_ret_annualized": 0.12139233209410727,
+        "long_sharpe": 1.2143596564491257,
+        "long_win_rate": 0.6370967741935484,
+        "long_excess_mean": 0.005747413128465272,
+        "long_excess_annualized": 0.3304268423979235
+      },
+      "admission": {
+        "profile": "D_custom_default_v1",
+        "passed": true,
+        "failures": {}
+      },
+      "formula": {
+        "name": "custom_eval_liq_vol_mix",
+        "expression": "0.6 * col(\"amihud_20\") + 0.4 * col(\"atr_norm_14\")",
+        "freq": "D",
+        "category": "mined_custom",
+        "description": "liquidity-volatility blend"
+      },
+      "material_columns": [
+        "amihud_20",
+        "atr_norm_14",
+        "col"
+      ],
+      "created_at": "2026-04-24T10:20:56.453411+08:00"
+    }
+  ]
+}

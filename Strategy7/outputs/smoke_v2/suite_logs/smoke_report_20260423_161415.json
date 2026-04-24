@@ -1,0 +1,118 @@
+﻿{
+    "timestamp":  "2026-04-23 16:15:46",
+    "repo_root":  "D:\\PythonProject\\Quant\\TradeSystem",
+    "total":  18,
+    "passed":  0,
+    "failed":  14,
+    "skipped":  4,
+    "results":  [
+                    {
+                        "step":  "run_strategy7_v2_01_train_tree_baseline",
+                        "status":  "failed",
+                        "seconds":  6.971,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_02_train_tree_fe_dynamic",
+                        "status":  "failed",
+                        "seconds":  6.513,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_03_train_custom_all_models",
+                        "status":  "failed",
+                        "seconds":  7.494,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_04_load_from_summary_refit",
+                        "status":  "skipped",
+                        "seconds":  0,
+                        "note":  "missing summary from run_strategy7_v2_02"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_05_load_from_summary_strict",
+                        "status":  "skipped",
+                        "seconds":  0,
+                        "note":  "missing summary from run_strategy7_v2_02"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_06_load_from_models_dir_off",
+                        "status":  "skipped",
+                        "seconds":  0,
+                        "note":  "missing models dir from run_strategy7_v2_01"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_07_load_custom_from_summary",
+                        "status":  "skipped",
+                        "seconds":  0,
+                        "note":  "missing summary from run_strategy7_v2_03"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_08_train_factor_gcl_smoke",
+                        "status":  "failed",
+                        "seconds":  6.556,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_09_train_dafat_smoke",
+                        "status":  "failed",
+                        "seconds":  6.252,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_10_list_factors_export",
+                        "status":  "failed",
+                        "seconds":  6.446,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_strategy7_v2_11_factor_value_store_build_only",
+                        "status":  "failed",
+                        "seconds":  7.174,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_factor_mining_v2_01_fundamental_smoke",
+                        "status":  "failed",
+                        "seconds":  5.568,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_factor_mining_v2_02_minute_parametric_smoke",
+                        "status":  "failed",
+                        "seconds":  6.457,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_factor_mining_v2_03_minute_parametric_plus_smoke",
+                        "status":  "failed",
+                        "seconds":  5.925,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_factor_mining_v2_04_ml_ensemble_smoke",
+                        "status":  "failed",
+                        "seconds":  5.48,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_factor_mining_v2_05_gplearn_smoke",
+                        "status":  "failed",
+                        "seconds":  5.535,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_factor_mining_v2_06_custom_smoke",
+                        "status":  "failed",
+                        "seconds":  5.05,
+                        "note":  "Template execution failed with exit code 2"
+                    },
+                    {
+                        "step":  "run_factor_mining_v2_07_list_factors_export",
+                        "status":  "failed",
+                        "seconds":  5.266,
+                        "note":  "Template execution failed with exit code 2"
+                    }
+                ]
+}

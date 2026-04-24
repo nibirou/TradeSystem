@@ -1,0 +1,5 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+ms_5min_vs_15min_close,30min,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs15min收盘,多尺度因子，刻画：5min vs 15min 收盘 偏离,按定义计算：5min vs 15min 收盘 偏离,5min vs 15min close deviation,False,price_volume
+ms_5min_vs_15min_liq,30min,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs15min流动性,多尺度因子，刻画：5min vs 15min 流动性,按定义计算：5min vs 15min 流动性,5min vs 15min liquidity,False,price_volume
+ms_5min_vs_15min_noise,30min,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs15min噪声,多尺度因子，刻画：5min vs 15min 噪声,按定义计算：5min vs 15min 噪声,5min vs 15min noise,False,price_volume
+ms_5min_vs_15min_trend,30min,Price-Volume / Non-Fundamental Packages,multiscale,multiscale,多尺度·ms5minvs15min趋势,多尺度因子，刻画：5min vs 15min 趋势,按定义计算：5min vs 15min 趋势,5min vs 15min trend,False,price_volume

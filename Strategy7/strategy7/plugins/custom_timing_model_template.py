@@ -2,10 +2,17 @@
 
 Usage:
 python run_strategy7.py --custom-timing-model-py ./strategy7/plugins/custom_timing_model_template.py
+
+# load mode:
+# python run_strategy7.py \
+#   --model-run-mode load \
+#   --custom-timing-model-py ./strategy7/plugins/custom_timing_model_template.py \
+#   --timing-model-path <your_saved_json_path>
 """
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict, Tuple
 
@@ -27,11 +34,25 @@ class FixedExposureTimingModel(TimingModel):
 
     def save(self, folder: Path, run_tag: str) -> Dict[str, str]:
         folder.mkdir(parents=True, exist_ok=True)
-        p = folder / f"custom_timing_fixed_{run_tag}.txt"
-        p.write_text(f"fixed exposure={self.exposure}", encoding="utf-8")
-        return {"note_file": str(p)}
+        p = folder / f"custom_timing_fixed_{run_tag}.json"
+        payload = {
+            "model_type": "custom_timing_fixed",
+            "exposure": float(self.exposure),
+        }
+        p.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        return {"meta_json": str(p)}
 
 
 def build_model(cfg) -> TimingModel:
     return FixedExposureTimingModel(exposure=0.8)
 
+
+def load_model(cfg, model_path: str | None) -> TimingModel:
+    exposure = 0.8
+    if model_path:
+        p = Path(model_path).expanduser()
+        if not p.exists():
+            raise FileNotFoundError(f"custom timing model file not found: {p}")
+        payload = json.loads(p.read_text(encoding="utf-8"))
+        exposure = float(payload.get("exposure", exposure))
+    return FixedExposureTimingModel(exposure=exposure)

@@ -1,0 +1,5 @@
+{
+  "model_type": "volatility_regime",
+  "vol_threshold": 0.7565824509723184,
+  "momentum_threshold": -0.4286304829340774
+}

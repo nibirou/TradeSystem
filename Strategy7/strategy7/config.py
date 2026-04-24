@@ -172,6 +172,21 @@ class BacktestConfig:
 
 
 @dataclass
+class ModelRunConfig:
+    mode: str
+    load_fe_mode: str
+    model_summary_json: str | None
+    models_load_dir: str | None
+    models_load_run_tag: str | None
+    stock_model_path: str | None
+    timing_model_path: str | None
+    portfolio_model_path: str | None
+    execution_model_path: str | None
+    enable_next_bar_inference: bool
+    inference_top_k: int
+
+
+@dataclass
 class DateConfig:
     train_start: pd.Timestamp
     train_end: pd.Timestamp
@@ -188,6 +203,7 @@ class RunConfig:
     portfolio_opt: PortfolioOptConfig
     execution_model: ExecutionModelConfig
     backtest: BacktestConfig
+    model_run: ModelRunConfig
     dates: DateConfig
     output_dir: Path
     save_models: bool
@@ -951,6 +967,64 @@ def parse_args() -> argparse.Namespace:
     g_exec.add_argument("--latency-bars", type=int, default=0, help="执行延迟 bars 数（realistic_fill）")
 
     # =========================
+    # 模型运行模式与快速推理参数
+    # =========================
+    g_mode = parser.add_argument_group("模型运行模式与推理配置")
+    g_mode.add_argument(
+        "--model-run-mode",
+        type=str,
+        choices=["train", "load"],
+        default="train",
+        help="模型运行模式：train=训练新模型后回测；load=加载已有模型直接回测",
+    )
+    g_mode.add_argument(
+        "--load-fe-mode",
+        type=str,
+        choices=["strict", "refit", "off"],
+        default="refit",
+        help=(
+            "load 模式下 FE 处理策略：strict=严格按 summary 的 FE 结果回放（当前不支持 pca）；"
+            "refit=按当前样本重新拟合 FE；off=即使启用 FE 也跳过。"
+        ),
+    )
+    g_mode.add_argument(
+        "--model-summary-json",
+        type=str,
+        default=None,
+        help="已有实验 summary_*.json 路径（用于自动提取四类模型文件路径）",
+    )
+    g_mode.add_argument(
+        "--models-load-dir",
+        type=str,
+        default=None,
+        help="已有模型目录（通常为 output_dir/models）",
+    )
+    g_mode.add_argument(
+        "--models-load-run-tag",
+        type=str,
+        default=None,
+        help="与模型文件名匹配的 run_tag；为空时自动选择目录下最新匹配文件",
+    )
+    g_mode.add_argument("--stock-model-path", type=str, default=None, help="选股模型文件路径（pkl/pt/json）")
+    g_mode.add_argument("--timing-model-path", type=str, default=None, help="择时模型文件路径（pkl/json）")
+    g_mode.add_argument("--portfolio-model-path", type=str, default=None, help="组合模型文件路径（pkl/json）")
+    g_mode.add_argument("--execution-model-path", type=str, default=None, help="执行模型文件路径（pkl/json）")
+    g_mode.add_argument(
+        "--enable-next-bar-inference",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=False,
+        help="是否额外输出最新信号时点（next bar）四类模型联动推理结果",
+    )
+    g_mode.add_argument(
+        "--inference-top-k",
+        type=int,
+        default=20,
+        help="next bar 推理时最多输出多少只候选股票（按 pred_score 排序）",
+    )
+
+    # =========================
     # 回测交易参数
     # =========================
     g_bt = parser.add_argument_group("回测交易配置")
@@ -1221,8 +1295,31 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
             "portfolio_weighting and portfolio_model_type are inconsistent. "
             "Please set one or keep both identical."
         )
+    if int(getattr(args, "inference_top_k", 20)) <= 0:
+        raise ValueError("inference_top_k must be positive.")
 
     portfolio_mode = args.portfolio_weighting or args.portfolio_model_type
+    model_run_mode = str(getattr(args, "model_run_mode", "train")).strip().lower()
+    if model_run_mode not in {"train", "load"}:
+        raise ValueError("model_run_mode must be one of: train/load.")
+    load_fe_mode = str(getattr(args, "load_fe_mode", "refit")).strip().lower()
+    if load_fe_mode not in {"strict", "refit", "off"}:
+        raise ValueError("load_fe_mode must be one of: strict/refit/off.")
+    if model_run_mode == "load":
+        has_stock_source = any(
+            [
+                bool(getattr(args, "model_summary_json", None)),
+                bool(getattr(args, "models_load_dir", None)),
+                bool(getattr(args, "stock_model_path", None)),
+                bool(getattr(args, "custom_stock_model_py", None)),
+            ]
+        )
+        if not has_stock_source:
+            raise ValueError(
+                "model_run_mode=load requires a stock-model source: "
+                "model_summary_json / models_load_dir / stock_model_path / custom_stock_model_py."
+            )
+
     extra_paths = [_resolve_path(x.strip()) for x in str(args.extra_factor_paths).split(",") if x.strip()]
     data_root_resolved, universe_resolved, stock_list_path_resolved = resolve_market_data_scope(
         data_root=args.data_root,
@@ -1379,6 +1476,47 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         rebalance_stride=int(args.rebalance_stride) if int(args.rebalance_stride) > 0 else int(args.horizon),
         ic_eval_mode=str(args.ic_eval_mode),
     )
+    model_run = ModelRunConfig(
+        mode=str(getattr(args, "model_run_mode", "train")).strip().lower(),
+        load_fe_mode=str(getattr(args, "load_fe_mode", "refit")).strip().lower(),
+        model_summary_json=(
+            _resolve_path(getattr(args, "model_summary_json"))
+            if getattr(args, "model_summary_json", None)
+            else None
+        ),
+        models_load_dir=(
+            _resolve_path(getattr(args, "models_load_dir"))
+            if getattr(args, "models_load_dir", None)
+            else None
+        ),
+        models_load_run_tag=(
+            str(getattr(args, "models_load_run_tag")).strip()
+            if getattr(args, "models_load_run_tag", None) and str(getattr(args, "models_load_run_tag")).strip()
+            else None
+        ),
+        stock_model_path=(
+            _resolve_path(getattr(args, "stock_model_path"))
+            if getattr(args, "stock_model_path", None)
+            else None
+        ),
+        timing_model_path=(
+            _resolve_path(getattr(args, "timing_model_path"))
+            if getattr(args, "timing_model_path", None)
+            else None
+        ),
+        portfolio_model_path=(
+            _resolve_path(getattr(args, "portfolio_model_path"))
+            if getattr(args, "portfolio_model_path", None)
+            else None
+        ),
+        execution_model_path=(
+            _resolve_path(getattr(args, "execution_model_path"))
+            if getattr(args, "execution_model_path", None)
+            else None
+        ),
+        enable_next_bar_inference=bool(getattr(args, "enable_next_bar_inference", False)),
+        inference_top_k=int(getattr(args, "inference_top_k", 20)),
+    )
     return RunConfig(
         data=data,
         factors=factors,
@@ -1387,6 +1525,7 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         portfolio_opt=port,
         execution_model=exec_model,
         backtest=backtest,
+        model_run=model_run,
         dates=dates,
         output_dir=resolve_output_dir(args),
         save_models=bool(args.save_models),

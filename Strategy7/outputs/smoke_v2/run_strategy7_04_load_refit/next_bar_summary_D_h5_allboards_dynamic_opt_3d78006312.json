@@ -1,0 +1,50 @@
+{
+  "enabled": true,
+  "status": "ok",
+  "signal_ts": "2024-10-17 00:00:00",
+  "candidate_count": 15,
+  "selected_count": 11,
+  "timing_exposure": 0.751552921922105,
+  "timing_diag": {
+    "timing_enabled": 1.0,
+    "timing_exposure": 0.751552921922105,
+    "timing_market_vol": 0.032853153634398696,
+    "timing_crowding": 0.7310237157752031,
+    "timing_momentum": 0.11775311370028119,
+    "timing_vol_z": 3.1690417536419244,
+    "timing_crowding_z": -1.0723662118737236,
+    "timing_momentum_z": 0.8557137160787187,
+    "timing_vol_threshold": 0.7518393508263999,
+    "timing_momentum_threshold": -0.41949947128630777
+  },
+  "portfolio_diag": {
+    "opt_iterations": 25.0,
+    "opt_converged": 1.0,
+    "state_market_vol": 0.032853153634398696,
+    "state_crowding": 0.7310237157752031,
+    "state_style_dispersion": 0.9999999999497801,
+    "state_vol_z": 0.3008966124580829,
+    "state_crowding_z": 0.2273985378189631,
+    "state_style_z": 2.508339569508588,
+    "dynamic_expected_scale": 1.3353452325896116,
+    "dynamic_risk_scale": 1.177208279437974,
+    "dynamic_style_scale": 1.421730642990081,
+    "dynamic_industry_scale": 1.5016679139017177,
+    "dynamic_tc_scale": 1.0682195613456889,
+    "opt_turnover": 1.1571400002161991,
+    "opt_expected_ret_score": 0.46242609183953365,
+    "opt_style_exposure_dev": 0.2075393855608032,
+    "opt_industry_dev": 9.999778782798785e-13,
+    "opt_crowding_exposure": 0.0993644728482288,
+    "opt_liquidity_utilization": 0.999999999995,
+    "opt_effective_max_weight": 0.25
+  },
+  "execution_diag": {
+    "execution_model": 1.0,
+    "avg_fill_ratio": 0.4305032326466949,
+    "cash_drag_weight": 0.8733431353195344,
+    "extra_cost_bps": 0.2042428023306478,
+    "latency_bars": 1.0,
+    "latency_penalty": 0.03
+  }
+}

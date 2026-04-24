@@ -1,0 +1,50 @@
+{
+  "enabled": true,
+  "status": "ok",
+  "signal_ts": "2024-10-17 00:00:00",
+  "candidate_count": 15,
+  "selected_count": 11,
+  "timing_exposure": 1.0,
+  "timing_diag": {
+    "timing_enabled": 1.0,
+    "timing_exposure": 1.0,
+    "timing_market_vol": 0.2247676269827108,
+    "timing_crowding": 0.7310237157752031,
+    "timing_momentum": -0.23513371275416756,
+    "timing_vol_z": -0.6195598197911816,
+    "timing_crowding_z": -1.2928562923284186,
+    "timing_momentum_z": -4.0,
+    "timing_vol_threshold": 0.7518393508263999,
+    "timing_momentum_threshold": -0.41949947128630777
+  },
+  "portfolio_diag": {
+    "opt_iterations": 38.0,
+    "opt_converged": 1.0,
+    "state_market_vol": 0.2247676269827108,
+    "state_crowding": 0.4022745270270819,
+    "state_style_dispersion": 0.9999999999497801,
+    "state_vol_z": -0.6436064946891531,
+    "state_crowding_z": -0.9189253721484423,
+    "state_style_z": 2.3978032996223675,
+    "dynamic_expected_scale": 1.431604593932026,
+    "dynamic_risk_scale": 1.0,
+    "dynamic_style_scale": 1.3596704949433551,
+    "dynamic_industry_scale": 1.4795606599244735,
+    "dynamic_tc_scale": 1.0,
+    "opt_turnover": 1.1565850412368504,
+    "opt_expected_ret_score": 0.44920922297689037,
+    "opt_style_exposure_dev": 0.19222850468116642,
+    "opt_industry_dev": 1.000088900582341e-12,
+    "opt_crowding_exposure": 0.10072896133480166,
+    "opt_liquidity_utilization": 0.9999999999942967,
+    "opt_effective_max_weight": 0.25
+  },
+  "execution_diag": {
+    "execution_model": 1.0,
+    "avg_fill_ratio": 0.4187158626030165,
+    "cash_drag_weight": 0.8744539645540969,
+    "extra_cost_bps": 0.20951529064010926,
+    "latency_bars": 1.0,
+    "latency_penalty": 0.03
+  }
+}

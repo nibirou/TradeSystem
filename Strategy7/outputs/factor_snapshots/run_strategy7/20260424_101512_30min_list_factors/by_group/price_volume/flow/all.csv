@@ -1,0 +1,4 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+flow_momentum_sync,30min,Price-Volume / Non-Fundamental Packages,flow,flow,成交资金流·资金流动量同步,成交资金流因子，刻画：成交量 change * ret3,按定义计算：成交量 change * ret3,vol change * ret3,False,price_volume
+vol_chg_1,30min,Price-Volume / Non-Fundamental Packages,flow,flow,成交资金流·成交量变化1,成交资金流因子，刻画：volume change,按定义计算：volume change,volume change,False,price_volume
+vol_flow_dislocation,30min,Price-Volume / Non-Fundamental Packages,flow,flow,成交资金流·成交量资金流dislocation,成交资金流因子，刻画：成交量 change 减 成交额 比值,按定义计算：成交量 change 减 成交额 比值,vol change minus amount ratio,False,price_volume

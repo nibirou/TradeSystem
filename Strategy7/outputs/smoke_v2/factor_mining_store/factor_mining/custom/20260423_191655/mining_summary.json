@@ -1,0 +1,80 @@
+{
+  "framework": "custom",
+  "factor_freq": "D",
+  "universe": "hs300",
+  "include_default_factor_materials": true,
+  "factor_packages": "",
+  "factor_list": "breakout_20,amihud_20,atr_norm_14",
+  "material_factor_count": 3,
+  "material_factor_names": [
+    "breakout_20",
+    "amihud_20",
+    "atr_norm_14"
+  ],
+  "enable_material_feature_engineering": false,
+  "material_fe_min_coverage": 0.7,
+  "material_fe_min_std": 1e-08,
+  "material_fe_corr_threshold": 0.95,
+  "material_fe_preselect_top_n": 1500,
+  "material_fe_min_factors": 20,
+  "material_fe_max_factors": 800,
+  "index_context_cols": [
+    "mkt_hs300_close",
+    "mkt_hs300_ret_1d",
+    "mkt_hs300_ret_5d",
+    "mkt_hs300_ret_20d",
+    "mkt_hs300_vol_20d",
+    "mkt_hs300_ma_gap_20d",
+    "mkt_hs300_drawdown_60d"
+  ],
+  "train_period": [
+    "2022-01-01",
+    "2023-06-30"
+  ],
+  "valid_period": [
+    "2023-07-01",
+    "2023-12-31"
+  ],
+  "population_size": 8,
+  "generations": 1,
+  "candidate_count": 3,
+  "selected_count": 1,
+  "catalog_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\smoke_v2\\factor_mining_store\\factor_mining\\factor_catalog.json",
+  "factor_table_path": "D:\\PythonProject\\Quant\\TradeSystem\\Strategy7\\outputs\\smoke_v2\\factor_mining_store\\factor_mining\\custom\\20260423_191655\\factor_values_D.parquet",
+  "selected_factors": [
+    "custom_eval_atr_norm_14"
+  ],
+  "selected_factor_packages": [
+    "mined",
+    "mined_custom",
+    "mined_freq_d",
+    "mined_fw_cus",
+    "mined_materiallist_explicit",
+    "mined_universe_hs300"
+  ],
+  "admission_profile": "D_custom_default_v1",
+  "top_candidates": [
+    {
+      "name": "custom_eval_atr_norm_14",
+      "factor_package": "mined_custom",
+      "score": 3.022768404980337,
+      "passed": true,
+      "metrics_valid": {
+        "obs": 124.0,
+        "coverage": 1.0,
+        "ic_mean": 0.04292502216948608,
+        "rank_ic_mean": 0.11149648314334223,
+        "abs_ic_mean": 0.11149648314334223,
+        "ic_win_rate": 0.6370967741935484,
+        "ic_ir": 3.022768404980337,
+        "ndcg_k": 0.5590566956599196,
+        "long_ret_mean": 0.0023712723647192646,
+        "long_ret_annualized": 0.12139233209410727,
+        "long_sharpe": 1.2143596564491257,
+        "long_win_rate": 0.6370967741935484,
+        "long_excess_mean": 0.005747413128465272,
+        "long_excess_annualized": 0.3304268423979235
+      }
+    }
+  ]
+}

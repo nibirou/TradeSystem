@@ -46,10 +46,13 @@ def main() -> None:
     print(json.dumps(summary.get("model_ic_summary", {}), ensure_ascii=False, indent=2))
     print("=== Score Spread (Q5-Q1) ===")
     print(json.dumps(summary.get("model_score_spread", {}), ensure_ascii=False, indent=2))
+    if bool(summary.get("next_bar_inference", {}).get("enabled", False)):
+        print("=== Next Bar Inference ===")
+        print(json.dumps(summary.get("next_bar_inference", {}), ensure_ascii=False, indent=2))
     print()
 
     outputs = summary.get("outputs", {})
-    # 第六步：打印核心产物路径（预测、持仓、交易、曲线、IC等）。
+    # 第六步：打印核心产物路径（预测、持仓、交易、曲线、IC 等）。
     for k in [
         "predictions_csv",
         "trades_csv",
@@ -59,6 +62,8 @@ def main() -> None:
         "model_ic_series_csv",
         "backtest_main_plot_png",
         "backtest_excess_plot_png",
+        "next_bar_candidates_csv",
+        "next_bar_summary_json",
     ]:
         if k in outputs:
             print(f"{k:24s}: {outputs[k]}")
@@ -77,3 +82,4 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
+

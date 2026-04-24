@@ -1,0 +1,10 @@
+{
+  "model_type": "realistic_fill",
+  "config": {
+    "model_type": "realistic_fill",
+    "max_participation_rate": 0.2,
+    "base_fill_rate": 0.9,
+    "latency_bars": 1,
+    "custom_model_py": null
+  }
+}

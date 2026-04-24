@@ -1,0 +1,8 @@
+{
+  "model_type": "decision_tree",
+  "is_classifier": true,
+  "max_depth": 6,
+  "min_samples_leaf": 200,
+  "random_state": 42,
+  "factor_count": 393
+}

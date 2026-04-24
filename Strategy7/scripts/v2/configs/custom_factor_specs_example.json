@@ -1,0 +1,25 @@
+﻿{
+  "items": [
+    {
+      "name": "custom_eval_breakout_20",
+      "expression": "col(\"breakout_20\")",
+      "freq": "D",
+      "category": "mined_custom",
+      "description": "passthrough breakout_20"
+    },
+    {
+      "name": "custom_eval_liq_vol_mix",
+      "expression": "0.6 * col(\"amihud_20\") + 0.4 * col(\"atr_norm_14\")",
+      "freq": "D",
+      "category": "mined_custom",
+      "description": "liquidity-volatility blend"
+    },
+    {
+      "name": "custom_eval_breakout_delta",
+      "expression": "delta(col(\"breakout_20\"), 5)",
+      "freq": "D",
+      "category": "mined_custom",
+      "description": "5-bar breakout momentum delta"
+    }
+  ]
+}

@@ -292,6 +292,169 @@ python Strategy7/run_strategy7.py `
   --save-models true
 ```
 
+### 5.8 基于已有模型直接回测（不重新训练）
+
+当前主入口已支持双模式：
+
+1. `--model-run-mode train`（默认）：训练新模型后回测
+2. `--model-run-mode load`：加载已有模型后直接回测
+
+`load` 模式下的模型路径解析优先级：
+
+1. 显式传入单模型路径（`--stock-model-path/--timing-model-path/...`）
+2. `--model-summary-json` 自动读取 `summary_*.json` 里的 `outputs.model_files`
+3. `--models-load-dir` + 可选 `--models-load-run-tag` 自动匹配模型文件
+
+`load` 模式参数冲突与约束（新增）：
+
+1. `load + FE` 由 `--load-fe-mode strict|refit|off` 控制，不再是固定阻断：
+   - `strict`：按 `--model-summary-json` 中记录的 FE 结果回放（要求 `notes.feature_engineering_summary` 存在且启用；当前不支持 `pca` 回放）。
+   - `refit`：按当前样本重新拟合 FE（默认）。
+   - `off`：即使 `--enable-factor-engineering true` 也跳过 FE。
+2. `strict` 模式必须提供 `--model-summary-json`，否则会显式报错阻断（避免语义错位）。
+3. `train` 模式下若传了 `--model-summary-json/--models-load-dir/--*-model-path`，主流程会提示并忽略这些 load 专用参数。
+4. 文件后缀建议：
+   - `decision_tree`：`.pkl/.pickle`
+   - `factor_gcl/dafat`：`.pt/.pth`
+   - `volatility_regime`：`.pkl/.json`
+   - `dynamic_opt/realistic_fill`：`.pkl/.json`
+5. 当对应模型类型为默认无文件实现时，会忽略其路径参数：
+   - `timing_model_type=none` 时忽略 `--timing-model-path`
+   - `portfolio_model_type=equal_weight` 时忽略 `--portfolio-model-path`
+   - `execution_model_type=ideal_fill` 时忽略 `--execution-model-path`
+
+推荐方式（最稳）：直接用历史运行的 `summary_*.json` 回放：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --model-run-mode load `
+  --load-fe-mode refit `
+  --model-summary-json D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/20260404_131548/tr240101241231_te250101251231_D_h5_k10_vwap30vwap30_all_eqw/summary_D_h5_allboards_equal_weight_e89a96a3e4.json `
+  --stock-model-type factor_gcl `
+  --timing-model-type none `
+  --portfolio-model-type equal_weight `
+  --execution-model-type ideal_fill `
+  --factor-freq D `
+  --horizon 5 `
+  --top-k 10 `
+  --save-models false
+```
+
+显式指定四类模型文件（适合做消融实验/控制变量）：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --model-run-mode load `
+  --load-fe-mode off `
+  --stock-model-type decision_tree `
+  --timing-model-type volatility_regime `
+  --portfolio-model-type dynamic_opt `
+  --execution-model-type realistic_fill `
+  --stock-model-path D:/.../models/stock_model_tree_XXX.pkl `
+  --timing-model-path D:/.../models/timing_vol_regime_XXX.pkl `
+  --portfolio-model-path D:/.../models/portfolio_dynamic_XXX.pkl `
+  --execution-model-path D:/.../models/execution_realistic_XXX.pkl `
+  --factor-freq D --horizon 5 --top-k 10 `
+  --save-models false
+```
+
+仅提供模型目录自动匹配（run_tag 可选）：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --model-run-mode load `
+  --load-fe-mode off `
+  --stock-model-type decision_tree `
+  --timing-model-type none `
+  --portfolio-model-type equal_weight `
+  --execution-model-type ideal_fill `
+  --models-load-dir D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/_tmp_freq_guard/pipeline_W/models `
+  --models-load-run-tag W_h3_allboards_equal_weight_edb61102ec `
+  --factor-freq W --horizon 3 --top-k 10
+```
+
+### 5.9 next bar 快速推理（四类模型联动）
+
+主入口支持在回测同时额外输出“最新信号时点”的组合推理结果（选股分数 + 择时暴露 + 组合权重 + 执行填单）：
+
+1. `--enable-next-bar-inference true`：开启
+2. `--inference-top-k`：输出候选数量（按 `pred_score` 排序）
+
+示例：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --model-run-mode load `
+  --model-summary-json D:/.../summary_XXX.json `
+  --enable-next-bar-inference true `
+  --inference-top-k 20 `
+  --save-models false
+```
+
+会新增产物：
+
+1. `next_bar_candidates_*.csv`：最新信号时点候选/入选/目标权重/执行权重/成交率
+2. `next_bar_summary_*.json`：最新信号时点的暴露、诊断信息与统计摘要
+
+### 5.10 全功能模板库（scripts/v2）与回归建议
+
+新版模板目录：`Strategy7/scripts/v2`。  
+当前模板规模：
+
+1. 主流程 `run_strategy7_v2_*.ps1` 共 `01~19`
+2. 挖掘入口 `run_factor_mining_v2_*.ps1` 共 `01~14`
+
+完整模板索引与每个模板覆盖点详见：`Strategy7/scripts/v2/README.md`。
+
+主流程模板（`run_strategy7_v2_*.ps1`）速览：
+
+1. `01~03`：基础/增强/自定义四模型训练回测
+2. `04~07`：四种 load 路径（summary refit、summary strict、models_dir off、自定义 load）
+3. `08~09`：深度模型冒烟（FactorGCL、DAFAT）
+4. `10~11`：`--list-factors` 导出、factor value store build-only
+5. `12~19`：扩展链路（W/M/30min、price-only+main_board、custom factor plugin、value store hydrate、显式四路径 load、30min JSON 导出）
+
+挖掘模板（`run_factor_mining_v2_*.ps1`）速览：
+
+1. `01~06`：六类挖掘框架（fundamental/minute/minute+/ml/gp/custom）
+2. `07`：`--list-factors` 导出
+3. `08~14`：扩展链路（materials+FE+value store、custom-spec-json、30min、price-only+main_board、markdown 导出、disable-default-materials + factor-list、custom factor plugin 列表）
+
+按研究目的选模板（极简索引）：
+
+1. 快速基线：`run_strategy7_v2_01_train_tree_baseline.ps1`
+2. 训练全链路（FE+动态组合+realistic+next-bar）：`run_strategy7_v2_02_train_tree_fe_dynamic.ps1`
+3. 复现已有模型（summary）：`run_strategy7_v2_04` / `run_strategy7_v2_05`
+4. 复现已有模型（models_dir / 显式四路径）：`run_strategy7_v2_06` / `run_strategy7_v2_17`
+5. 自定义模型与因子插件：`run_strategy7_v2_03` / `run_strategy7_v2_07` / `run_strategy7_v2_15` / `run_factor_mining_v2_14`
+6. 多频与任务扩展（30min/W/M、volatility/multi_task）：`run_strategy7_v2_12` / `13` / `18` / `19` / `run_factor_mining_v2_10`
+7. 数据裁剪实验（price-only/main_board）：`run_strategy7_v2_14` / `run_factor_mining_v2_11`
+8. 值仓库路径（build-only/hydrate/materials 联动）：`run_strategy7_v2_11` / `16` / `run_factor_mining_v2_08`
+9. 挖掘参数扩展（custom spec、禁默认素材+指定因子）：`run_factor_mining_v2_09` / `13`
+10. 因子清单导出（json/markdown）：`run_strategy7_v2_10` / `19` / `run_factor_mining_v2_07` / `12`
+
+建议执行方式（`env_quant`）：
+
+```powershell
+# 单模板运行（示例）
+powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_strategy7_v2_02_train_tree_fe_dynamic.ps1
+
+# load+models_dir 模板需要显式传模型目录（示例）
+powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_strategy7_v2_06_load_from_models_dir_off.ps1 `
+  -ModelsLoadDir D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_01_train_tree/models `
+  -ModelsLoadRunTag 510c1cd320
+
+# 核心 smoke 套件
+powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2.ps1
+
+# 核心 + 扩展模板全覆盖
+powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2.ps1 -IncludeExtended
+
+# 按需跳过深度模型/挖掘
+powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2.ps1 -IncludeExtended -SkipDeepModels
+powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2.ps1 -IncludeExtended -SkipMining
+```
+
 ## 6. 常用参数说明（主流程）
 
 参数闭环审计文档：
@@ -314,7 +477,9 @@ python Strategy7/run_strategy7.py `
    `--execution-model-type`（`ideal_fill`/`realistic_fill`）
 7. 回测：
    `--horizon --top-k --long-threshold --execution-scheme --fee-bps --slippage-bps`
-8. 产物：
+8. 模型运行模式与推理：
+   `--model-run-mode --load-fe-mode --model-summary-json --models-load-dir --models-load-run-tag --stock-model-path --timing-model-path --portfolio-model-path --execution-model-path --enable-next-bar-inference --inference-top-k`
+9. 产物：
    `--output-dir --save-models`
 
 ### 6.1 分频默认量价因子库（已扩容）
@@ -508,6 +673,7 @@ python Strategy7/run_strategy7.py `
 
 1. `--save-models false` 可正确关闭模型落盘
 2. `--save-models`（不带值）等价于 `true`
+3. `--enable-next-bar-inference`（不带值）等价于 `true`
 
 ## 7. 输出目录与文件
 
@@ -522,6 +688,8 @@ python Strategy7/run_strategy7.py `
 7. `model_ic_series_*.csv`：模型分期 IC 序列
 8. `backtest_curve_main_*.png / backtest_curve_excess_*.png`
 9. `models/`（可选）：四类模型的持久化文件
+10. `next_bar_candidates_*.csv`（可选）：最新信号时点快速推理候选结果
+11. `next_bar_summary_*.json`（可选）：最新信号时点推理摘要
 
 ## 8. 标签任务与评估兼容性
 
@@ -742,6 +910,7 @@ python Strategy7/run_strategy7.py `
 1. 自定义因子模块需实现 `register_factors(library)`
 2. 自定义数据源模块需实现 `register_sources(registry)`（兼容模式，建议优先迁移到自定义因子插件）
 3. 自定义模型模块需实现 `build_model(cfg)`，并返回对应基类子类实例
+4. 若要支持 `--model-run-mode load`，自定义模型插件还需实现 `load_model(cfg, model_path)`（返回对应模型实例）
 
 自定义因子插件新增推荐能力：
 
@@ -777,6 +946,27 @@ python Strategy7/run_strategy7.py `
   --custom-execution-model-py Strategy7/strategy7/plugins/custom_execution_model_template.py
 ```
 
+自定义模型在 `load` 模式下的调用示例（四类模型可独立混搭）：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --model-run-mode load `
+  --custom-stock-model-py Strategy7/strategy7/plugins/custom_stock_model_template.py `
+  --custom-timing-model-py Strategy7/strategy7/plugins/custom_timing_model_template.py `
+  --custom-portfolio-model-py Strategy7/strategy7/plugins/custom_portfolio_model_template.py `
+  --custom-execution-model-py Strategy7/strategy7/plugins/custom_execution_model_template.py `
+  --stock-model-path D:/.../custom_stock_constant_xxx.json `
+  --timing-model-path D:/.../custom_timing_fixed_xxx.json `
+  --portfolio-model-path D:/.../custom_portfolio_top1_xxx.json `
+  --execution-model-path D:/.../custom_execution_half_fill_xxx.json `
+  --factor-freq D --horizon 5 --top-k 10
+```
+
+说明：
+
+1. 工程内四个自定义模型模板文件都已提供 `build_model(cfg)` 和 `load_model(cfg, model_path)` 双接口示例。
+2. 若你只想替换其中一个模块做消融，其余三个模块可继续使用内置模型类型。
+
 ## 12. 常见问题排查
 
 1. `ModuleNotFoundError: pandas/torch`
@@ -789,6 +979,12 @@ python Strategy7/run_strategy7.py `
    当前版本已修复显式布尔解析。
 5. 因子挖掘结果空
    放宽 admission 门槛，或增大样本覆盖（`max-files/population/generations`）。
+6. `model_run_mode=load` 报“missing factor cols”
+   说明当前运行可用因子与模型训练时不一致；优先使用原始 `summary_*.json` 回放，或对齐 `--factor-freq/--factor-packages/--factor-list`。
+7. next bar 推理文件未生成
+   检查 `--enable-next-bar-inference true`，并确认最新信号时点存在可用样本（`code/time/factor` 不为空）。
+8. `model_run_mode=load` 且 `enable_factor_engineering=true` 的 FE 行为不符合预期
+   显式设置 `--load-fe-mode`：`strict`（按 summary 回放）、`refit`（当前样本重拟合）、`off`（跳过 FE）。若用 `strict`，必须传 `--model-summary-json` 且源实验 FE 非 PCA。
 
 ## 13. 性能与复现实务建议
 
@@ -802,3 +998,4 @@ python Strategy7/run_strategy7.py `
 1. [FactorGCL 说明](./factor_gcl.md)
 2. [DAFAT 复现与工程实现说明](./dafat_transformer.md)
 3. [因子挖掘框架说明](./factor_mining_framework.md)
+

@@ -1,0 +1,4 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+ret_vol_corr_20,D,Price-Volume / Non-Fundamental Packages,flow,flow,成交资金流·收益成交量corr20,成交资金流因子，刻画：收益-volume corr20,按定义计算：收益-volume corr20,ret-volume corr20,True,price_volume
+turnover_pressure_reversal,D,Price-Volume / Non-Fundamental Packages,flow,flow,成交资金流·turnover压力reversal,成交资金流因子，刻画：turnover 压力 reversal,按定义计算：turnover 压力 reversal,turnover pressure reversal,True,price_volume
+volume_price_confirmation_20,D,Price-Volume / Non-Fundamental Packages,flow,flow,成交资金流·volumepriceconfirmation20,成交资金流因子，刻画：ret5 confirmed 按 成交量 比值,按定义计算：ret5 confirmed 按 成交量 比值,ret5 confirmed by vol ratio,True,price_volume

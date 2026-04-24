@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Dict, List
 
 import pandas as pd
-
+import numpy as np
 from ..backtest.engine import run_backtest
 from ..backtest.metrics import (
     calc_trade_return,
@@ -54,13 +55,23 @@ from ..factors.store import (
     resolve_factor_store_root,
 )
 from ..models import build_execution_model, build_portfolio_model, build_stock_model, build_timing_model
+from ..models.loading import (
+    bootstrap_stock_model_history,
+    load_execution_model,
+    load_portfolio_model,
+    load_stock_model,
+    load_timing_model,
+    peek_stock_model_factor_cols,
+    resolve_model_artifact_paths,
+    stock_model_factor_cols,
+)
 from ..mining.catalog import (
     list_catalog_factor_packages,
     load_active_catalog_entries,
     merge_catalog_factors,
     register_catalog_factors,
 )
-from .artifacts import build_run_tag, save_common_artifacts
+from .artifacts import build_run_tag, save_common_artifacts, save_dataframe
 
 
 def _safe_trade_dates_from_panel(panel: pd.DataFrame, factor_freq: str) -> pd.DatetimeIndex:
@@ -74,6 +85,17 @@ def _safe_trade_dates_from_panel(panel: pd.DataFrame, factor_freq: str) -> pd.Da
     if "date" in panel.columns:
         return pd.DatetimeIndex(pd.to_datetime(panel["date"], errors="coerce").dropna().unique()).sort_values()
     return pd.DatetimeIndex([])
+
+
+def _safe_read_json_dict(path: Path) -> Dict[str, object]:
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except Exception:
+        raw = path.read_text(encoding="utf-8-sig")
+    payload = json.loads(raw)
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"summary json must be a dict object: {path}")
+    return payload
 
 
 def _parse_factor_names_expr(expr: str) -> List[str]:
@@ -374,13 +396,192 @@ def _build_external_source_registry(cfg: RunConfig) -> DataSourceRegistry:
     return reg
 
 
+def _build_next_bar_inference(
+    *,
+    panel_df: pd.DataFrame,
+    factor_freq: str,
+    factor_cols: List[str],
+    stock_model,
+    timing_model,
+    portfolio_model,
+    execution_model,
+    cfg: RunConfig,
+    prev_weights: Dict[str, float],
+) -> tuple[pd.DataFrame, Dict[str, object]]:
+    if panel_df.empty:
+        return pd.DataFrame(), {"enabled": True, "status": "empty_panel"}
+
+    time_col = "date" if factor_freq in {"D", "W", "M"} else "datetime"
+    if time_col not in panel_df.columns:
+        return pd.DataFrame(), {"enabled": True, "status": "missing_time_col", "time_col": time_col}
+
+    scoped = panel_df.copy()
+    scoped["_signal_time"] = pd.to_datetime(scoped[time_col], errors="coerce")
+    scoped = scoped.dropna(subset=["_signal_time", "code"]).copy()
+    if scoped.empty:
+        return pd.DataFrame(), {"enabled": True, "status": "no_valid_signal_rows"}
+
+    latest_signal = pd.Timestamp(scoped["_signal_time"].max())
+    latest_df = scoped.loc[scoped["_signal_time"] == latest_signal].copy()
+    if latest_df.empty:
+        return pd.DataFrame(), {"enabled": True, "status": "latest_slice_empty"}
+
+    missing = [c for c in factor_cols if c not in latest_df.columns]
+    if missing:
+        return pd.DataFrame(), {"enabled": True, "status": "missing_factor_cols", "missing_factor_cols": missing}
+
+    latest_df["pred_score"] = stock_model.predict_score(latest_df, factor_cols)
+    latest_df["pred_up"] = (latest_df["pred_score"] >= cfg.backtest.long_threshold).astype(int)
+
+    latest_df = latest_df.sort_values("pred_score", ascending=False).reset_index(drop=True)
+    rule_pick = latest_df.loc[latest_df["pred_score"] >= float(cfg.backtest.long_threshold)].copy()
+    rule_pick = rule_pick.head(int(cfg.backtest.top_k)).copy()
+    pick_codes = set(rule_pick["code"].astype(str).tolist())
+
+    timing_exposure, timing_diag = timing_model.predict_exposure(latest_df)
+    portfolio_diag: Dict[str, float] = {}
+    execution_diag: Dict[str, float] = {}
+
+    executed_df = pd.DataFrame()
+    if not rule_pick.empty and float(timing_exposure) > 0.0:
+        target_w, portfolio_diag = portfolio_model.compute_weights(
+            day_pick=rule_pick,
+            day_universe=latest_df,
+            prev_weights=prev_weights,
+            fee_bps=float(cfg.backtest.fee_bps),
+            slippage_bps=float(cfg.backtest.slippage_bps),
+        )
+        if target_w.empty or float(target_w.sum()) <= 1e-12:
+            target_w = pd.Series(
+                np.full(len(rule_pick), 1.0 / max(len(rule_pick), 1), dtype=float),
+                index=rule_pick["code"].astype(str),
+            )
+            portfolio_diag["optimizer_fallback"] = 1.0
+
+        executed_df = rule_pick.copy()
+        executed_df["weight_target"] = executed_df["code"].astype(str).map(target_w).fillna(0.0)
+        sw = float(executed_df["weight_target"].sum())
+        if sw > 1e-12:
+            executed_df["weight_target"] = executed_df["weight_target"] / sw
+        executed_df["weight_target"] = executed_df["weight_target"] * float(timing_exposure)
+        if "net_trade_ret" not in executed_df.columns:
+            executed_df["net_trade_ret"] = 0.0
+        executed_df, execution_diag = execution_model.apply_execution(
+            day_pick=executed_df,
+            weight_col="weight_target",
+            fee_bps=float(cfg.backtest.fee_bps),
+            slippage_bps=float(cfg.backtest.slippage_bps),
+        )
+
+    merge_cols = ["code", "pred_score", "pred_up"]
+    if not executed_df.empty:
+        for c in ["weight_target", "executed_weight", "fill_ratio", "extra_cost_bps"]:
+            if c in executed_df.columns and c not in merge_cols:
+                merge_cols.append(c)
+        latest_df = latest_df.merge(executed_df[merge_cols], on=["code", "pred_score", "pred_up"], how="left")
+    latest_df["selected_by_rule"] = latest_df["code"].astype(str).isin(pick_codes).astype(int)
+    if "weight_target" not in latest_df.columns:
+        latest_df["weight_target"] = np.nan
+    if "executed_weight" not in latest_df.columns:
+        latest_df["executed_weight"] = np.nan
+    if "fill_ratio" not in latest_df.columns:
+        latest_df["fill_ratio"] = np.nan
+
+    top_n = int(getattr(cfg.model_run, "inference_top_k", cfg.backtest.top_k))
+    latest_df = latest_df.head(max(top_n, 1)).copy()
+    latest_df["signal_ts"] = latest_signal
+
+    summary = {
+        "enabled": True,
+        "status": "ok",
+        "signal_ts": str(latest_signal),
+        "candidate_count": int(len(latest_df)),
+        "selected_count": int(len(pick_codes)),
+        "timing_exposure": float(timing_exposure),
+        "timing_diag": timing_diag,
+        "portfolio_diag": portfolio_diag,
+        "execution_diag": execution_diag,
+    }
+    return latest_df, summary
+
+
 def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     factor_freq = cfg.factors.factor_freq
+    model_run_mode = str(getattr(cfg.model_run, "mode", "train")).strip().lower()
+    load_fe_mode = str(getattr(cfg.model_run, "load_fe_mode", "refit")).strip().lower()
+    if load_fe_mode not in {"strict", "refit", "off"}:
+        load_fe_mode = "refit"
+    if model_run_mode == "load" and bool(getattr(cfg.factors, "enable_factor_engineering", False)):
+        if load_fe_mode == "strict":
+            log_progress(
+                "load+FE 策略：strict（将尝试严格按 summary 中 FE 结果回放）。",
+                module="pipeline",
+            )
+        elif load_fe_mode == "refit":
+            log_progress(
+                "load+FE 策略：refit（将按当前样本重新拟合 FE）。",
+                module="pipeline",
+            )
+        else:
+            log_progress(
+                "load+FE 策略：off（将跳过 FE，即使 enable_factor_engineering=true）。",
+                module="pipeline",
+            )
+    if model_run_mode != "load":
+        ignored_load_args: List[str] = []
+        if getattr(cfg.model_run, "model_summary_json", None):
+            ignored_load_args.append("model_summary_json")
+        if getattr(cfg.model_run, "models_load_dir", None):
+            ignored_load_args.append("models_load_dir")
+        if getattr(cfg.model_run, "models_load_run_tag", None):
+            ignored_load_args.append("models_load_run_tag")
+        if getattr(cfg.model_run, "stock_model_path", None):
+            ignored_load_args.append("stock_model_path")
+        if getattr(cfg.model_run, "timing_model_path", None):
+            ignored_load_args.append("timing_model_path")
+        if getattr(cfg.model_run, "portfolio_model_path", None):
+            ignored_load_args.append("portfolio_model_path")
+        if getattr(cfg.model_run, "execution_model_path", None):
+            ignored_load_args.append("execution_model_path")
+        if ignored_load_args:
+            log_progress(
+                "train 模式下检测到 load 专用参数，将忽略："
+                + ", ".join(ignored_load_args),
+                module="pipeline",
+            )
     explicit_factor_names = _parse_factor_names_expr(cfg.factors.factor_list)
     default_pkg_tokens, catalog_pkg_expr = _split_package_tokens_for_default_and_catalog(
         factor_freq,
         str(getattr(cfg.factors, "factor_packages", "")),
     )
+    model_paths = None
+    model_component_source: Dict[str, str] = {}
+    load_hint_factor_cols: List[str] = []
+    if model_run_mode == "load":
+        if cfg.timing_model.model_type == "none" and getattr(cfg.model_run, "timing_model_path", None):
+            log_progress(
+                "timing_model_type=none 时 timing_model_path 不参与加载，将按配置构建 NoTimingModel。",
+                module="pipeline",
+            )
+        if cfg.portfolio_opt.mode == "equal_weight" and getattr(cfg.model_run, "portfolio_model_path", None):
+            log_progress(
+                "portfolio_model_type=equal_weight 时 portfolio_model_path 不参与加载，将按配置构建 EqualWeightPortfolioModel。",
+                module="pipeline",
+            )
+        if cfg.execution_model.model_type == "ideal_fill" and getattr(cfg.model_run, "execution_model_path", None):
+            log_progress(
+                "execution_model_type=ideal_fill 时 execution_model_path 不参与加载，将按配置构建 IdealFillExecutionModel。",
+                module="pipeline",
+            )
+        model_paths = resolve_model_artifact_paths(cfg)
+        model_component_source = dict(model_paths.source)
+        load_hint_factor_cols = peek_stock_model_factor_cols(cfg.stock_model, model_paths.stock_model)
+        log_progress(
+            "检测到 load 模式：将跳过模型训练，直接加载已有模型文件。",
+            module="pipeline",
+        )
+        if model_paths.stock_model:
+            log_progress(f"load stock model path: {model_paths.stock_model}", module="pipeline")
     log_progress(
         f"主流水线启动：factor_freq={cfg.factors.factor_freq}, "
         f"train={cfg.dates.train_start.date()}~{cfg.dates.train_end.date()}, "
@@ -688,6 +889,19 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         factor_list_arg=cfg.factors.factor_list,
         default_set=default_set,
     )
+    if model_run_mode == "load" and load_hint_factor_cols:
+        missing_hint = [c for c in load_hint_factor_cols if c not in set(factor_lib.names(factor_freq))]
+        if missing_hint:
+            raise RuntimeError(
+                "loaded stock model requires factors not available in current factor library: "
+                + ", ".join(missing_hint[:20])
+                + (" ..." if len(missing_hint) > 20 else "")
+            )
+        selected_factors = list(load_hint_factor_cols)
+        log_progress(
+            f"load 模式下按模型文件覆盖因子清单：factor_count={len(selected_factors)}。",
+            module="pipeline",
+        )
     log_progress(f"已选因子数量：{len(selected_factors)}。", module="pipeline")
 
     run_meta_df = factor_lib.metadata(freq=factor_freq)
@@ -820,6 +1034,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     log_progress(f"样本切分完成：train_rows={len(train_df)}, test_rows={len(test_df)}。", module="pipeline")
     target_col = pick_target_column(cfg.factors.label_task)
     raw_train_df = train_df.copy()
+    panel_for_scoring = panel.copy()
 
     # 8) Train-fitted feature fill values are reused on test set.
     # This avoids using future-period statistics to fill missing values.
@@ -837,16 +1052,80 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         method=pp_opt.fill_method,
         reference_fill_values=fill_values,
     )
+    panel_for_scoring = fill_feature_na_with_reference(
+        panel_for_scoring,
+        selected_factors,
+        method=pp_opt.fill_method,
+        reference_fill_values=fill_values,
+    )
     log_progress("缺失值填充完成。", module="pipeline")
     selected_factors_before_fe = list(selected_factors)
+    train_df_before_fe = train_df.copy()
+    fe_requested = bool(getattr(cfg.factors, "enable_factor_engineering", False))
     fe_report: Dict[str, object] = {
         "enabled": False,
         "input_factor_count": int(len(selected_factors_before_fe)),
         "final_factor_count": int(len(selected_factors_before_fe)),
         "orth_method": "none",
+        "mode": "disabled",
     }
-    if bool(getattr(cfg.factors, "enable_factor_engineering", False)):
-        log_progress("步骤 8.5/13：执行因子特征工程（覆盖率/相关性/正交化）。", module="pipeline")
+    if fe_requested and model_run_mode == "load" and load_fe_mode == "off":
+        log_progress("步骤 8.5/13：load-fe-mode=off，跳过因子特征工程。", module="pipeline")
+        fe_report["mode"] = "skipped_by_load_fe_mode_off"
+    elif fe_requested and model_run_mode == "load" and load_fe_mode == "strict":
+        log_progress("步骤 8.5/13：执行 load+FE strict 回放。", module="pipeline")
+        if not getattr(cfg.model_run, "model_summary_json", None):
+            raise RuntimeError("load-fe-mode=strict requires --model-summary-json for FE replay.")
+        summary_path = Path(str(cfg.model_run.model_summary_json)).expanduser()
+        if not summary_path.exists():
+            raise FileNotFoundError(f"model_summary_json not found for strict FE replay: {summary_path}")
+        summary_payload = _safe_read_json_dict(summary_path)
+        strict_fe = dict(summary_payload.get("notes", {}).get("feature_engineering_summary", {}) or {})
+        if not strict_fe:
+            raise RuntimeError("strict FE replay requires notes.feature_engineering_summary in model summary.")
+        if not bool(strict_fe.get("enabled", False)):
+            raise RuntimeError("strict FE replay requires source run with feature_engineering enabled.")
+        strict_orth = str(strict_fe.get("orth_method", "none")).strip().lower()
+        if strict_orth == "pca":
+            raise RuntimeError(
+                "strict FE replay does not support orth_method=pca yet (missing persisted PCA state). "
+                "Use --load-fe-mode refit, or re-run source with fe-orth-method none."
+            )
+        strict_selected = [str(x) for x in strict_fe.get("selected_factors", []) if str(x).strip()]
+        if not strict_selected:
+            raise RuntimeError("strict FE replay requires non-empty selected_factors in source summary.")
+        missing_strict = [c for c in strict_selected if c not in train_df.columns or c not in test_df.columns]
+        if missing_strict:
+            raise RuntimeError(
+                "strict FE replay factors are not available in current dataset: "
+                + ", ".join(missing_strict[:20])
+                + (" ..." if len(missing_strict) > 20 else "")
+            )
+        missing_panel_strict = [c for c in strict_selected if c not in panel_for_scoring.columns]
+        if missing_panel_strict:
+            raise RuntimeError(
+                "inference panel missing strict FE replay factors: "
+                + ", ".join(missing_panel_strict[:20])
+                + (" ..." if len(missing_panel_strict) > 20 else "")
+            )
+        selected_factors = list(strict_selected)
+        fe_report = {
+            **strict_fe,
+            "enabled": True,
+            "mode": "strict_replay_from_summary",
+            "input_factor_count": int(len(selected_factors_before_fe)),
+            "final_factor_count": int(len(selected_factors)),
+        }
+        log_progress(
+            "load+FE strict 回放完成："
+            f"final={int(len(selected_factors))}, orth={strict_orth}。",
+            module="pipeline",
+        )
+    elif fe_requested:
+        if model_run_mode == "load" and load_fe_mode == "refit":
+            log_progress("步骤 8.5/13：执行 load+FE refit（按当前样本重新拟合）。", module="pipeline")
+        else:
+            log_progress("步骤 8.5/13：执行因子特征工程（覆盖率/相关性/正交化）。", module="pipeline")
         fe_opts = FactorEngineeringOptions(
             enabled=True,
             min_coverage=float(getattr(cfg.factors, "fe_min_coverage", 0.70)),
@@ -867,6 +1146,29 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             target_col=target_col,
             raw_train_df=raw_train_df,
         )
+        _train_ref_unused, panel_for_scoring, panel_fe_selected, _panel_fe_report = apply_factor_engineering(
+            train_df=train_df_before_fe,
+            test_df=panel_for_scoring,
+            factor_cols=selected_factors_before_fe,
+            options=fe_opts,
+            target_col=target_col,
+            raw_train_df=raw_train_df,
+        )
+        missing_panel_fe = [c for c in selected_factors if c not in panel_for_scoring.columns]
+        if missing_panel_fe:
+            raise RuntimeError(
+                "inference panel missing feature-engineering columns required by model: "
+                + ", ".join(missing_panel_fe[:20])
+                + (" ..." if len(missing_panel_fe) > 20 else "")
+            )
+        if panel_fe_selected != selected_factors:
+            log_progress(
+                "feature engineering for inference panel produced different factor ordering; "
+                "will align by trained selected_factors.",
+                module="pipeline",
+                level="debug",
+            )
+        fe_report["mode"] = "refit_current_run" if model_run_mode == "load" and load_fe_mode == "refit" else "train_fit"
         log_progress(
             "因子特征工程完成："
             f"input={int(fe_report.get('input_factor_count', len(selected_factors_before_fe)))}, "
@@ -902,14 +1204,75 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             module="pipeline",
         )
 
-    # 9) Train pluggable models.
-    log_progress("步骤 9/13：开始训练模型（选股/择时/组合/执行）。", module="pipeline")
-    stock_model = build_stock_model(cfg.stock_model)
-    stock_model.fit(train_df=train_df, factor_cols=selected_factors, target_col=target_col)
-    timing_model = build_timing_model(cfg.timing_model).fit(train_df)
-    portfolio_model = build_portfolio_model(cfg.portfolio_opt)
-    execution_model = build_execution_model(cfg.execution_model)
-    log_progress("模型训练与构建完成。", module="pipeline")
+    # 9) Train models or load existing artifacts.
+    if model_run_mode == "load":
+        log_progress("步骤 9/13：加载模型（选股/择时/组合/执行）。", module="pipeline")
+        if model_paths is None:
+            model_paths = resolve_model_artifact_paths(cfg)
+        stock_model, stock_source = load_stock_model(cfg.stock_model, model_paths.stock_model)
+        model_component_source["stock_model"] = stock_source
+
+        loaded_factor_cols = stock_model_factor_cols(stock_model, fallback=selected_factors)
+        missing_loaded_factors = [c for c in loaded_factor_cols if c not in train_df.columns or c not in test_df.columns]
+        if missing_loaded_factors:
+            raise RuntimeError(
+                "loaded stock model factor cols are not available in current dataset: "
+                + ", ".join(missing_loaded_factors[:20])
+                + (" ..." if len(missing_loaded_factors) > 20 else "")
+            )
+        selected_factors = list(loaded_factor_cols)
+
+        # In load mode, prefer model-side fill values when available to keep inference behavior consistent.
+        model_fill_values = stock_model.fill_values()
+        if isinstance(model_fill_values, pd.Series) and not model_fill_values.empty:
+            model_fill_values = model_fill_values.reindex(selected_factors).fillna(fill_values.reindex(selected_factors)).fillna(0.0)
+            train_df = fill_feature_na_with_reference(
+                train_df,
+                selected_factors,
+                method=pp_opt.fill_method,
+                reference_fill_values=model_fill_values,
+            )
+            test_df = fill_feature_na_with_reference(
+                test_df,
+                selected_factors,
+                method=pp_opt.fill_method,
+                reference_fill_values=model_fill_values,
+            )
+            panel_for_scoring = fill_feature_na_with_reference(
+                panel_for_scoring,
+                selected_factors,
+                method=pp_opt.fill_method,
+                reference_fill_values=model_fill_values,
+            )
+
+        bootstrap_stock_model_history(stock_model, history_df=train_df, factor_cols=selected_factors)
+
+        timing_model, timing_source = load_timing_model(cfg.timing_model, model_paths.timing_model)
+        portfolio_model, portfolio_source = load_portfolio_model(cfg.portfolio_opt, model_paths.portfolio_model)
+        execution_model, execution_source = load_execution_model(cfg.execution_model, model_paths.execution_model)
+        model_component_source["timing_model"] = timing_source
+        model_component_source["portfolio_model"] = portfolio_source
+        model_component_source["execution_model"] = execution_source
+        log_progress(
+            "模型加载完成："
+            f"stock={stock_source}, timing={timing_source}, "
+            f"portfolio={portfolio_source}, execution={execution_source}。",
+            module="pipeline",
+        )
+    else:
+        log_progress("步骤 9/13：开始训练模型（选股/择时/组合/执行）。", module="pipeline")
+        stock_model = build_stock_model(cfg.stock_model)
+        stock_model.fit(train_df=train_df, factor_cols=selected_factors, target_col=target_col)
+        timing_model = build_timing_model(cfg.timing_model).fit(train_df)
+        portfolio_model = build_portfolio_model(cfg.portfolio_opt)
+        execution_model = build_execution_model(cfg.execution_model)
+        model_component_source = {
+            "stock_model": "trained",
+            "timing_model": "trained",
+            "portfolio_model": "built_from_config",
+            "execution_model": "built_from_config",
+        }
+        log_progress("模型训练与构建完成。", module="pipeline")
 
     # 10) Generate predictions and model-level metrics.
     log_progress("步骤 10/13：生成测试集预测并计算模型指标。", module="pipeline")
@@ -930,6 +1293,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         threshold=cfg.backtest.long_threshold,
     )
     log_progress("模型指标计算完成。", module="pipeline")
+    next_bar_candidates_df = pd.DataFrame()
+    next_bar_summary: Dict[str, object] = {"enabled": bool(getattr(cfg.model_run, "enable_next_bar_inference", False))}
 
     log_progress("加载指数基准数据。", module="pipeline")
     index_benchmarks = load_index_benchmark_data(
@@ -955,6 +1320,36 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         f"回测完成：trades={len(trades_df)}, positions={len(positions_df)}, curve_rows={len(curve_df)}。",
         module="pipeline",
     )
+    if bool(getattr(cfg.model_run, "enable_next_bar_inference", False)):
+        log_progress("执行 next bar 快速推理。", module="pipeline")
+        prev_weights_for_infer: Dict[str, float] = {}
+        if not positions_df.empty and "signal_ts" in positions_df.columns and "executed_weight" in positions_df.columns:
+            last_signal = pd.to_datetime(positions_df["signal_ts"], errors="coerce").max()
+            if pd.notna(last_signal):
+                tail_pos = positions_df.loc[pd.to_datetime(positions_df["signal_ts"], errors="coerce") == last_signal].copy()
+                if not tail_pos.empty:
+                    prev_weights_for_infer = {
+                        str(code): float(w)
+                        for code, w in tail_pos[["code", "executed_weight"]].itertuples(index=False, name=None)
+                        if float(w) > 1e-8
+                    }
+        next_bar_candidates_df, next_bar_summary = _build_next_bar_inference(
+            panel_df=panel_for_scoring,
+            factor_freq=factor_freq,
+            factor_cols=selected_factors,
+            stock_model=stock_model,
+            timing_model=timing_model,
+            portfolio_model=portfolio_model,
+            execution_model=execution_model,
+            cfg=cfg,
+            prev_weights=prev_weights_for_infer,
+        )
+        log_progress(
+            "next bar 推理完成："
+            f"status={next_bar_summary.get('status', '')}, "
+            f"candidate_count={int(next_bar_summary.get('candidate_count', 0))}。",
+            module="pipeline",
+        )
 
     # 12) Compute IC diagnostics for model score and raw factors.
     log_progress("步骤 12/13：计算 IC 诊断与分层分位统计。", module="pipeline")
@@ -1068,6 +1463,11 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     )
     files["backtest_main_plot_png"] = plot_main_path
     files["backtest_excess_plot_png"] = plot_excess_path
+    next_bar_candidates_path: Path | None = None
+    if bool(getattr(cfg.model_run, "enable_next_bar_inference", False)) and not next_bar_candidates_df.empty:
+        next_bar_candidates_path = output_dir / f"next_bar_candidates_{run_tag}.csv"
+        save_dataframe(next_bar_candidates_path, next_bar_candidates_df)
+        files["next_bar_candidates_csv"] = next_bar_candidates_path
 
     model_files: Dict[str, Dict[str, str]] = {}
     if cfg.save_models and model_dir is not None:
@@ -1079,6 +1479,11 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         log_progress(f"模型文件保存完成：{len(model_files)} 个组件。", module="pipeline")
 
     top_factors = factor_ic_summary_df.head(10).copy() if not factor_ic_summary_df.empty else pd.DataFrame()
+    next_bar_summary_path: Path | None = None
+    if bool(getattr(cfg.model_run, "enable_next_bar_inference", False)):
+        next_bar_summary_path = output_dir / f"next_bar_summary_{run_tag}.json"
+        dump_json(next_bar_summary_path, next_bar_summary)
+        files["next_bar_summary_json"] = next_bar_summary_path
     summary = {
         "config": cfg.to_dict(),
         "sample_count": {
@@ -1099,6 +1504,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         "backtest_metrics": bt_summary,
         "model_ic_summary": model_ic_summary,
         "model_score_spread": score_spread,
+        "next_bar_inference": next_bar_summary,
         "factor_ic_top10": top_factors.to_dict(orient="records") if not top_factors.empty else [],
         "outputs": {
             **{k: str(v) for k, v in files.items()},
@@ -1114,10 +1520,12 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             ),
             "feature_fill_method": pp_opt.fill_method,
             "feature_fill_fit_scope": "train_only",
-            "feature_engineering_enabled": bool(getattr(cfg.factors, "enable_factor_engineering", False)),
+            "feature_engineering_requested": bool(getattr(cfg.factors, "enable_factor_engineering", False)),
+            "feature_engineering_enabled": bool(fe_report.get("enabled", False)),
             "feature_engineering_summary": fe_report,
             "selected_factor_count_before_fe": int(len(selected_factors_before_fe)),
             "selected_factor_count_after_fe": int(len(selected_factors)),
+            "load_fe_mode": load_fe_mode if model_run_mode == "load" else "n/a",
             "factor_value_store_enabled": bool(factor_store_enabled),
             "factor_value_store_root": str(factor_store_root) if factor_store_enabled else "",
             "factor_value_store_format": str(factor_store_fmt) if factor_store_enabled else "",
@@ -1137,6 +1545,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "factor_catalog_path": str(cfg.data.factor_catalog_path) if cfg.data.factor_catalog_path else "",
             "factor_snapshot_dir": str(snapshot_paths.get("snapshot_dir", "")),
             "factor_snapshot_summary_path": str(snapshot_paths.get("summary_path", "")),
+            "model_run_mode": model_run_mode,
+            "model_load_sources": model_component_source,
             "ic_eval_mode": eval_mode,
             "ic_eval_stride": int(eval_stride),
             "ic_periods_per_year": float(ic_periods_per_year),
@@ -1144,6 +1554,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "ic_min_cross_section_effective": int(effective_min_cs),
             "ic_group_count_total": int(len(cs_counts)),
             "ic_group_count_used": int(len(model_ic_series_df)),
+            "next_bar_inference_enabled": bool(getattr(cfg.model_run, "enable_next_bar_inference", False)),
+            "next_bar_inference_summary_path": str(next_bar_summary_path) if next_bar_summary_path else "",
         },
     }
     summary_path = output_dir / f"summary_{run_tag}.json"

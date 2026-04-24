@@ -1,6 +1,6 @@
 # Strategy7 配置项使用审计（run_strategy7 / run_factor_mining）
 
-更新时间：2026-04-22  
+更新时间：2026-04-23  
 审计目标：确认配置项“可配置即可生效”，排查空转参数并修复。
 
 ## 1. 审计结论
@@ -84,10 +84,13 @@
 7. 回测参数（`horizon/top-k/long-threshold/execution-scheme/fee-bps/slippage-bps/rebalance-stride/ic-eval-mode`）  
 生效模块：`pipeline/runner.py`、`backtest/engine.py`、`backtest/metrics.py`。
 
-8. 输出参数（`output-dir/save-models`）  
+8. 模型运行与推理参数（`model-run-mode/load-fe-mode/model-summary-json/models-load-dir/models-load-run-tag/*-model-path/enable-next-bar-inference/inference-top-k`）  
+生效模块：`strategy7/config.py`、`pipeline/runner.py`、`models/loading.py`。
+
+9. 输出参数（`output-dir/save-models`）  
 生效模块：`config.resolve_output_dir`、`pipeline/runner.py` 产物落盘。
 
-9. 日志参数（`log-level/quiet/verbose`）  
+10. 日志参数（`log-level/quiet/verbose`）  
 生效模块：`run_strategy7.py` 入口日志控制（运行时行为参数，不进入 RunConfig）。
 
 ## 4. run_factor_mining 参数生效映射（分组）
@@ -139,3 +142,65 @@
 
 4. 验证执行方案枚举校验（应在 CLI 直接报错）：  
 `python Strategy7/run_factor_mining.py --list-factors --execution-scheme bad_scheme`
+
+## 7. 2026-04-22~2026-04-23 主流程模型加载回测与快速推理参数闭环
+
+新增参数（`strategy7/config.py`）：
+
+1. `--model-run-mode train|load`
+2. `--load-fe-mode strict|refit|off`
+3. `--model-summary-json`
+4. `--models-load-dir`
+5. `--models-load-run-tag`
+6. `--stock-model-path --timing-model-path --portfolio-model-path --execution-model-path`
+7. `--enable-next-bar-inference`
+8. `--inference-top-k`
+
+生效链路：
+
+1. CLI -> `build_run_config` -> `RunConfig.model_run`
+2. `pipeline/runner.py` 在步骤 9 根据 `model_run.mode` 分支：
+   - `train`：保持原逻辑（训练后回测）
+   - `load`：调用 `models/loading.py` 解析并加载四类模型
+3. `pipeline/runner.py` 在步骤 8.5 根据 `load_fe_mode` 分支：
+   - `strict`：按 `summary` 中 `notes.feature_engineering_summary` 回放 FE（当前不支持 PCA 回放）
+   - `refit`：按当前样本重拟合 FE（默认）
+   - `off`：跳过 FE（即使 `enable_factor_engineering=true`）
+4. `models/loading.py` 负责：
+   - 从 `summary_*.json` / 模型目录 / 显式路径解析模型文件
+   - 加载内置四类模型（含 tree/factor_gcl/dafat + timing/portfolio/execution）
+   - `peek_stock_model_factor_cols` 在 `custom_stock_model_py` 场景优先走插件探测，不再错误按内置 `pickle` 反序列化
+5. `pipeline/runner.py` 在回测后按 `enable_next_bar_inference` 生成：
+   - `next_bar_candidates_*.csv`
+   - `next_bar_summary_*.json`
+
+审计结论：
+
+1. 新增参数已完成“可配置即可生效”闭环接入。
+2. 默认参数不变时，仍保持原有 `train` 模式行为。
+3. `load` 模式下若因子列与模型文件不一致，会显式报错阻断（避免静默错误回测）。
+4. `timing=none / portfolio=equal_weight / execution=ideal_fill` 时，对应 `--*-model-path` 将被忽略，不再触发“路径不存在”误报。
+5. `load + custom_stock_model` 已修复 JSON/非 pickle 产物误按 `pickle.load` 解析导致的潜在崩溃问题。
+
+## 8. 2026-04-23 模板覆盖与回归闭环（scripts/v2）
+
+新增目录：`Strategy7/scripts/v2/`，目标是“覆盖完整功能链路 + 可复用配置模板”。
+
+模板范围：
+
+1. `run_strategy7_v2_01..11.ps1`：覆盖 train/load、FE 三模式、custom 四模型、FactorGCL、DAFAT、list-factors、factor-value-store。
+2. `run_factor_mining_v2_01..07.ps1`：覆盖 `fundamental_multiobj/minute_parametric/minute_parametric_plus/ml_ensemble_alpha/gplearn/custom/list-factors`。
+3. `run_smoke_suite_v2.ps1`：按“先 train 再 load”顺序串联执行模板，支持 `-SkipDeepModels/-SkipMining`。
+
+模板修复与规范化：
+
+1. 统一 `repoRoot` 到 `..\..\..`，避免路径定位到 `Strategy7/Strategy7`。
+2. 统一 `--factor-packages` 为单字符串参数（PowerShell 下避免逗号拆分）。
+3. 每个模板追加 `$LASTEXITCODE` 检查，非零退出立即抛错，避免假通过。
+4. `run_strategy7_v2_06_load_from_models_dir_off.ps1` 设计为强制显式传入 `-ModelsLoadDir`，确保 load 回测来源可追踪。
+
+2026-04-23 实跑结果（`env_quant`）：
+
+1. `run_strategy7_v2_01..11` 全部可跑通（`06` 需按设计传 `-ModelsLoadDir`）。
+2. `run_factor_mining_v2_01..07` 全部可跑通。
+3. 产物统一落盘到 `Strategy7/outputs/smoke_v2/...`，可直接复核 summary/metrics/模型文件/因子导出。

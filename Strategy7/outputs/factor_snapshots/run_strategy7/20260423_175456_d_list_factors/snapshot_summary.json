@@ -1,0 +1,58 @@
+{
+  "entrypoint": "run_strategy7",
+  "factor_freq": "D",
+  "run_tag": "list_factors",
+  "generated_at": "2026-04-23T17:54:56.989197+08:00",
+  "total_factor_count": 3436,
+  "used_factor_count": 397,
+  "group_counts": {
+    "fundamental": 1965,
+    "price_volume": 712,
+    "text": 759
+  },
+  "group_used_counts": {
+    "price_volume": 397
+  },
+  "package_counts": {
+    "bridge": 60,
+    "context": 88,
+    "crowding": 1,
+    "flow": 3,
+    "fund_cashflow": 195,
+    "fund_efficiency": 195,
+    "fund_expectation": 195,
+    "fund_growth": 195,
+    "fund_hf_fusion": 405,
+    "fund_leverage": 195,
+    "fund_profitability": 195,
+    "fund_quality": 195,
+    "fund_valuation": 195,
+    "intraday_micro": 17,
+    "liquidity": 94,
+    "multi_freq": 16,
+    "multiscale": 40,
+    "oscillator": 1,
+    "overnight": 2,
+    "price_action": 3,
+    "reversal": 96,
+    "structure": 88,
+    "text_attention": 153,
+    "text_event": 153,
+    "text_fusion": 153,
+    "text_sentiment": 141,
+    "text_topic": 159,
+    "trend": 115,
+    "volatility": 88
+  },
+  "package_used_counts": {
+    "crowding": 1,
+    "flow": 3,
+    "liquidity": 94,
+    "reversal": 96,
+    "trend": 115,
+    "volatility": 88
+  },
+  "mode": "list_factors",
+  "catalog_factor_count": 0,
+  "selected_factor_count": 397
+}

@@ -1,0 +1,2 @@
+﻿factor,freq,factor_group_label,factor_package,factor_packages,name_cn,meaning_cn,formula_cn,description,used_in_run,factor_group_key
+crowding_unwind_daily,D,Price-Volume / Non-Fundamental Packages,crowding,crowding,拥挤度·拥挤unwinddaily,拥挤度因子，刻画：拥挤 反转 结合 ret3,按定义计算：拥挤 反转 结合 ret3,crowding unwind with ret3,False,price_volume

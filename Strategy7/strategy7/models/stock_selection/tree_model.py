@@ -26,8 +26,10 @@ class TreeStockModel(StockSelectionModel):
     _is_classifier: bool = True
     _fill_values: pd.Series | None = None
     _target_col: str = "target_up"
+    _factor_cols: list[str] | None = None
 
     def fit(self, train_df: pd.DataFrame, factor_cols: list[str], target_col: str) -> "TreeStockModel":
+        self._factor_cols = list(factor_cols)
         x = train_df[factor_cols].replace([np.inf, -np.inf], np.nan)
         self._fill_values = x.median(numeric_only=True)
         x = x.fillna(self._fill_values)
@@ -93,6 +95,7 @@ class TreeStockModel(StockSelectionModel):
                     "fill_values": self._fill_values,
                     "is_classifier": self._is_classifier,
                     "target_col": self._target_col,
+                    "factor_cols": list(self._factor_cols or []),
                 },
                 f,
             )
@@ -104,7 +107,7 @@ class TreeStockModel(StockSelectionModel):
                 "max_depth": int(self.max_depth),
                 "min_samples_leaf": int(self.min_samples_leaf),
                 "random_state": int(self.random_state),
+                "factor_count": int(len(self._factor_cols or [])),
             },
         )
         return {"model_pkl": str(model_path), "meta_json": str(meta_path)}
-
