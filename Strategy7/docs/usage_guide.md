@@ -403,6 +403,7 @@ python Strategy7/run_strategy7.py `
 
 1. 主流程 `run_strategy7_v2_*.ps1` 共 `01~21`
 2. 挖掘入口 `run_factor_mining_v2_*.ps1` 共 `01~14`
+3. Linux 对应脚本：主流程 `run_strategy7_v2_*.sh` 共 `01~21`，挖掘入口 `run_factor_mining_v2_*.sh` 共 `01~14`，并含 `run_smoke_suite_v2.sh`
 
 完整模板索引与每个模板覆盖点详见：`Strategy7/scripts/v2/README.md`。
 
@@ -457,9 +458,29 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2
 powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2.ps1 -IncludeExtended -SkipMining
 ```
 
+```bash
+# 单模板运行（示例）
+bash Strategy7/scripts/v2/run_strategy7_v2_02_train_tree_fe_dynamic.sh
+
+# load+models_dir 模板需要显式传模型目录（示例）
+bash Strategy7/scripts/v2/run_strategy7_v2_06_load_from_models_dir_off.sh \
+  --models-load-dir /workspace/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_01_train_tree/models \
+  --models-load-run-tag 510c1cd320
+
+# 核心 smoke 套件
+bash Strategy7/scripts/v2/run_smoke_suite_v2.sh
+
+# 核心 + 扩展模板全覆盖
+bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended
+
+# 按需跳过深度模型/挖掘
+bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-deep-models
+bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
+```
+
 补充：
 
-1. `run_strategy7_v2_20/21` 是研究型全市场模板，默认不纳入 `run_smoke_suite_v2.ps1` 执行列表（执行耗时通常显著高于 smoke 模板）。
+1. `run_strategy7_v2_20/21` 是研究型全市场模板，默认不纳入 `run_smoke_suite_v2.ps1/.sh` 执行列表（执行耗时通常显著高于 smoke 模板）。
 
 ### 5.11 全市场“低位启动10日”趋势选股策略（推荐链路）
 
@@ -495,7 +516,8 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2
 
 1. train：`Strategy7/scripts/v2/run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1`
 2. load：`Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1`（需传 `-ModelSummaryJson`）
-3. 两个模板均支持可选参数：`-DataRoot`（默认 `auto`）、`-IndexRoot`（默认空=主入口默认）、`-TrainStart/-TrainEnd/-TestStart/-TestEnd`（可改成短窗口调试）、`-MaxFiles`（小样本调试）
+3. Linux 等价脚本：同名 `.sh`（参数改为 GNU 风格长参数，如 `--model-summary-json`）
+4. 两个模板均支持可选参数：`-DataRoot`（默认 `auto`）、`-IndexRoot`（默认空=主入口默认）、`-TrainStart/-TrainEnd/-TestStart/-TestEnd`（可改成短窗口调试）、`-MaxFiles`（小样本调试）
 
 示例：
 
@@ -512,6 +534,21 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_strategy7_v2_2
   -TrainStart 2024-01-01 -TrainEnd 2024-06-30 `
   -TestStart 2024-07-01 -TestEnd 2024-09-30 `
   -MaxFiles 200
+```
+
+```bash
+# 训练并保存模型
+bash Strategy7/scripts/v2/run_strategy7_v2_20_train_allmarket_bottom_launch_10d.sh \
+  --train-start 2024-01-01 --train-end 2024-06-30 \
+  --test-start 2024-07-01 --test-end 2024-09-30 \
+  --max-files 200
+
+# 基于已训练 summary 直接 load 回测/推理
+bash Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.sh \
+  --model-summary-json /workspace/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_20_train_allmarket_bottom_launch_10d/summary_xxx.json \
+  --train-start 2024-01-01 --train-end 2024-06-30 \
+  --test-start 2024-07-01 --test-end 2024-09-30 \
+  --max-files 200
 ```
 
 ## 6. 常用参数说明（主流程）

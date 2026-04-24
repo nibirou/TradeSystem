@@ -1,6 +1,17 @@
 ﻿# Strategy7 Templates V2
 
-本目录提供覆盖 Strategy7 主要功能链路的新版脚本模板（`env_quant`），并可由 `run_smoke_suite_v2.ps1` 统一回归。
+本目录提供覆盖 Strategy7 主要功能链路的新版脚本模板（`env_quant`），并可由 `run_smoke_suite_v2.ps1` / `run_smoke_suite_v2.sh` 统一回归。
+
+## 0) 平台版本
+
+- 每个 v2 模板均提供同名双版本：`*.ps1`（Windows PowerShell）与 `*.sh`（Linux Ubuntu Bash）。
+- 推荐约定：
+  - Windows：`powershell -ExecutionPolicy Bypass -File ...ps1`
+  - Linux：`bash ...sh`
+- Linux 首次使用可先执行：`chmod +x Strategy7/scripts/v2/*.sh`
+- Linux 默认路径通过 `QUANT_ROOT` 推断（默认取 `repo_root/..`）；可显式设置：
+  - `export QUANT_ROOT=/workspace/Quant`
+  - `export CONDA_ENV=env_quant`
 
 ## 1) 主入口模板（run_strategy7.py）
 
@@ -69,7 +80,7 @@
 
 ## 4) 一键回归
 
-- `run_smoke_suite_v2.ps1`：按“先 train 再 load”顺序逐条执行模板并输出通过/失败清单。
+- `run_smoke_suite_v2.ps1` / `run_smoke_suite_v2.sh`：按“先 train 再 load”顺序逐条执行模板并输出通过/失败清单。
 - 默认执行核心模板（`run_strategy7:01~11`、`run_factor_mining:01~07`）；如需覆盖新增模板，附加 `-IncludeExtended`。
 - `run_strategy7_v2_20/21` 是研究型全市场模板（执行时间通常较长），默认不加入 `run_smoke_suite_v2.ps1`。
 - 可按需提速：
@@ -92,6 +103,20 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2
 powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2.ps1 -IncludeExtended -SkipMining
 ```
 
+```bash
+# 核心模板回归
+bash Strategy7/scripts/v2/run_smoke_suite_v2.sh
+
+# 核心 + 扩展模板全覆盖回归
+bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended
+
+# 全覆盖但跳过深度模型
+bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-deep-models
+
+# 全覆盖但跳过挖掘入口
+bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
+```
+
 ## 5) 约定
 
 - 默认使用 `conda run -n env_quant --no-capture-output python`。
@@ -99,10 +124,17 @@ powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_smoke_suite_v2
 - 所有模板均可单独执行，`load` 模板通过参数接收上一步产出的 summary/models 路径。
 - `run_strategy7_v2_06_load_from_models_dir_off.ps1` 需要显式传入 `-ModelsLoadDir`（可选 `-ModelsLoadRunTag`），示例：
   - `powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_strategy7_v2_06_load_from_models_dir_off.ps1 -ModelsLoadDir D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_01_train_tree/models -ModelsLoadRunTag 510c1cd320`
+- `run_strategy7_v2_06_load_from_models_dir_off.sh` 参数等价为 `--models-load-dir`（可选 `--models-load-run-tag`），示例：
+  - `bash Strategy7/scripts/v2/run_strategy7_v2_06_load_from_models_dir_off.sh --models-load-dir /workspace/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_01_train_tree/models --models-load-run-tag 510c1cd320`
 - `run_strategy7_v2_17_load_explicit_paths_off.ps1` 需要显式传四类模型路径：
   - `-StockModelPath -TimingModelPath -PortfolioModelPath -ExecutionModelPath`
+- `run_strategy7_v2_17_load_explicit_paths_off.sh` 参数等价为：
+  - `--stock-model-path --timing-model-path --portfolio-model-path --execution-model-path`
 - `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1` / `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1` 支持：
   - `-DataRoot`（默认 `auto`，按主入口自动解析全市场数据目录）
   - `-IndexRoot`（默认空，留空则走主入口默认）
   - `-TrainStart/-TrainEnd/-TestStart/-TestEnd`（默认长期研究窗口，可按需改成短窗口调试）
   - `-MaxFiles`（可选小样本调试）
+- `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.sh` / `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.sh` 参数等价为：
+  - `--data-root --index-root --train-start --train-end --test-start --test-end --max-files`
+  - `run_strategy7_v2_21` 额外需要 `--model-summary-json`
