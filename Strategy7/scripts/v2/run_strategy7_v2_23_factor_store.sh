@@ -136,3 +136,23 @@ if [[ "${max_files}" != "0" ]]; then
 fi
 
 conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python "${args[@]}"
+
+# #!/usr/bin/env bash
+# # bash /workspace/Quant/TradeSystem/Strategy7/scripts/run_strategy7_12_dafat_daily.sh
+# set -euo pipefail
+
+# cd /workspace/Quant/TradeSystem
+
+# python3 ./Strategy7/run_strategy7.py \
+#   --train-start 2020-01-01 \
+#   --train-end 2024-12-31 \
+#   --test-start 2025-01-01 \
+#   --test-end 2025-12-31 \
+#   --universe all \
+#   --data-root auto \
+#   --disable-catalog-factors \
+#   --factor-freq D \
+#   --enable-factor-value-store true \
+#   --factor-value-store-build-all true \
+#   --factor-value-store-build-only true \
+#   --factor-packages bottom_launch,trend,reversal,liquidity,volatility,price_action,crowding,oscillator,overnight,multi_freq,context,fund_quality,fund_cashflow

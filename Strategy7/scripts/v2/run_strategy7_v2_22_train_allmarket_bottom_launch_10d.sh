@@ -146,3 +146,47 @@ if [[ "${max_files}" != "0" ]]; then
 fi
 
 conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python "${args[@]}"
+
+# #!/usr/bin/env bash
+# # bash /workspace/Quant/TradeSystem/Strategy7/scripts/run_strategy7_12_dafat_daily.sh
+# set -euo pipefail
+
+# cd /workspace/Quant/TradeSystem
+
+# python3 ./Strategy7/run_strategy7.py \
+#   --universe all \
+#   --data-root auto \
+#   --disable-catalog-factors \
+#   --train-start 2023-01-01 \
+#   --train-end 2024-12-31 \
+#   --test-start 2025-01-01 \
+#   --test-end 2025-12-31 \
+#   --factor-freq D \
+#   --factor-packages bottom_launch,trend,reversal,liquidity,volatility,price_action,crowding,oscillator,overnight,multi_freq,context,fund_quality,fund_cashflow \
+#   --label-task return \
+#   --enable-factor-value-store true \
+#   --factor-value-store-root auto \
+#   --factor-value-store-format csv \
+#   --enable-factor-engineering true \
+#   --fe-corr-threshold 0.90 \
+#   --fe-preselect-top-n 300 \
+#   --fe-min-factors 40 \
+#   --stock-model-type launch_boost \
+#   --launch-boost-max-depth 5 \
+#   --launch-boost-learning-rate 0.01 \
+#   --launch-boost-max-iter 2000 \
+#   --launch-boost-l2 1.5 \
+#   --launch-boost-return-head-weight 0.40 \
+#   --timing-model-type none \
+#   --portfolio-model-type equal_weight \
+#   --execution-model-type ideal_fill \
+#   --model-run-mode train \
+#   --enable-next-bar-inference true \
+#   --inference-top-k 20 \
+#   --horizon 10 \
+#   --top-k 10 \
+#   --long-threshold 0.60 \
+#   --execution-scheme daily_close_daily_close \
+#   --fee-bps 2.0 \
+#   --slippage-bps 2.0 \
+#   --save-models true \
