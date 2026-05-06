@@ -87,6 +87,95 @@ def _safe_trade_dates_from_panel(panel: pd.DataFrame, factor_freq: str) -> pd.Da
     return pd.DatetimeIndex([])
 
 
+def _profile_market_frame(
+    frame: pd.DataFrame,
+    *,
+    time_col: str,
+    required_cols: List[str],
+) -> Dict[str, object]:
+    missing_required = [c for c in required_cols if c not in frame.columns]
+    out: Dict[str, object] = {
+        "rows": int(len(frame)),
+        "column_count": int(len(frame.columns)),
+        "missing_required_cols": missing_required,
+    }
+    if frame.empty:
+        out["code_count"] = 0
+        out["time_min"] = ""
+        out["time_max"] = ""
+        out["all_na_required_numeric"] = []
+        return out
+
+    if "code" in frame.columns:
+        code_s = frame["code"].astype(str).str.strip()
+        non_empty_code = code_s[code_s.ne("")]
+        out["code_count"] = int(non_empty_code.nunique())
+        out["sample_codes"] = non_empty_code.drop_duplicates().head(12).tolist()
+    else:
+        out["code_count"] = 0
+        out["sample_codes"] = []
+
+    if time_col in frame.columns:
+        ts = pd.to_datetime(frame[time_col], errors="coerce")
+        valid_ts = ts.dropna()
+        out["valid_time_count"] = int(len(valid_ts))
+        if valid_ts.empty:
+            out["time_min"] = ""
+            out["time_max"] = ""
+        else:
+            out["time_min"] = str(valid_ts.min())
+            out["time_max"] = str(valid_ts.max())
+    else:
+        out["valid_time_count"] = 0
+        out["time_min"] = ""
+        out["time_max"] = ""
+
+    numeric_req = [c for c in required_cols if c in frame.columns and c not in {"date", "datetime", "code", "time"}]
+    na_ratio: Dict[str, float] = {}
+    all_na: List[str] = []
+    for c in numeric_req:
+        s = pd.to_numeric(frame[c], errors="coerce")
+        ratio = float(s.isna().mean()) if len(s) else 1.0
+        na_ratio[str(c)] = ratio
+        if ratio >= 0.999999:
+            all_na.append(str(c))
+    out["required_numeric_na_ratio"] = na_ratio
+    out["all_na_required_numeric"] = all_na
+    return out
+
+
+def _build_market_data_health_report(market_bundle, *, factor_freq: str) -> Dict[str, object]:
+    daily_required = ["date", "code", "open", "high", "low", "close", "volume", "amount"]
+    minute_required = ["date", "datetime", "code", "open", "high", "low", "close", "volume", "amount"]
+    daily_profile = _profile_market_frame(
+        market_bundle.daily,
+        time_col="date",
+        required_cols=daily_required,
+    )
+    minute_profile = _profile_market_frame(
+        market_bundle.minute5,
+        time_col="datetime",
+        required_cols=minute_required,
+    )
+    return {
+        "factor_freq": str(factor_freq),
+        "load_window": {
+            "start_date": str(pd.to_datetime(market_bundle.start_date).date()),
+            "end_date": str(pd.to_datetime(market_bundle.end_date).date()),
+        },
+        "summary": {
+            "daily_rows": int(len(market_bundle.daily)),
+            "minute_rows": int(len(market_bundle.minute5)),
+            "codes": int(len(market_bundle.codes)),
+            "daily_code_count": int(daily_profile.get("code_count", 0)),
+            "minute_code_count": int(minute_profile.get("code_count", 0)),
+        },
+        "daily": daily_profile,
+        "minute5": minute_profile,
+        "source_notes": dict(market_bundle.source_notes),
+    }
+
+
 def _safe_read_json_dict(path: Path) -> Dict[str, object]:
     try:
         raw = path.read_text(encoding="utf-8")
@@ -771,6 +860,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     output_dir = ensure_dir(cfg.output_dir)
     log_progress(f"输出目录已就绪：{output_dir}", module="pipeline")
     model_dir: Path | None = None
+    market_data_health: Dict[str, object] = {}
+    market_data_health_path: Path | None = None
     if cfg.save_models:
         model_dir = ensure_dir(output_dir / "models")
         log_progress(f"模型输出目录已就绪：{model_dir}", module="pipeline")
@@ -785,6 +876,10 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         factor_freq=factor_freq,
     )
     market_bundle = loader.load()
+    market_data_health = _build_market_data_health_report(market_bundle, factor_freq=factor_freq)
+    market_data_health_path = output_dir / "market_data_health.json"
+    dump_json(market_data_health_path, market_data_health)
+    log_progress(f"市场数据健康报告已写出：{market_data_health_path}", module="pipeline")
     log_progress(
         f"市场数据加载完成：daily_rows={len(market_bundle.daily)}, minute_rows={len(market_bundle.minute5)}, "
         f"codes={len(market_bundle.codes)}。",
@@ -1451,6 +1546,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         model_ic_series_df=model_ic_series_df,
         factor_meta_df=factor_lib.metadata(freq=factor_freq),
     )
+    if market_data_health_path is not None:
+        files["market_data_health_json"] = market_data_health_path
     log_progress("核心 CSV 产物已写出。", module="pipeline")
 
     plot_main_path = output_dir / f"backtest_curve_main_{run_tag}.png"
@@ -1556,6 +1653,9 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "ic_group_count_used": int(len(model_ic_series_df)),
             "next_bar_inference_enabled": bool(getattr(cfg.model_run, "enable_next_bar_inference", False)),
             "next_bar_inference_summary_path": str(next_bar_summary_path) if next_bar_summary_path else "",
+            "market_data_health_path": str(market_data_health_path) if market_data_health_path else "",
+            "market_data_health_summary": dict(market_data_health.get("summary", {})),
+            "market_source_notes": dict(market_bundle.source_notes),
         },
     }
     summary_path = output_dir / f"summary_{run_tag}.json"

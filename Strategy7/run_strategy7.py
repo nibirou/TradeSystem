@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import faulthandler
 import json
+import sys
 
 from strategy7.config import build_run_config, parse_args
 from strategy7.core.utils import log_progress, set_log_level
@@ -10,6 +12,11 @@ from strategy7.pipeline.runner import run_pipeline
 
 
 def main() -> None:
+    try:
+        if not faulthandler.is_enabled():
+            faulthandler.enable(file=sys.stderr, all_threads=True)
+    except Exception:
+        pass
     # 第一步：解析并标准化日志级别（quiet/normal/verbose）。
     args = parse_args()
     effective_log_level = set_log_level(
@@ -82,4 +89,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

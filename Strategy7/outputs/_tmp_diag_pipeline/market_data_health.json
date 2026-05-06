@@ -1,0 +1,98 @@
+{
+  "factor_freq": "D",
+  "load_window": {
+    "start_date": "2023-07-25",
+    "end_date": "2024-03-17"
+  },
+  "summary": {
+    "daily_rows": 780,
+    "minute_rows": 37440,
+    "codes": 5,
+    "daily_code_count": 5,
+    "minute_code_count": 5
+  },
+  "daily": {
+    "rows": 780,
+    "column_count": 11,
+    "missing_required_cols": [],
+    "code_count": 5,
+    "sample_codes": [
+      "sh.600000",
+      "sh.600009",
+      "sh.600010",
+      "sh.600011",
+      "sh.600015"
+    ],
+    "valid_time_count": 780,
+    "time_min": "2023-07-25 00:00:00",
+    "time_max": "2024-03-15 00:00:00",
+    "required_numeric_na_ratio": {
+      "open": 0.0,
+      "high": 0.0,
+      "low": 0.0,
+      "close": 0.0,
+      "volume": 0.0,
+      "amount": 0.0
+    },
+    "all_na_required_numeric": []
+  },
+  "minute5": {
+    "rows": 37440,
+    "column_count": 10,
+    "missing_required_cols": [],
+    "code_count": 5,
+    "sample_codes": [
+      "sh.600000",
+      "sh.600009",
+      "sh.600010",
+      "sh.600011",
+      "sh.600015"
+    ],
+    "valid_time_count": 37440,
+    "time_min": "2023-07-25 09:35:00",
+    "time_max": "2024-03-15 15:00:00",
+    "required_numeric_na_ratio": {
+      "open": 0.0,
+      "high": 0.0,
+      "low": 0.0,
+      "close": 0.0,
+      "volume": 0.0,
+      "amount": 0.0
+    },
+    "all_na_required_numeric": []
+  },
+  "source_notes": {
+    "data_root": "D:\\PythonProject\\Quant\\data_baostock\\stock_hist\\hs300",
+    "universe": "hs300",
+    "stock_list_path": "D:\\PythonProject\\Quant\\data_baostock\\metadata\\stock_list_hs300.csv",
+    "main_board_only": "False",
+    "file_format": "csv",
+    "market_data_root": "D:\\PythonProject\\Quant\\data_baostock\\stock_hist\\hs300",
+    "market_start_date": "2023-07-25",
+    "market_end_date": "2024-03-17",
+    "market_file_format": "csv",
+    "market_candidate_symbol_count": "311",
+    "market_filtered_symbol_count": "300",
+    "market_loaded_symbol_count": "5",
+    "market_skipped_symbol_count": "0",
+    "market_broken_symbol_count": "0",
+    "market_missing_daily_file_count": "0",
+    "market_missing_minute_file_count": "0",
+    "market_empty_daily_count": "0",
+    "market_empty_minute_count": "0",
+    "market_empty_after_tradestatus_filter_count": "0",
+    "market_empty_after_minute_clean_count": "0",
+    "market_read_error_count": "0",
+    "market_sample_missing_daily_symbols": "",
+    "market_sample_missing_minute_symbols": "",
+    "market_sample_empty_daily_symbols": "",
+    "market_sample_empty_minute_symbols": "",
+    "market_sample_read_errors": "",
+    "market_daily_rows": "780",
+    "market_minute_rows": "37440",
+    "market_daily_code_count": "5",
+    "market_minute_code_count": "5",
+    "fundamental_enabled": "false",
+    "text_enabled": "false"
+  }
+}

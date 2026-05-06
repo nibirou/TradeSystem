@@ -488,6 +488,46 @@ def _load_bsq_category_file(
     return out.drop_duplicates(["date", "code"], keep="last").reset_index(drop=True)
 
 
+def _limited_append(samples: List[str], value: object, *, limit: int = 12) -> None:
+    if len(samples) < max(int(limit), 1):
+        samples.append(str(value))
+
+
+def _format_market_load_diagnostics(diag: Dict[str, object]) -> str:
+    parts: List[str] = []
+    simple_keys = [
+        "candidate_symbol_count",
+        "filtered_symbol_count",
+        "loaded_symbol_count",
+        "skipped_symbol_count",
+        "broken_symbol_count",
+        "missing_daily_file_count",
+        "missing_minute_file_count",
+        "empty_daily_count",
+        "empty_minute_count",
+        "empty_after_tradestatus_filter_count",
+        "empty_after_minute_clean_count",
+        "read_error_count",
+    ]
+    for k in simple_keys:
+        if k in diag:
+            parts.append(f"{k}={diag[k]}")
+    sample_keys = [
+        "sample_missing_daily_symbols",
+        "sample_missing_minute_symbols",
+        "sample_empty_daily_symbols",
+        "sample_empty_minute_symbols",
+        "sample_read_errors",
+    ]
+    for k in sample_keys:
+        vals = diag.get(k, [])
+        if isinstance(vals, list) and vals:
+            parts.append(f"{k}={vals}")
+    if not parts:
+        return "diagnostics unavailable"
+    return "; ".join(parts)
+
+
 def _merge_fundamental_asof(daily_df: pd.DataFrame, fundamental_events: pd.DataFrame) -> pd.DataFrame:
     if daily_df.empty or fundamental_events.empty:
         return daily_df.copy()
@@ -521,8 +561,9 @@ def _merge_fundamental_asof(daily_df: pd.DataFrame, fundamental_events: pd.DataF
         lg = lgrp.sort_values("date").copy()
         rg = right_map.get(str(code))
         if rg is None or rg.empty:
-            for c in value_cols:
-                lg[c] = np.nan
+            if value_cols:
+                na_block = pd.DataFrame(np.nan, index=lg.index, columns=value_cols)
+                lg = pd.concat([lg, na_block], axis=1)
             parts.append(lg)
             continue
         merged = pd.merge_asof(
@@ -535,7 +576,26 @@ def _merge_fundamental_asof(daily_df: pd.DataFrame, fundamental_events: pd.DataF
         merged["code"] = str(code)
         parts.append(merged)
 
-    out = pd.concat(parts, ignore_index=True).sort_values("__ord").drop(columns=["__ord"]).reset_index(drop=True)
+    if not parts:
+        return left.sort_values("__ord").drop(columns=["__ord"]).reset_index(drop=True)
+    base_cols = [c for c in left.columns if c != "code"] + ["code"] + [c for c in value_cols if c not in left.columns]
+    normalized_parts: List[pd.DataFrame] = []
+    for p in parts:
+        if p.empty:
+            continue
+        missing_cols = [c for c in base_cols if c not in p.columns]
+        if missing_cols:
+            p = pd.concat([p, pd.DataFrame(np.nan, index=p.index, columns=missing_cols)], axis=1)
+        normalized_parts.append(p[base_cols])
+    if not normalized_parts:
+        return left.sort_values("__ord").drop(columns=["__ord"]).reset_index(drop=True)
+
+    out = (
+        pd.concat(normalized_parts, ignore_index=True)
+        .sort_values("__ord")
+        .drop(columns=["__ord"])
+        .reset_index(drop=True)
+    )
     return out
 
 
@@ -624,7 +684,7 @@ class MarketUniverseDataLoader(MarketDataLoader):
         max_files: Optional[int] = None,
         stock_list_path: Optional[Path] = None,
         main_board_only: bool = False,
-    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, object]]:
         daily_dir = data_root / "d"
         minute_dir = data_root / "5"
         if not daily_dir.exists() or not minute_dir.exists():
@@ -673,11 +733,29 @@ class MarketUniverseDataLoader(MarketDataLoader):
         loaded = 0
         skipped = 0
         broken = 0
+        missing_daily = 0
+        missing_minute = 0
+        empty_daily = 0
+        empty_minute = 0
+        empty_after_tradestatus = 0
+        empty_after_minute_clean = 0
+        read_errors = 0
+        sample_missing_daily: List[str] = []
+        sample_missing_minute: List[str] = []
+        sample_empty_daily: List[str] = []
+        sample_empty_minute: List[str] = []
+        sample_read_errors: List[str] = []
         for idx, key in enumerate(keys, start=1):
             if target_loaded is not None and loaded >= target_loaded:
                 break
             daily_path = pick_existing_file(daily_dir, key, "d", file_format=file_format)
             minute_path = pick_existing_file(minute_dir, key, "5", file_format=file_format)
+            if daily_path is None:
+                missing_daily += 1
+                _limited_append(sample_missing_daily, key)
+            if minute_path is None:
+                missing_minute += 1
+                _limited_append(sample_missing_minute, key)
             if daily_path is None or minute_path is None:
                 skipped += 1
                 continue
@@ -685,10 +763,19 @@ class MarketUniverseDataLoader(MarketDataLoader):
             try:
                 ddf = read_data_file(daily_path, daily_cols, start_date, end_date)
                 mdf = read_data_file(minute_path, minute_cols, start_date, end_date)
-            except Exception:
+            except Exception as exc:
                 broken += 1
+                read_errors += 1
+                _limited_append(sample_read_errors, f"{key}::{type(exc).__name__}: {exc}")
                 continue
-            if ddf.empty or mdf.empty:
+            if ddf.empty:
+                empty_daily += 1
+                _limited_append(sample_empty_daily, key)
+                skipped += 1
+                continue
+            if mdf.empty:
+                empty_minute += 1
+                _limited_append(sample_empty_minute, key)
                 skipped += 1
                 continue
 
@@ -703,6 +790,11 @@ class MarketUniverseDataLoader(MarketDataLoader):
 
             if "tradestatus" in ddf.columns:
                 ddf = ddf[ddf["tradestatus"].fillna(1) == 1].copy()
+            if ddf.empty:
+                empty_after_tradestatus += 1
+                _limited_append(sample_empty_daily, f"{key}::tradestatus_filter")
+                skipped += 1
+                continue
 
             if "time" in mdf.columns:
                 tstr = mdf["time"].astype("Int64").astype(str).str.zfill(17).str.slice(0, 14)
@@ -712,6 +804,11 @@ class MarketUniverseDataLoader(MarketDataLoader):
                 mdf["datetime"] = pd.to_datetime(mdf["date"], errors="coerce")
             mdf["date"] = pd.to_datetime(mdf["date"], errors="coerce").dt.normalize()
             mdf = mdf.dropna(subset=["date", "datetime", "code"]).copy()
+            if mdf.empty:
+                empty_after_minute_clean += 1
+                _limited_append(sample_empty_minute, f"{key}::minute_datetime_clean")
+                skipped += 1
+                continue
 
             daily_frames.append(ddf)
             minute_frames.append(mdf)
@@ -725,10 +822,33 @@ class MarketUniverseDataLoader(MarketDataLoader):
                     level="debug",
                 )
 
+        diagnostics: Dict[str, object] = {
+            "data_root": str(data_root),
+            "start_date": str(start_date.date()),
+            "end_date": str(end_date.date()),
+            "file_format": str(file_format),
+            "candidate_symbol_count": int(len(keys_all)),
+            "filtered_symbol_count": int(len(keys)),
+            "loaded_symbol_count": int(loaded),
+            "skipped_symbol_count": int(skipped),
+            "broken_symbol_count": int(broken),
+            "missing_daily_file_count": int(missing_daily),
+            "missing_minute_file_count": int(missing_minute),
+            "empty_daily_count": int(empty_daily),
+            "empty_minute_count": int(empty_minute),
+            "empty_after_tradestatus_filter_count": int(empty_after_tradestatus),
+            "empty_after_minute_clean_count": int(empty_after_minute_clean),
+            "read_error_count": int(read_errors),
+            "sample_missing_daily_symbols": sample_missing_daily,
+            "sample_missing_minute_symbols": sample_missing_minute,
+            "sample_empty_daily_symbols": sample_empty_daily,
+            "sample_empty_minute_symbols": sample_empty_minute,
+            "sample_read_errors": sample_read_errors,
+        }
         if not daily_frames:
-            raise RuntimeError("no daily market data loaded.")
+            raise RuntimeError("no daily market data loaded. " + _format_market_load_diagnostics(diagnostics))
         if not minute_frames:
-            raise RuntimeError("no minute market data loaded.")
+            raise RuntimeError("no minute market data loaded. " + _format_market_load_diagnostics(diagnostics))
         log_progress(
             f"market file loading done: loaded={loaded}, skipped={skipped}, broken={broken}, "
             f"daily_parts={len(daily_frames)}, minute_parts={len(minute_frames)}",
@@ -739,7 +859,11 @@ class MarketUniverseDataLoader(MarketDataLoader):
         minute_df = pd.concat(minute_frames, ignore_index=True).sort_values(["code", "datetime"]).reset_index(drop=True)
         daily_df = daily_df.drop_duplicates(["code", "date"], keep="last").reset_index(drop=True)
         minute_df = minute_df.drop_duplicates(["code", "datetime"], keep="last").reset_index(drop=True)
-        return daily_df, minute_df
+        diagnostics["daily_rows"] = int(len(daily_df))
+        diagnostics["minute_rows"] = int(len(minute_df))
+        diagnostics["daily_code_count"] = int(daily_df["code"].astype(str).nunique()) if "code" in daily_df.columns else 0
+        diagnostics["minute_code_count"] = int(minute_df["code"].astype(str).nunique()) if "code" in minute_df.columns else 0
+        return daily_df, minute_df, diagnostics
 
     def _load_fundamental_events(
         self,
@@ -1064,7 +1188,7 @@ class MarketUniverseDataLoader(MarketDataLoader):
             f"lookback_days={self.lookback_days}, horizon={self.horizon}, factor_freq={self.factor_freq}",
             module="loader",
         )
-        daily_df, minute_df = self._load_market_frames(
+        daily_df, minute_df, market_diag = self._load_market_frames(
             data_root=Path(self.data_cfg.data_root),
             start_date=load_start,
             end_date=load_end,
@@ -1091,6 +1215,11 @@ class MarketUniverseDataLoader(MarketDataLoader):
             "main_board_only": str(self.data_cfg.main_board_only),
             "file_format": self.data_cfg.file_format,
         }
+        for k, v in market_diag.items():
+            if isinstance(v, list):
+                notes[f"market_{k}"] = "|".join([str(x) for x in v[:12]])
+            else:
+                notes[f"market_{k}"] = str(v)
         notes.update({k: str(v) for k, v in fund_notes.items()})
         notes.update({k: str(v) for k, v in text_notes.items()})
         log_progress(

@@ -38,6 +38,8 @@
 | `run_strategy7_v2_19_list_factors_30min_json_export.ps1` | 30min 因子清单 JSON 导出 | `--list-factors` + `factor_freq=30min` + JSON export |
 | `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1` | 全市场低位启动10日训练回测 | `factor_freq=D`、`horizon=10`、`stock_model_type=launch_boost`、`factor_packages` 含 `bottom_launch` |
 | `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1` | 全市场低位启动10日 load 回测 | `model_run_mode=load`、`model_summary_json`、`launch_boost`、next-bar |
+| `run_strategy7_v2_22_train_allmarket_bottom_launch_10d.sh` | 全市场低位启动10日（Linux 可参数化训练模板） | Linux 参数化脚本、`--diagnose-lite`、`PYTHONFAULTHANDLER` |
+| `run_strategy7_v2_23_factor_store.sh` | 全市场因子值仓库构建（Linux 可参数化模板） | `factor_value_store_build_all/build_only`、`chunk_size`、`--diagnose-lite` |
 
 ## 2) 挖掘入口模板（run_factor_mining.py）
 
@@ -73,6 +75,7 @@
 | 数据裁剪实验（price-only / 主板） | `run_strategy7_v2_14_train_price_only_mainboard.ps1`、`run_factor_mining_v2_11_price_only_mainboard_all.ps1` |
 | 自定义因子插件接入 | `run_strategy7_v2_15_train_custom_factor_plugin.ps1`、`run_factor_mining_v2_14_list_factors_with_custom_plugin.ps1` |
 | 因子值仓库路径（build-only / hydrate） | `run_strategy7_v2_11_factor_value_store_build_only.ps1`、`run_strategy7_v2_16_train_factor_value_store_hydrate.ps1` |
+| Linux 全市场训练/缓存构建（可定位崩溃） | `run_strategy7_v2_22_train_allmarket_bottom_launch_10d.sh`、`run_strategy7_v2_23_factor_store.sh` |
 | 因子清单导出（json/markdown） | `run_strategy7_v2_10_list_factors_export.ps1`、`run_strategy7_v2_19_list_factors_30min_json_export.ps1`、`run_factor_mining_v2_07_list_factors_export.ps1`、`run_factor_mining_v2_12_list_factors_markdown_export.ps1` |
 | 挖掘框架覆盖（fundamental/minute/ml/gp/custom） | `run_factor_mining_v2_01..06` |
 | 挖掘参数扩展（custom spec / 30min / 关闭默认素材） | `run_factor_mining_v2_09_custom_spec_json_smoke.ps1`、`run_factor_mining_v2_10_minute_parametric_30min_smoke.ps1`、`run_factor_mining_v2_13_disable_default_materials_with_factor_list.ps1` |
@@ -138,3 +141,21 @@ bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
 - `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.sh` / `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.sh` 参数等价为：
   - `--data-root --index-root --train-start --train-end --test-start --test-end --max-files`
   - `run_strategy7_v2_21` 额外需要 `--model-summary-json`
+- `run_strategy7_v2_22_train_allmarket_bottom_launch_10d.sh` 新增调试参数：
+  - `--file-format --fundamental-file-format --text-file-format --log-level`
+  - `--diagnose-lite`（自动切 `csv + verbose + max-files=200`，用于崩溃定位）
+- `run_strategy7_v2_23_factor_store.sh` 新增调试参数：
+  - `--factor-value-store-format --factor-value-store-chunk-size --log-level`
+  - `--diagnose-lite`（自动切 `csv + chunk_size=8 + max-files=200`，用于崩溃定位）
+
+## 6) 崩溃定位建议（Linux）
+
+- 一步诊断训练链路：
+  - `bash Strategy7/scripts/v2/run_strategy7_v2_22_train_allmarket_bottom_launch_10d.sh --diagnose-lite`
+- 一步诊断值仓库构建链路：
+  - `bash Strategy7/scripts/v2/run_strategy7_v2_23_factor_store.sh --diagnose-lite`
+- 正常全量构建时，建议先保守分块：
+  - `bash Strategy7/scripts/v2/run_strategy7_v2_23_factor_store.sh --factor-value-store-chunk-size 8 --log-level verbose`
+- 两个脚本均默认导出：
+  - `PYTHONFAULTHANDLER=1`（出现 segfault 时输出 Python 线程栈）
+  - `PYTHONUNBUFFERED=1`（日志实时刷新）

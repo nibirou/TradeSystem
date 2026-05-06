@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import gc
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
@@ -10,7 +11,7 @@ import numpy as np
 import pandas as pd
 
 from ..core.constants import INTRADAY_FREQS
-from ..core.utils import ensure_dir
+from ..core.utils import ensure_dir, log_progress
 from .base import FactorLibrary, compute_factor_panel
 from .reporting import factor_group_key, normalize_factor_package_alias
 
@@ -495,6 +496,7 @@ def build_factor_store_for_full_list(
     if not all_factors:
         return {
             "full_build_factor_count": 0,
+            "chunk_count": 0,
             "chunk_size": int(chunk_size),
             "saved_factor_count": 0,
             "saved_code_files": 0,
@@ -503,27 +505,57 @@ def build_factor_store_for_full_list(
     n = max(int(chunk_size), 1)
     total_saved_files = 0
     span_path = ""
+    total_chunks = int((len(all_factors) + n - 1) // n)
+    log_progress(
+        f"factor store full build start: freq={freq}, factors={len(all_factors)}, chunk_size={n}, chunks={total_chunks}",
+        module="factor_store",
+    )
     for i in range(0, len(all_factors), n):
         chunk = [str(x) for x in all_factors[i : i + n]]
-        chunk_panel = compute_factor_panel(
-            base_df=base_df,
-            library=library,
-            freq=freq,
-            selected_factors=chunk,
+        chunk_idx = int(i // n + 1)
+        log_progress(
+            f"factor store chunk {chunk_idx}/{total_chunks}: size={len(chunk)}, range={i + 1}-{i + len(chunk)}",
+            module="factor_store",
+            level="debug",
         )
-        save_stats = save_factors_to_store(
-            panel_df=chunk_panel,
-            factors=chunk,
-            factor_freq=freq,
-            store_root=store_root,
-            file_format=file_format,
-            factor_package_map=factor_package_map,
-        )
+        try:
+            chunk_panel = compute_factor_panel(
+                base_df=base_df,
+                library=library,
+                freq=freq,
+                selected_factors=chunk,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"factor store build failed while computing chunk {chunk_idx}/{total_chunks} "
+                f"(size={len(chunk)}, first_factors={chunk[:5]}): {exc}"
+            ) from exc
+        try:
+            save_stats = save_factors_to_store(
+                panel_df=chunk_panel,
+                factors=chunk,
+                factor_freq=freq,
+                store_root=store_root,
+                file_format=file_format,
+                factor_package_map=factor_package_map,
+            )
+        except Exception as exc:
+            raise RuntimeError(
+                f"factor store build failed while saving chunk {chunk_idx}/{total_chunks} "
+                f"(size={len(chunk)}, first_factors={chunk[:5]}): {exc}"
+            ) from exc
         total_saved_files += int(save_stats.get("saved_code_files", 0))
         span_path = str(save_stats.get("span_summary_path", span_path))
+        del chunk_panel
+        gc.collect()
+    log_progress(
+        f"factor store full build done: factors={len(all_factors)}, saved_code_files={total_saved_files}",
+        module="factor_store",
+    )
 
     return {
         "full_build_factor_count": int(len(all_factors)),
+        "chunk_count": int(total_chunks),
         "chunk_size": int(n),
         "saved_factor_count": int(len(all_factors)),
         "saved_code_files": int(total_saved_files),

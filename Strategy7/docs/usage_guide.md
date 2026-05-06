@@ -403,7 +403,7 @@ python Strategy7/run_strategy7.py `
 
 1. 主流程 `run_strategy7_v2_*.ps1` 共 `01~21`
 2. 挖掘入口 `run_factor_mining_v2_*.ps1` 共 `01~14`
-3. Linux 对应脚本：主流程 `run_strategy7_v2_*.sh` 共 `01~21`，挖掘入口 `run_factor_mining_v2_*.sh` 共 `01~14`，并含 `run_smoke_suite_v2.sh`
+3. Linux 对应脚本：主流程 `run_strategy7_v2_*.sh` 共 `01~23`（其中 `22/23` 为全市场自定义诊断模板），挖掘入口 `run_factor_mining_v2_*.sh` 共 `01~14`，并含 `run_smoke_suite_v2.sh`
 
 完整模板索引与每个模板覆盖点详见：`Strategy7/scripts/v2/README.md`。
 
@@ -435,6 +435,7 @@ python Strategy7/run_strategy7.py `
 9. 挖掘参数扩展（custom spec、禁默认素材+指定因子）：`run_factor_mining_v2_09` / `13`
 10. 因子清单导出（json/markdown）：`run_strategy7_v2_10` / `19` / `run_factor_mining_v2_07` / `12`
 11. 全市场低位启动10日策略：`run_strategy7_v2_20` / `run_strategy7_v2_21`
+12. Linux 全市场崩溃定位与仓库构建：`run_strategy7_v2_22` / `run_strategy7_v2_23`
 
 建议执行方式（`env_quant`）：
 
@@ -518,6 +519,9 @@ bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
 2. load：`Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1`（需传 `-ModelSummaryJson`）
 3. Linux 等价脚本：同名 `.sh`（参数改为 GNU 风格长参数，如 `--model-summary-json`）
 4. 两个模板均支持可选参数：`-DataRoot`（默认 `auto`）、`-IndexRoot`（默认空=主入口默认）、`-TrainStart/-TrainEnd/-TestStart/-TestEnd`（可改成短窗口调试）、`-MaxFiles`（小样本调试）
+5. Linux 扩展模板：
+   - `run_strategy7_v2_22_train_allmarket_bottom_launch_10d.sh`：支持 `--diagnose-lite`（自动切 `csv + verbose + max-files=200`）
+   - `run_strategy7_v2_23_factor_store.sh`：支持 `--factor-value-store-chunk-size` 与 `--diagnose-lite`（自动切 `chunk_size=8`）
 
 示例：
 
@@ -789,6 +793,7 @@ python Strategy7/run_strategy7.py `
 9. `models/`（可选）：四类模型的持久化文件
 10. `next_bar_candidates_*.csv`（可选）：最新信号时点快速推理候选结果
 11. `next_bar_summary_*.json`（可选）：最新信号时点推理摘要
+12. `market_data_health.json`：市场数据健康诊断（行数、时间跨度、缺失必需列、关键列全空检查、加载器 source notes）
 
 ## 8. 标签任务与评估兼容性
 
@@ -1084,6 +1089,12 @@ python Strategy7/run_strategy7.py `
    检查 `--enable-next-bar-inference true`，并确认最新信号时点存在可用样本（`code/time/factor` 不为空）。
 8. `model_run_mode=load` 且 `enable_factor_engineering=true` 的 FE 行为不符合预期
    显式设置 `--load-fe-mode`：`strict`（按 summary 回放）、`refit`（当前样本重拟合）、`off`（跳过 FE）。若用 `strict`，必须传 `--model-summary-json` 且源实验 FE 非 PCA。
+9. Linux 运行出现 `Segmentation fault`
+   优先用 `run_strategy7_v2_22` 或 `run_strategy7_v2_23` 的 `--diagnose-lite` 重跑，先缩样本并切到 `csv` 路径定位是否为 parquet/native 引擎问题；脚本已默认开启 `PYTHONFAULTHANDLER=1`。
+10. 日志出现 `DataFrame is highly fragmented` / `DataFrame concat FutureWarning`
+   当前版本已修复基础实现（避免逐列 `insert` 和空块拼接 dtype 警告）；若历史环境仍出现，请确认服务器代码已同步到最新。
+11. 想知道到底是哪类数据导致“加载后为空/跳过很多”
+   查看每次运行输出目录中的 `market_data_health.json` 与 `summary_*.json -> notes.market_source_notes`，其中包含 missing/empty/read_error 的计数和样本键值，能直接定位到数据层问题。
 
 ## 13. 性能与复现实务建议
 
