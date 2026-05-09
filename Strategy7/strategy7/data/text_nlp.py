@@ -9,6 +9,7 @@ This module focuses on:
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 import re
 from typing import Dict, Iterable, List, Optional, Sequence
@@ -199,6 +200,56 @@ def _normalize_code(code_or_key: object, *, dotted: bool = True) -> str:
     return f"{ex}.{code}" if dotted else f"{ex}_{code}"
 
 
+def _resolve_text_csv_engine() -> str:
+    """Choose a stable CSV parser engine for text datasets.
+
+    Notes:
+    - We default to python engine for robustness on noisy/corrupted large text CSVs.
+    - Users can override by setting STRATEGY7_TEXT_CSV_ENGINE=c (or python).
+    """
+    raw = str(os.getenv("STRATEGY7_TEXT_CSV_ENGINE", "python")).strip().lower()
+    if raw in {"c", "python"}:
+        return raw
+    return "python"
+
+
+def _read_text_csv_file(path: Path) -> pd.DataFrame:
+    engine = _resolve_text_csv_engine()
+    # Prefer parser robustness for cross-source text data.
+    if engine == "python":
+        try:
+            return pd.read_csv(
+                path,
+                engine="python",
+                on_bad_lines="skip",
+                encoding_errors="replace",
+            )
+        except (TypeError, ValueError):
+            # Compatibility with older pandas (<1.3) that doesn't have on_bad_lines.
+            return pd.read_csv(
+                path,
+                engine="python",
+                error_bad_lines=False,  # type: ignore[arg-type]
+                encoding_errors="replace",
+            )
+    # c engine path is optional override for speed; if it fails, fallback to python parser.
+    try:
+        return pd.read_csv(
+            path,
+            low_memory=False,
+            engine="c",
+            encoding_errors="replace",
+        )
+    except Exception:
+        return pd.read_csv(
+            path,
+            low_memory=False,
+            engine="python",
+            on_bad_lines="skip",
+            encoding_errors="replace",
+        )
+
+
 def _read_table_file(path: Path, file_format: str = "auto") -> pd.DataFrame:
     fmt = str(file_format).strip().lower()
     ext = path.suffix.lower()
@@ -209,9 +260,9 @@ def _read_table_file(path: Path, file_format: str = "auto") -> pd.DataFrame:
         except Exception:
             csv_path = path.with_suffix(".csv")
             if csv_path.exists():
-                return pd.read_csv(csv_path, low_memory=False)
+                return _read_text_csv_file(csv_path)
             raise
-    return pd.read_csv(path, low_memory=False)
+    return _read_text_csv_file(path)
 
 
 def _pick_stem_file(folder: Path, stem: str, file_format: str = "auto") -> Optional[Path]:

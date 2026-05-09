@@ -1091,6 +1091,7 @@ python Strategy7/run_strategy7.py `
    显式设置 `--load-fe-mode`：`strict`（按 summary 回放）、`refit`（当前样本重拟合）、`off`（跳过 FE）。若用 `strict`，必须传 `--model-summary-json` 且源实验 FE 非 PCA。
 9. Linux 运行出现 `Segmentation fault`
    优先用 `run_strategy7_v2_22` 或 `run_strategy7_v2_23` 的 `--diagnose-lite` 重跑，先缩样本并切到 `csv` 路径定位是否为 parquet/native 引擎问题；脚本已默认开启 `PYTHONFAULTHANDLER=1`。
+   若崩溃栈在 `pandas/io/parsers/c_parser_wrapper.py`，可显式强制文本读取走更稳解析器：`export STRATEGY7_TEXT_CSV_ENGINE=python`（当前版本默认即 python）。
 10. 日志出现 `DataFrame is highly fragmented` / `DataFrame concat FutureWarning`
    当前版本已修复基础实现（避免逐列 `insert` 和空块拼接 dtype 警告）；若历史环境仍出现，请确认服务器代码已同步到最新。
 11. 想知道到底是哪类数据导致“加载后为空/跳过很多”

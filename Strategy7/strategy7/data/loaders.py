@@ -551,48 +551,54 @@ def _merge_fundamental_asof(daily_df: pd.DataFrame, fundamental_events: pd.DataF
         return daily_df.copy()
 
     value_cols = [c for c in right.columns if c not in {"date", "code"}]
+    if not value_cols:
+        return left.sort_values("__ord").drop(columns=["__ord"]).reset_index(drop=True)
+
+    value_dtype_map: Dict[str, object] = {c: right[c].dtype for c in value_cols}
+    out = left.copy()
+    init_cols: Dict[str, pd.Series] = {}
+    for c in value_cols:
+        dt = value_dtype_map.get(c, np.dtype("float64"))
+        if pd.api.types.is_datetime64_any_dtype(dt):
+            init_cols[c] = pd.Series(pd.NaT, index=out.index, dtype=dt)
+        elif pd.api.types.is_bool_dtype(dt):
+            # bool dtype cannot hold NaN directly; use nullable boolean.
+            init_cols[c] = pd.Series(pd.NA, index=out.index, dtype="boolean")
+        elif pd.api.types.is_integer_dtype(dt):
+            # integer dtype cannot hold NaN directly; use float64 for robust backfill.
+            init_cols[c] = pd.Series(np.nan, index=out.index, dtype="float64")
+        else:
+            init_cols[c] = pd.Series(np.nan, index=out.index, dtype=dt)
+    out = pd.concat([out, pd.DataFrame(init_cols, index=out.index)], axis=1)
+
     right_map: Dict[str, pd.DataFrame] = {
         str(code): grp.sort_values("date").reset_index(drop=True)
         for code, grp in right.groupby("code", sort=False)
     }
-
-    parts: List[pd.DataFrame] = []
-    for code, lgrp in left.groupby("code", sort=False):
-        lg = lgrp.sort_values("date").copy()
+    left_code_index_map: Dict[str, np.ndarray] = {
+        str(code): idx
+        for code, idx in left.groupby("code", sort=False).indices.items()
+    }
+    for code, row_idx in left_code_index_map.items():
         rg = right_map.get(str(code))
         if rg is None or rg.empty:
-            if value_cols:
-                na_block = pd.DataFrame(np.nan, index=lg.index, columns=value_cols)
-                lg = pd.concat([lg, na_block], axis=1)
-            parts.append(lg)
             continue
+        lg_dates = out.loc[row_idx, ["date"]].copy().sort_values("date")
         merged = pd.merge_asof(
-            left=lg,
+            left=lg_dates,
             right=rg.drop(columns=["code"], errors="ignore"),
             on="date",
             direction="backward",
             allow_exact_matches=True,
         )
-        merged["code"] = str(code)
-        parts.append(merged)
-
-    if not parts:
-        return left.sort_values("__ord").drop(columns=["__ord"]).reset_index(drop=True)
-    base_cols = [c for c in left.columns if c != "code"] + ["code"] + [c for c in value_cols if c not in left.columns]
-    normalized_parts: List[pd.DataFrame] = []
-    for p in parts:
-        if p.empty:
-            continue
-        missing_cols = [c for c in base_cols if c not in p.columns]
-        if missing_cols:
-            p = pd.concat([p, pd.DataFrame(np.nan, index=p.index, columns=missing_cols)], axis=1)
-        normalized_parts.append(p[base_cols])
-    if not normalized_parts:
-        return left.sort_values("__ord").drop(columns=["__ord"]).reset_index(drop=True)
+        aligned = merged.set_index(lg_dates.index)
+        for c in value_cols:
+            if c not in aligned.columns:
+                continue
+            out.loc[aligned.index, c] = aligned[c].values
 
     out = (
-        pd.concat(normalized_parts, ignore_index=True)
-        .sort_values("__ord")
+        out.sort_values("__ord")
         .drop(columns=["__ord"])
         .reset_index(drop=True)
     )

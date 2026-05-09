@@ -159,3 +159,4 @@ bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
 - 两个脚本均默认导出：
   - `PYTHONFAULTHANDLER=1`（出现 segfault 时输出 Python 线程栈）
   - `PYTHONUNBUFFERED=1`（日志实时刷新）
+  - 文本 CSV 读取可通过环境变量指定：`STRATEGY7_TEXT_CSV_ENGINE=python|c`（默认 `python`，更稳）
