@@ -142,17 +142,22 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python "${args[@]}"
 # set -euo pipefail
 
 # cd /workspace/Quant/TradeSystem
+# --factor-packages "bottom_launch,trend,reversal,liquidity,volatility,price_action,crowding,oscillator,overnight,multi_freq,context,fund_quality,fund_cashflow" \
 
-# python3 ./Strategy7/run_strategy7.py \
-#   --train-start 2020-01-01 \
-#   --train-end 2024-12-31 \
-#   --test-start 2025-01-01 \
-#   --test-end 2025-12-31 \
-#   --universe all \
-#   --data-root auto \
-#   --disable-catalog-factors \
-#   --factor-freq D \
-#   --enable-factor-value-store true \
-#   --factor-value-store-build-all true \
-#   --factor-value-store-build-only true \
-#   --factor-packages bottom_launch,trend,reversal,liquidity,volatility,price_action,crowding,oscillator,overnight,multi_freq,context,fund_quality,fund_cashflow
+python3 ./Strategy7/run_strategy7.py \
+  --train-start 2024-01-01 \
+  --train-end 2024-12-31 \
+  --test-start 2025-01-01 \
+  --test-end 2025-12-31 \
+  --universe all \
+  --data-root auto \
+  --disable-catalog-factors \
+  --factor-freq D \
+  --disable-text-data \
+  --enable-factor-value-store true \
+  --factor-value-store-build-all true \
+  --factor-value-store-build-only true \
+  --factor-packages "trend" \
+  --max-files 5000 \
+  --main-board-only \
+  --factor-value-store-chunk-size 16
