@@ -8,6 +8,7 @@ Goals:
 
 from __future__ import annotations
 
+import re
 from typing import Dict, List, Sequence
 
 import numpy as np
@@ -227,6 +228,25 @@ BRIDGE_MULTISCALE_FACTORS: List[str] = [
     "hf_fast_slow_liquidity_diff",
     "hf_fast_slow_noise_diff",
 ]
+
+PRIMARY_BRIDGE_SOURCE_MAP: Dict[str, str] = {
+    "15min": "5min",
+    "30min": "15min",
+    "60min": "30min",
+    "120min": "60min",
+    "D": "120min",
+    "W": "D",
+    "M": "W",
+}
+
+MULTISCALE_BRIDGE_SOURCE_MAP: Dict[str, tuple[str, str]] = {
+    "30min": ("5min", "15min"),
+    "60min": ("5min", "30min"),
+    "120min": ("15min", "60min"),
+    "D": ("5min", "120min"),
+    "W": ("30min", "D"),
+    "M": ("D", "W"),
+}
 
 DAILY_FLOW_FACTORS: List[str] = [
     "ret_vol_corr_20",
@@ -986,6 +1006,59 @@ def _bridge_sources_for_target(target_freq: str) -> List[str]:
     return mapping.get(str(target_freq), [])
 
 
+def bridge_source_freqs_for_target(target_freq: str) -> List[str]:
+    """Public helper: list canonical bridge source freqs for target freq."""
+    return list(_bridge_sources_for_target(str(target_freq)))
+
+
+def infer_required_bridge_source_freqs(target_freq: str, factor_names: Sequence[str]) -> List[str]:
+    """Infer which source frequencies are required by selected factor names.
+
+    The inference is conservative and only decides whether bridge source views
+    are needed. It does not alter factor formulas.
+    """
+    target = str(target_freq).strip()
+    names = [str(x).strip() for x in factor_names if str(x).strip()]
+    if not names:
+        return []
+
+    target_l = target.lower()
+    name_set = set(names)
+    out: set[str] = set()
+
+    primary_src = PRIMARY_BRIDGE_SOURCE_MAP.get(target)
+    if primary_src and any(n in name_set for n in BRIDGE_PRIMARY_FACTORS):
+        out.add(primary_src)
+
+    fast_slow = MULTISCALE_BRIDGE_SOURCE_MAP.get(target)
+    if fast_slow and any(n in name_set for n in BRIDGE_MULTISCALE_FACTORS):
+        out.update([fast_slow[0], fast_slow[1]])
+
+    if target == "D" and any(n in name_set for n in DAILY_MULTI_FREQ_EXTRA_FACTORS):
+        out.update(["5min", "120min"])
+
+    bridge_re = re.compile(r"^bridge_([a-z0-9]+(?:min)?)_")
+    ms_re = re.compile(r"^ms_([a-z0-9]+(?:min)?)_vs_([a-z0-9]+(?:min)?)_")
+    hf_re = re.compile(r"hf_([a-z0-9]+(?:min)?)_to_([a-z0-9]+(?:min)?)_")
+    for raw_name in names:
+        name = raw_name.lower()
+        m = bridge_re.match(name)
+        if m:
+            out.add(m.group(1))
+
+        m = ms_re.match(name)
+        if m:
+            out.update([m.group(1), m.group(2)])
+
+        for hm in hf_re.finditer(name):
+            src, tgt = hm.group(1), hm.group(2)
+            if tgt == target_l:
+                out.add(src)
+
+    finer = set(_bridge_sources_for_target(target))
+    return [f for f in ["5min", "15min", "30min", "60min", "120min", "D", "W"] if f in out and f in finer]
+
+
 def _bridge_factor_names(target_freq: str) -> List[str]:
     names: List[str] = []
     for s in _bridge_sources_for_target(target_freq):
@@ -1717,27 +1790,10 @@ def register_default_factors(library: FactorLibrary) -> None:
     for freq in ["W", "M"]:
         register_period_signature_factors(library, freq=freq)
 
-    primary_source_map: Dict[str, str] = {
-        "15min": "5min",
-        "30min": "15min",
-        "60min": "30min",
-        "120min": "60min",
-        "D": "120min",
-        "W": "D",
-        "M": "W",
-    }
-    for target, source in primary_source_map.items():
+    for target, source in PRIMARY_BRIDGE_SOURCE_MAP.items():
         register_primary_bridge_factors(library, target_freq=target, source_freq=source)
 
-    multiscale_map: Dict[str, tuple[str, str]] = {
-        "30min": ("5min", "15min"),
-        "60min": ("5min", "30min"),
-        "120min": ("15min", "60min"),
-        "D": ("5min", "120min"),
-        "W": ("30min", "D"),
-        "M": ("D", "W"),
-    }
-    for target, (fast_source, slow_source) in multiscale_map.items():
+    for target, (fast_source, slow_source) in MULTISCALE_BRIDGE_SOURCE_MAP.items():
         register_multiscale_bridge_factors(library, target_freq=target, fast_source=fast_source, slow_source=slow_source)
 
     for freq in ["5min", "15min", "30min", "60min", "120min", "D", "W", "M"]:

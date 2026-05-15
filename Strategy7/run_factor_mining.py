@@ -35,7 +35,9 @@ from strategy7.factors.base import (
     resolve_selected_factors,
 )
 from strategy7.factors.defaults import (
+    bridge_source_freqs_for_target,
     build_factor_package_index,
+    infer_required_bridge_source_freqs,
     list_default_factor_packages,
     register_default_factors,
     resolve_primary_factor_package,
@@ -179,6 +181,33 @@ def _resolve_default_materials_by_package(freq: str, package_expr: str) -> List[
     if not selected:
         return []
     return resolve_default_factor_set(freq=freq, package_expr=",".join(selected))
+
+
+def _estimate_bridge_source_freqs_for_mining(
+    *,
+    factor_freq: str,
+    factor_packages: str,
+    factor_list_arg: str,
+    include_default_materials: bool,
+    has_custom_factor_module: bool,
+) -> List[str]:
+    target = str(factor_freq)
+    target_bridge_sources = bridge_source_freqs_for_target(target)
+    if not target_bridge_sources:
+        return []
+
+    if str(factor_list_arg).strip():
+        candidates = [x.strip() for x in str(factor_list_arg).split(",") if x.strip()]
+    elif include_default_materials:
+        candidates = _resolve_default_materials_by_package(freq=target, package_expr=str(factor_packages))
+    else:
+        candidates = []
+
+    inferred = set(infer_required_bridge_source_freqs(target, candidates))
+    if has_custom_factor_module:
+        # Custom mining factor plugins may use any bridge source.
+        inferred.update(target_bridge_sources)
+    return [f for f in target_bridge_sources if f in inferred]
 
 
 def _attach_factor_package_columns(meta_df: pd.DataFrame, freq: str) -> pd.DataFrame:
@@ -1090,7 +1119,27 @@ def main() -> None:
         f"codes={len(market_bundle.codes)}。",
         module="run_factor_mining",
     )
-    feat_bundle = build_feature_bundle(market_bundle)
+    bridge_source_freqs = _estimate_bridge_source_freqs_for_mining(
+        factor_freq=factor_freq,
+        factor_packages=str(args.factor_packages),
+        factor_list_arg=str(args.factor_list),
+        include_default_materials=not bool(args.disable_default_factor_materials),
+        has_custom_factor_module=bool(args.custom_factor_py),
+    )
+    log_progress(
+        f"按需频率构建判定：target={factor_freq}, bridge_sources={bridge_source_freqs or []}。",
+        module="run_factor_mining",
+    )
+    feat_bundle = build_feature_bundle(
+        market_bundle,
+        factor_freq=factor_freq,
+        bridge_source_freqs=bridge_source_freqs,
+        enable_bridge=bool(bridge_source_freqs),
+        keep_all_views=False,
+    )
+    # Raw minute/daily frames are no longer needed after feature views are built.
+    market_bundle.daily = pd.DataFrame()
+    market_bundle.minute5 = pd.DataFrame()
     log_progress(
         f"特征构建完成，可用频率={sorted(feat_bundle.by_freq.keys())}。",
         module="run_factor_mining",

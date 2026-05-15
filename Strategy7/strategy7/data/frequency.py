@@ -23,7 +23,8 @@ def resample_intraday(minute_df: pd.DataFrame, freq: str) -> pd.DataFrame:
     if freq not in INTRADAY_FREQS:
         raise ValueError(f"unsupported intraday freq: {freq}")
     if freq == "5min":
-        out = minute_df.copy()
+        keep_cols = [c for c in ["datetime", "date", "code", "open", "high", "low", "close", "volume", "amount"] if c in minute_df.columns]
+        out = minute_df[keep_cols].copy()
         out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce")
         out["date"] = out["datetime"].dt.normalize()
         return out.sort_values(["code", "datetime"]).reset_index(drop=True)
@@ -36,7 +37,8 @@ def resample_intraday(minute_df: pd.DataFrame, freq: str) -> pd.DataFrame:
     }
     rule = rule_map[freq]
 
-    m = minute_df.copy()
+    keep_cols = [c for c in ["datetime", "date", "code", "open", "high", "low", "close", "volume", "amount"] if c in minute_df.columns]
+    m = minute_df[keep_cols].copy()
     m["datetime"] = pd.to_datetime(m["datetime"], errors="coerce")
     m = m.dropna(subset=["code", "datetime"]).sort_values(["code", "datetime"])
     for c in ["open", "high", "low", "close", "volume", "amount"]:
@@ -276,25 +278,32 @@ def add_multifreq_bridge_features(
     views: Dict[str, pd.DataFrame],
     bridge_base_cols: Sequence[str] | None = None,
     bridge_aggs: Sequence[str] | None = None,
+    target_freqs: Sequence[str] | None = None,
+    source_freqs: Sequence[str] | None = None,
 ) -> Dict[str, pd.DataFrame]:
     """Attach finer-frequency aggregated features onto coarser target-frequency views."""
-    out: Dict[str, pd.DataFrame] = {k: v.copy() for k, v in views.items()}
-    frozen_sources: Dict[str, pd.DataFrame] = {k: v.copy() for k, v in views.items()}
+    out: Dict[str, pd.DataFrame] = dict(views)
+    frozen_sources: Dict[str, pd.DataFrame] = dict(views)
     base_cols = list(bridge_base_cols) if bridge_base_cols is not None else list(MULTIFREQ_BRIDGE_BASE_COLS)
     aggs = list(bridge_aggs) if bridge_aggs is not None else list(MULTIFREQ_BRIDGE_AGGS)
+    targets = [str(t) for t in target_freqs] if target_freqs is not None else list(FREQ_ORDER)
+    source_allow = {str(s) for s in source_freqs} if source_freqs is not None else None
 
-    for target in FREQ_ORDER:
+    for target in targets:
         if target not in out:
             continue
         tdf = out[target]
         if tdf is None or tdf.empty:
             continue
+        tdf = tdf.copy()
 
         target_keys = ["code", "datetime"] if target in INTRADAY_FREQS else ["code", "date"]
         if not all(k in tdf.columns for k in target_keys):
             continue
 
         for source in finer_source_freqs(target, frozen_sources.keys()):
+            if source_allow is not None and source not in source_allow:
+                continue
             sdf = frozen_sources.get(source)
             if sdf is None or sdf.empty:
                 continue
@@ -334,16 +343,35 @@ def add_multifreq_bridge_features(
     return out
 
 
-def build_frequency_views(daily_df: pd.DataFrame, minute5_df: pd.DataFrame) -> Dict[str, pd.DataFrame]:
-    views: Dict[str, pd.DataFrame] = {"D": daily_df}
-    if minute5_df is not None and not minute5_df.empty:
-        for f in ["5min", "15min", "30min", "60min", "120min"]:
-            views[f] = resample_intraday(minute5_df, f)
+def build_frequency_views(
+    daily_df: pd.DataFrame,
+    minute5_df: pd.DataFrame,
+    required_freqs: Sequence[str] | None = None,
+) -> Dict[str, pd.DataFrame]:
+    if required_freqs is None:
+        wanted = {"5min", "15min", "30min", "60min", "120min", "D", "W", "M"}
     else:
-        for f in ["5min", "15min", "30min", "60min", "120min"]:
-            views[f] = pd.DataFrame()
-    views["W"] = resample_daily_to_period(daily_df, "W")
-    views["M"] = resample_daily_to_period(daily_df, "M")
+        wanted = {str(f) for f in required_freqs if str(f).strip()}
+
+    views: Dict[str, pd.DataFrame] = {}
+    if "D" in wanted:
+        views["D"] = daily_df
+
+    intraday_list = ["5min", "15min", "30min", "60min", "120min"]
+    if any(f in wanted for f in intraday_list):
+        if minute5_df is not None and not minute5_df.empty:
+            for f in intraday_list:
+                if f in wanted:
+                    views[f] = resample_intraday(minute5_df, f)
+        else:
+            for f in intraday_list:
+                if f in wanted:
+                    views[f] = pd.DataFrame()
+
+    if "W" in wanted:
+        views["W"] = resample_daily_to_period(daily_df, "W")
+    if "M" in wanted:
+        views["M"] = resample_daily_to_period(daily_df, "M")
     return views
 
 

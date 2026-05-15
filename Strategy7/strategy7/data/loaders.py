@@ -1566,7 +1566,14 @@ def _merge_daily_context_into_panel(panel: pd.DataFrame, daily_base: pd.DataFram
     return out
 
 
-def build_feature_bundle(bundle: MarketBundle) -> FeatureBundle:
+def build_feature_bundle(
+    bundle: MarketBundle,
+    *,
+    factor_freq: str = "D",
+    bridge_source_freqs: Sequence[str] | None = None,
+    enable_bridge: bool = True,
+    keep_all_views: bool = True,
+) -> FeatureBundle:
     """Generate daily and multi-frequency feature bases."""
     log_progress("开始聚合分钟级日特征。", module="loader")
     minute_daily_feat = build_minute_daily_features(bundle.minute5)
@@ -1576,22 +1583,56 @@ def build_feature_bundle(bundle: MarketBundle) -> FeatureBundle:
     log_progress(f"日频基础特征完成：rows={len(daily_base)}, cols={len(daily_base.columns)}。", module="loader")
 
     log_progress("开始构建多频视图。", module="loader")
-    views = build_frequency_views(daily_base, bundle.minute5)
-    # convert non-daily views to generic features if needed
-    for freq in ["5min", "15min", "30min", "60min", "120min"]:
-        if freq in views and not views[freq].empty:
-            v = add_generic_micro_structure_features(views[freq], time_col="datetime")
-            views[freq] = _merge_daily_context_into_panel(v, daily_base=daily_base, time_col="datetime")
-    if "W" in views and not views["W"].empty:
-        v = add_generic_micro_structure_features(views["W"], time_col="date")
-        views["W"] = _merge_daily_context_into_panel(v, daily_base=daily_base, time_col="date")
-    if "M" in views and not views["M"].empty:
-        v = add_generic_micro_structure_features(views["M"], time_col="date")
-        views["M"] = _merge_daily_context_into_panel(v, daily_base=daily_base, time_col="date")
+    target_freq = str(factor_freq)
+    all_freqs = ["5min", "15min", "30min", "60min", "120min", "D", "W", "M"]
 
-    # Add explicit finer->coarser bridge features, so factors on target frequency can
-    # directly consume transformed information from higher-frequency source views.
-    views = add_multifreq_bridge_features(views)
+    def _enrich_view(freq: str, df: pd.DataFrame) -> pd.DataFrame:
+        if df is None or df.empty:
+            return df
+        if freq in {"5min", "15min", "30min", "60min", "120min"}:
+            v = add_generic_micro_structure_features(df, time_col="datetime")
+            return _merge_daily_context_into_panel(v, daily_base=daily_base, time_col="datetime")
+        if freq in {"W", "M"}:
+            v = add_generic_micro_structure_features(df, time_col="date")
+            return _merge_daily_context_into_panel(v, daily_base=daily_base, time_col="date")
+        return df
+
+    # Backward-compatible full build (all frequencies + full bridge graph).
+    if bridge_source_freqs is None:
+        views = build_frequency_views(daily_base, bundle.minute5, required_freqs=all_freqs)
+        for freq in ["5min", "15min", "30min", "60min", "120min", "W", "M"]:
+            if freq in views and not views[freq].empty:
+                views[freq] = _enrich_view(freq, views[freq])
+        if enable_bridge:
+            views = add_multifreq_bridge_features(views)
+    else:
+        source_freqs = [str(f) for f in bridge_source_freqs if str(f).strip() and str(f) != target_freq]
+        views = build_frequency_views(daily_base, bundle.minute5, required_freqs=[target_freq])
+        if target_freq in views and not views[target_freq].empty:
+            views[target_freq] = _enrich_view(target_freq, views[target_freq])
+
+        # Memory-friendly incremental bridge merge:
+        # build one source view at a time and merge onto target, then release it.
+        if enable_bridge and source_freqs and target_freq in views and not views[target_freq].empty:
+            for src in source_freqs:
+                src_views = build_frequency_views(daily_base, bundle.minute5, required_freqs=[src])
+                src_df = src_views.get(src, pd.DataFrame())
+                if src_df.empty:
+                    continue
+                src_df = _enrich_view(src, src_df)
+                tmp = {
+                    target_freq: views[target_freq],
+                    src: src_df,
+                }
+                tmp = add_multifreq_bridge_features(
+                    tmp,
+                    target_freqs=[target_freq],
+                    source_freqs=[src],
+                )
+                views[target_freq] = tmp.get(target_freq, views[target_freq])
+
+    if not keep_all_views and target_freq in views:
+        views = {target_freq: views[target_freq]}
 
     price_cols = ["code", "date", "px_open5", "px_vwap30", "px_twap_last30", "px_daily_close"]
     price_table = daily_base[price_cols].copy()

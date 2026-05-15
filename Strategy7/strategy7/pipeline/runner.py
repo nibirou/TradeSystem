@@ -40,8 +40,10 @@ from ..factors.base import (
     resolve_selected_factors,
 )
 from ..factors.defaults import (
+    bridge_source_freqs_for_target,
     DEFAULT_FACTOR_PACKS_BY_FREQ,
     build_factor_package_index,
+    infer_required_bridge_source_freqs,
     list_default_factor_packages,
     register_default_factors,
     resolve_primary_factor_package,
@@ -237,6 +239,37 @@ def _resolve_default_factors_by_packages(freq: str, package_expr: str) -> List[s
     if not selected:
         return []
     return resolve_default_factor_set(freq=freq, package_expr=",".join(selected))
+
+
+def _estimate_bridge_source_freqs(
+    *,
+    factor_freq: str,
+    factor_packages: str,
+    factor_list_arg: str,
+    load_hint_factor_cols: List[str],
+    factor_store_build_all: bool,
+    has_custom_factor_module: bool,
+) -> List[str]:
+    target = str(factor_freq)
+    target_bridge_sources = bridge_source_freqs_for_target(target)
+    if not target_bridge_sources:
+        return []
+
+    candidates: List[str] = []
+    if bool(factor_store_build_all):
+        candidates = resolve_default_factor_set(freq=target, package_expr="all")
+    elif load_hint_factor_cols:
+        candidates = [str(x).strip() for x in load_hint_factor_cols if str(x).strip()]
+    elif str(factor_list_arg).strip():
+        candidates = [x.strip() for x in str(factor_list_arg).split(",") if x.strip()]
+    else:
+        candidates = _resolve_default_factors_by_packages(freq=target, package_expr=str(factor_packages))
+
+    inferred = set(infer_required_bridge_source_freqs(target, candidates))
+    if has_custom_factor_module:
+        # Custom factor plugins may depend on any bridge source.
+        inferred.update(target_bridge_sources)
+    return [f for f in target_bridge_sources if f in inferred]
 
 
 def _summarize_factor_categories(meta_df: pd.DataFrame) -> Dict[str, Dict[str, int]]:
@@ -885,8 +918,33 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         f"codes={len(market_bundle.codes)}。",
         module="pipeline",
     )
+    factor_store_build_all = bool(
+        bool(getattr(cfg.factors, "enable_factor_value_store", False))
+        and bool(getattr(cfg.factors, "factor_value_store_build_all", False))
+    )
+    bridge_source_freqs = _estimate_bridge_source_freqs(
+        factor_freq=factor_freq,
+        factor_packages=str(getattr(cfg.factors, "factor_packages", "")),
+        factor_list_arg=str(getattr(cfg.factors, "factor_list", "")),
+        load_hint_factor_cols=list(load_hint_factor_cols) if model_run_mode == "load" else [],
+        factor_store_build_all=factor_store_build_all,
+        has_custom_factor_module=bool(getattr(cfg.factors, "custom_factor_py", None)),
+    )
+    log_progress(
+        f"按需频率构建判定：target={factor_freq}, bridge_sources={bridge_source_freqs or []}。",
+        module="pipeline",
+    )
     log_progress("步骤 1/13：开始构建多频特征视图。", module="pipeline")
-    feat_bundle = build_feature_bundle(market_bundle)
+    feat_bundle = build_feature_bundle(
+        market_bundle,
+        factor_freq=factor_freq,
+        bridge_source_freqs=bridge_source_freqs,
+        enable_bridge=bool(bridge_source_freqs),
+        keep_all_views=False,
+    )
+    # Raw minute/daily frames are no longer needed after feature views are built.
+    market_bundle.daily = pd.DataFrame()
+    market_bundle.minute5 = pd.DataFrame()
     log_progress(
         f"特征构建完成，可用频率={sorted(feat_bundle.by_freq.keys())}。",
         module="pipeline",
