@@ -46,6 +46,19 @@ python Strategy7/run_strategy7.py --stock-model-type dafat --label-task return
 python Strategy7/run_factor_mining.py --framework fundamental_multiobj
 ```
 
+构建因子值缓存（按当前 `--factor-packages` / `--factor-list` 范围）：
+
+```bash
+python Strategy7/run_strategy7.py \
+  --factor-freq D \
+  --factor-packages trend \
+  --enable-factor-value-store true \
+  --factor-value-store-build-all true \
+  --factor-value-store-build-only true
+```
+
+不传 `--factor-packages` 和 `--factor-list` 时才会构建该频率默认全量清单；全量清单若包含跨频桥接因子，会按股票流式聚合分钟数据以降低内存峰值。
+
 列出挖掘可用因子（含 catalog/自定义）：
 
 ```bash

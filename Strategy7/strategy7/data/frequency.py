@@ -274,6 +274,49 @@ def _aggregate_source_to_target(
     return pd.DataFrame()
 
 
+def _merge_bridge_frame(
+    target_df: pd.DataFrame,
+    bridge_df: pd.DataFrame,
+    *,
+    target_freq: str,
+) -> pd.DataFrame:
+    """Merge a pre-aggregated bridge frame onto a target-frequency panel."""
+    if target_df.empty or bridge_df.empty:
+        return target_df
+    target_keys = ["code", "datetime"] if str(target_freq) in INTRADAY_FREQS else ["code", "date"]
+    if not all(k in target_df.columns for k in target_keys):
+        return target_df
+    if not all(k in bridge_df.columns for k in target_keys):
+        return target_df
+
+    tdf = target_df.copy()
+    bdf = bridge_df.copy()
+    for k in target_keys:
+        if k == "datetime":
+            tdf[k] = pd.to_datetime(tdf[k], errors="coerce")
+            bdf[k] = pd.to_datetime(bdf[k], errors="coerce")
+        elif k == "date":
+            tdf[k] = pd.to_datetime(tdf[k], errors="coerce").dt.normalize()
+            bdf[k] = pd.to_datetime(bdf[k], errors="coerce").dt.normalize()
+        elif k == "code":
+            tdf[k] = tdf[k].astype(str).str.strip()
+            bdf[k] = bdf[k].astype(str).str.strip()
+    add_cols = [c for c in bdf.columns if c not in target_keys and c != "date"]
+    if not add_cols:
+        return tdf
+    return tdf.merge(bdf[target_keys + add_cols], on=target_keys, how="left")
+
+
+def merge_preaggregated_bridge_features(
+    target_df: pd.DataFrame,
+    bridge_df: pd.DataFrame,
+    *,
+    target_freq: str,
+) -> pd.DataFrame:
+    """Public wrapper for memory-friendly bridge aggregation callers."""
+    return _merge_bridge_frame(target_df, bridge_df, target_freq=target_freq)
+
+
 def add_multifreq_bridge_features(
     views: Dict[str, pd.DataFrame],
     bridge_base_cols: Sequence[str] | None = None,
@@ -322,25 +365,118 @@ def add_multifreq_bridge_features(
             if bdf.empty:
                 continue
 
-            for k in target_keys:
-                if k in tdf.columns and k in bdf.columns:
-                    if k == "datetime":
-                        tdf[k] = pd.to_datetime(tdf[k], errors="coerce")
-                        bdf[k] = pd.to_datetime(bdf[k], errors="coerce")
-                    if k == "date":
-                        tdf[k] = pd.to_datetime(tdf[k], errors="coerce").dt.normalize()
-                        bdf[k] = pd.to_datetime(bdf[k], errors="coerce").dt.normalize()
-                    if k == "code":
-                        tdf[k] = tdf[k].astype(str).str.strip()
-                        bdf[k] = bdf[k].astype(str).str.strip()
-
-            add_cols = [c for c in bdf.columns if c not in target_keys and c != "date"]
-            if not add_cols:
-                continue
-            tdf = tdf.merge(bdf[target_keys + add_cols], on=target_keys, how="left")
+            tdf = _merge_bridge_frame(tdf, bdf, target_freq=target)
         out[target] = tdf
 
     return out
+
+
+def _intraday_source_bars_for_code(code_df: pd.DataFrame, source_freq: str) -> pd.DataFrame:
+    """Build one stock's source-frequency bars without materializing the full market view."""
+    keep_cols = [c for c in ["datetime", "date", "code", "open", "high", "low", "close", "volume", "amount"] if c in code_df.columns]
+    if not keep_cols or "datetime" not in keep_cols:
+        return pd.DataFrame(columns=["datetime", "date", "code", "open", "high", "low", "close", "volume", "amount"])
+
+    m = code_df[keep_cols].copy()
+    m["datetime"] = pd.to_datetime(m["datetime"], errors="coerce")
+    m["date"] = pd.to_datetime(m.get("date", m["datetime"]), errors="coerce").dt.normalize()
+    m["code"] = m["code"].astype(str).str.strip()
+    for c in ["open", "high", "low", "close", "volume", "amount"]:
+        if c in m.columns:
+            m[c] = pd.to_numeric(m[c], errors="coerce")
+    m = m.dropna(subset=["datetime", "date", "code", "open", "high", "low", "close"]).sort_values("datetime")
+    if m.empty:
+        return pd.DataFrame(columns=["datetime", "date", "code", "open", "high", "low", "close", "volume", "amount"])
+
+    if source_freq == "5min":
+        return m[["datetime", "date", "code", "open", "high", "low", "close", "volume", "amount"]].reset_index(drop=True)
+
+    rule = {
+        "15min": "15min",
+        "30min": "30min",
+        "60min": "60min",
+        "120min": "120min",
+    }.get(str(source_freq), "")
+    if not rule:
+        return pd.DataFrame(columns=["datetime", "date", "code", "open", "high", "low", "close", "volume", "amount"])
+
+    code_value = str(m["code"].iloc[0])
+    rs = (
+        m.set_index("datetime")
+        .resample(rule, label="right", closed="right")
+        .agg(
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+                "amount": "sum",
+            }
+        )
+    )
+    rs = rs.dropna(subset=["open", "high", "low", "close"], how="any")
+    if rs.empty:
+        return pd.DataFrame(columns=["datetime", "date", "code", "open", "high", "low", "close", "volume", "amount"])
+    rs = rs.reset_index()
+    rs["code"] = code_value
+    rs["date"] = rs["datetime"].dt.normalize()
+    return rs[["datetime", "date", "code", "open", "high", "low", "close", "volume", "amount"]].reset_index(drop=True)
+
+
+def aggregate_intraday_bridge_to_target(
+    minute5_df: pd.DataFrame,
+    *,
+    source_freq: str,
+    target_freq: str,
+    bridge_base_cols: Sequence[str] | None = None,
+    bridge_aggs: Sequence[str] | None = None,
+) -> pd.DataFrame:
+    """Aggregate intraday bridge features one stock at a time.
+
+    The legacy path first built a full-market source view (for example 5min
+    with rolling features) and then aggregated it to D/W/M. On all-market
+    windows this can require tens of GB. This helper keeps only one stock's
+    source-frequency bars in memory while producing the same `hf_*` columns.
+    """
+    source = str(source_freq)
+    target = str(target_freq)
+    if source not in INTRADAY_FREQS or target in INTRADAY_FREQS:
+        return pd.DataFrame()
+    if minute5_df is None or minute5_df.empty or "code" not in minute5_df.columns:
+        return pd.DataFrame()
+
+    base_cols = list(bridge_base_cols) if bridge_base_cols is not None else list(MULTIFREQ_BRIDGE_BASE_COLS)
+    aggs = list(bridge_aggs) if bridge_aggs is not None else list(MULTIFREQ_BRIDGE_AGGS)
+    pieces: List[pd.DataFrame] = []
+    for _, g in minute5_df.groupby("code", sort=False, observed=True):
+        src = _intraday_source_bars_for_code(g, source)
+        if src.empty:
+            continue
+        src = add_generic_micro_structure_features(src, time_col="datetime", add_static_context=False)
+        source_keys = ["code", "datetime", "date"]
+        bridge_cols = _bridge_candidate_cols(src, key_cols=source_keys, preferred=base_cols)
+        if not bridge_cols:
+            continue
+        bdf = _aggregate_source_to_target(
+            source_df=src,
+            source_freq=source,
+            target_freq=target,
+            value_cols=bridge_cols,
+            agg_list=aggs,
+        )
+        if not bdf.empty:
+            pieces.append(bdf)
+    if not pieces:
+        return pd.DataFrame()
+    out = pd.concat(pieces, ignore_index=True)
+    for c in out.columns:
+        if c in {"date", "datetime", "code"}:
+            continue
+        if pd.api.types.is_float_dtype(out[c]):
+            out[c] = pd.to_numeric(out[c], errors="coerce").astype("float32")
+    key_cols = ["code", "datetime"] if target in INTRADAY_FREQS else ["code", "date"]
+    return out.sort_values(key_cols).reset_index(drop=True)
 
 
 def build_frequency_views(
@@ -375,7 +511,12 @@ def build_frequency_views(
     return views
 
 
-def add_generic_micro_structure_features(df: pd.DataFrame, time_col: str) -> pd.DataFrame:
+def add_generic_micro_structure_features(
+    df: pd.DataFrame,
+    time_col: str,
+    *,
+    add_static_context: bool = True,
+) -> pd.DataFrame:
     """Compute generic rolling micro-structure features for intraday/period bars."""
     if df.empty:
         return df.copy()
@@ -398,12 +539,13 @@ def add_generic_micro_structure_features(df: pd.DataFrame, time_col: str) -> pd.
     out["amount_ma12"] = g["amount"].transform(lambda s: s.rolling(12, min_periods=12).mean())
     out["amount_ratio_12"] = out["amount"] / (out["amount_ma12"] + 1e-12)
 
-    out["board_type"] = out["code"].astype(str).map(infer_board_type)
-    out["industry_bucket"] = out["code"].astype(str).map(infer_industry_bucket)
     out["barra_size_proxy"] = np.log(out["amount_ma12"].clip(lower=0.0) + 1.0)
     out["barra_momentum_proxy"] = out["ret_12"]
     out["barra_volatility_proxy"] = out["rv_12"]
     out["barra_liquidity_proxy"] = out["amount_ratio_12"]
     out["barra_beta_proxy"] = out["vol_chg_1"]
     out["crowding_proxy_raw"] = 0.5 * out["amount_ratio_12"].abs() + 0.5 * out["vol_chg_1"].abs()
+    if add_static_context:
+        out["board_type"] = out["code"].astype(str).map(infer_board_type)
+        out["industry_bucket"] = out["code"].astype(str).map(infer_industry_bucket)
     return out

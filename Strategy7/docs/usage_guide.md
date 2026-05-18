@@ -720,23 +720,28 @@ python Strategy7/run_strategy7.py `
 1. 主入口可通过 `--enable-factor-value-store` 开启“优先读缓存，缺失再计算并回写”
 2. 默认仓库根目录（`--factor-value-store-root auto`）：`<data_baostock>/factor_value_store`
 3. 目录结构：`<factor_freq>/by_group/<price_volume|fundamental|text|mined>/<factor_package>/<code>.parquet|csv`
-4. 可按当前频率完整因子清单批量构建：`--factor-value-store-build-all true`
+4. 可按当前 CLI 筛选后的因子清单批量构建：`--factor-value-store-build-all true`
 5. 仅构建缓存后退出（不训练/不回测）：`--factor-value-store-build-only true`
 6. 分块大小：`--factor-value-store-chunk-size`（默认 `64`）
 7. 每次写入会自动更新跨度汇总：`<factor_freq>/factor_span_summary.csv`
 8. 若 `data_baostock` 目录不可写，请显式指定 `--factor-value-store-root` 到可写路径
+9. `--factor-packages` / `--factor-list` 会限制本次构建范围；两者都不传时才构建该频率默认全量清单
+10. 日频构建若未选择 `multi_freq` / `bridge` 等跨频包，不会再展开 5min/15min/30min/60min/120min 桥接视图
 
 推荐两步法（主入口）：
 
-1. 先离线构建当前频率完整缓存：
+1. 先离线构建当前频率、当前筛选范围的缓存：
 
 ```powershell
 python Strategy7/run_strategy7.py `
   --factor-freq D `
+  --factor-packages trend,liquidity `
   --enable-factor-value-store true `
   --factor-value-store-build-all true `
   --factor-value-store-build-only true
 ```
+
+若确实要构建该频率默认全量清单，去掉 `--factor-packages` 和 `--factor-list` 即可。全量清单包含跨频桥接因子时，框架会按股票流式聚合分钟源，仍建议从较小 `--max-files` 或较小 `--factor-value-store-chunk-size` 开始压测。
 
 2. 再在研究运行中复用缓存（只算缺失增量）：
 

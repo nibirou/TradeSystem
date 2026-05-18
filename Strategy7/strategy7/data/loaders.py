@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import gc
 import hashlib
 from pathlib import Path
 import re
@@ -24,7 +25,13 @@ from ..core.utils import (
     symbol_key_from_filename,
 )
 from .base import MarketDataLoader
-from .frequency import add_generic_micro_structure_features, add_multifreq_bridge_features, build_frequency_views
+from .frequency import (
+    add_generic_micro_structure_features,
+    add_multifreq_bridge_features,
+    aggregate_intraday_bridge_to_target,
+    build_frequency_views,
+    merge_preaggregated_bridge_features,
+)
 from .text_nlp import (
     TEXT_CONTEXT_COLUMNS,
     add_text_rolling_and_fusion_features,
@@ -179,6 +186,29 @@ def read_data_file(path: Path, usecols: List[str], start_date: pd.Timestamp, end
     df["date"] = pd.to_datetime(df["date"], errors="coerce").dt.normalize()
     df = df[(df["date"] >= start_date) & (df["date"] <= end_date)].copy()
     return df
+
+
+def _compact_market_numeric(df: pd.DataFrame, *, frame_kind: str) -> pd.DataFrame:
+    """Downcast hot market columns after parsing to reduce all-market RSS."""
+    if df.empty:
+        return df
+    out = df
+    if frame_kind == "daily":
+        numeric_cols = ["open", "high", "low", "close", "preclose", "volume", "amount", "turn"]
+    else:
+        numeric_cols = ["open", "high", "low", "close", "volume", "amount"]
+    for col in numeric_cols:
+        if col in out.columns:
+            out[col] = pd.to_numeric(out[col], errors="coerce").astype("float32")
+    if "tradestatus" in out.columns:
+        out["tradestatus"] = pd.to_numeric(out["tradestatus"], errors="coerce").fillna(1).astype("int8")
+    return out
+
+
+def _frame_memory_mb(df: pd.DataFrame) -> float:
+    if df is None or df.empty:
+        return 0.0
+    return float(df.memory_usage(index=True, deep=True).sum() / (1024.0 * 1024.0))
 
 
 def load_stock_list_keys(stock_list_path: Path) -> List[str]:
@@ -816,6 +846,11 @@ class MarketUniverseDataLoader(MarketDataLoader):
                 skipped += 1
                 continue
 
+            ddf = ddf.drop(columns=["tradestatus"], errors="ignore")
+            mdf = mdf.drop(columns=["time"], errors="ignore")
+            ddf = _compact_market_numeric(ddf, frame_kind="daily")
+            mdf = _compact_market_numeric(mdf, frame_kind="minute")
+
             daily_frames.append(ddf)
             minute_frames.append(mdf)
             loaded += 1
@@ -865,10 +900,24 @@ class MarketUniverseDataLoader(MarketDataLoader):
         minute_df = pd.concat(minute_frames, ignore_index=True).sort_values(["code", "datetime"]).reset_index(drop=True)
         daily_df = daily_df.drop_duplicates(["code", "date"], keep="last").reset_index(drop=True)
         minute_df = minute_df.drop_duplicates(["code", "datetime"], keep="last").reset_index(drop=True)
+        daily_df = _compact_market_numeric(daily_df, frame_kind="daily")
+        minute_df = _compact_market_numeric(minute_df, frame_kind="minute")
+        if "code" in daily_df.columns:
+            daily_df["code"] = daily_df["code"].astype("category")
+        if "code" in minute_df.columns:
+            minute_df["code"] = minute_df["code"].astype("category")
         diagnostics["daily_rows"] = int(len(daily_df))
         diagnostics["minute_rows"] = int(len(minute_df))
         diagnostics["daily_code_count"] = int(daily_df["code"].astype(str).nunique()) if "code" in daily_df.columns else 0
         diagnostics["minute_code_count"] = int(minute_df["code"].astype(str).nunique()) if "code" in minute_df.columns else 0
+        diagnostics["daily_memory_mb"] = round(_frame_memory_mb(daily_df), 2)
+        diagnostics["minute_memory_mb"] = round(_frame_memory_mb(minute_df), 2)
+        log_progress(
+            "market memory after compaction: "
+            f"daily_mb={diagnostics['daily_memory_mb']}, minute_mb={diagnostics['minute_memory_mb']}",
+            module="loader",
+            level="debug",
+        )
         return daily_df, minute_df, diagnostics
 
     def _load_fundamental_events(
@@ -1245,15 +1294,20 @@ class MarketUniverseDataLoader(MarketDataLoader):
 HS300MarketDataLoader = MarketUniverseDataLoader
 
 
-def build_minute_daily_features(minute_df: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate minute bars to daily micro-structure and executable prices."""
-    m = minute_df.copy()
+def _build_minute_daily_features_one_code(code_df: pd.DataFrame) -> pd.DataFrame:
+    keep_cols = [c for c in ["date", "datetime", "code", "open", "high", "low", "close", "volume"] if c in code_df.columns]
+    if not {"date", "datetime", "code", "open", "close", "volume"}.issubset(set(keep_cols)):
+        return pd.DataFrame()
+    m = code_df[keep_cols].copy()
     m["date"] = pd.to_datetime(m["date"], errors="coerce").dt.normalize()
     m["datetime"] = pd.to_datetime(m["datetime"], errors="coerce")
-    for col in ["open", "high", "low", "close", "volume", "amount"]:
+    m["code"] = m["code"].astype(str).str.strip()
+    for col in ["open", "high", "low", "close", "volume"]:
         if col in m.columns:
             m[col] = pd.to_numeric(m[col], errors="coerce")
     m = m.dropna(subset=["date", "datetime", "code", "open", "close", "volume"]).copy()
+    if m.empty:
+        return pd.DataFrame()
     m = m.sort_values(["code", "date", "datetime"])
     grp_cols = ["code", "date"]
 
@@ -1317,6 +1371,50 @@ def build_minute_daily_features(minute_df: pd.DataFrame) -> pd.DataFrame:
         "px_twap_last30",
     ]
     return feat[keep_cols]
+
+
+def build_minute_daily_features(minute_df: pd.DataFrame) -> pd.DataFrame:
+    """Aggregate minute bars to daily micro-structure and executable prices.
+
+    Processing one stock at a time avoids materializing several extra
+    90M-row temporary columns during all-market daily runs.
+    """
+    keep_cols = [
+        "code",
+        "date",
+        "vwap_day",
+        "vwap_first30",
+        "vwap_first60",
+        "minute_realized_vol_5m",
+        "minute_up_ratio_5m",
+        "minute_ret_skew_5m",
+        "minute_ret_kurt_5m",
+        "signed_vol_imbalance_5m",
+        "jump_ratio_5m",
+        "morning_momentum_30m",
+        "last30_momentum",
+        "open_to_close_intraday",
+        "vwap30_vs_day",
+        "px_open5",
+        "px_vwap30",
+        "px_twap_last30",
+    ]
+    if minute_df is None or minute_df.empty or "code" not in minute_df.columns:
+        return pd.DataFrame(columns=keep_cols)
+
+    pieces: List[pd.DataFrame] = []
+    for _, g in minute_df.groupby("code", sort=False, observed=True):
+        feat = _build_minute_daily_features_one_code(g)
+        if not feat.empty:
+            pieces.append(feat)
+    if not pieces:
+        return pd.DataFrame(columns=keep_cols)
+    out = pd.concat(pieces, ignore_index=True)
+    for c in out.columns:
+        if c in {"date", "code"}:
+            continue
+        out[c] = pd.to_numeric(out[c], errors="coerce").astype("float32")
+    return out.sort_values(["code", "date"]).reset_index(drop=True)
 
 
 def _rolling_mean(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Series:
@@ -1580,6 +1678,8 @@ def build_feature_bundle(
     log_progress(f"分钟级日特征完成：rows={len(minute_daily_feat)}。", module="loader")
     log_progress("开始构建日频基础特征。", module="loader")
     daily_base = build_daily_feature_base(bundle.daily, minute_daily_feat)
+    del minute_daily_feat
+    gc.collect()
     log_progress(f"日频基础特征完成：rows={len(daily_base)}, cols={len(daily_base.columns)}。", module="loader")
 
     log_progress("开始构建多频视图。", module="loader")
@@ -1615,6 +1715,28 @@ def build_feature_bundle(
         # build one source view at a time and merge onto target, then release it.
         if enable_bridge and source_freqs and target_freq in views and not views[target_freq].empty:
             for src in source_freqs:
+                if target_freq in {"D", "W", "M"} and src in {"5min", "15min", "30min", "60min", "120min"}:
+                    log_progress(
+                        f"streaming bridge aggregation: source={src}, target={target_freq}",
+                        module="loader",
+                        level="debug",
+                    )
+                    bdf = aggregate_intraday_bridge_to_target(
+                        bundle.minute5,
+                        source_freq=src,
+                        target_freq=target_freq,
+                    )
+                    if bdf.empty:
+                        continue
+                    views[target_freq] = merge_preaggregated_bridge_features(
+                        views[target_freq],
+                        bdf,
+                        target_freq=target_freq,
+                    )
+                    del bdf
+                    gc.collect()
+                    continue
+
                 src_views = build_frequency_views(daily_base, bundle.minute5, required_freqs=[src])
                 src_df = src_views.get(src, pd.DataFrame())
                 if src_df.empty:
@@ -1630,6 +1752,8 @@ def build_feature_bundle(
                     source_freqs=[src],
                 )
                 views[target_freq] = tmp.get(target_freq, views[target_freq])
+                del src_views, src_df, tmp
+                gc.collect()
 
     if not keep_all_views and target_freq in views:
         views = {target_freq: views[target_freq]}

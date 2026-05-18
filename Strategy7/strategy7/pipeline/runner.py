@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import gc
 from pathlib import Path
 from typing import Dict, List
 
@@ -256,9 +257,7 @@ def _estimate_bridge_source_freqs(
         return []
 
     candidates: List[str] = []
-    if bool(factor_store_build_all):
-        candidates = resolve_default_factor_set(freq=target, package_expr="all")
-    elif load_hint_factor_cols:
+    if load_hint_factor_cols:
         candidates = [str(x).strip() for x in load_hint_factor_cols if str(x).strip()]
     elif str(factor_list_arg).strip():
         candidates = [x.strip() for x in str(factor_list_arg).split(",") if x.strip()]
@@ -886,7 +885,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "factor_list_export_format": str(getattr(cfg.factors, "factor_list_export_format", "csv")),
             "factor_list_export_path": str(export_path) if export_path is not None else "",
             "factor_list_exported": bool(export_path is not None),
-            "factor_snapshot_dir": str(snapshot_paths.get("snapshot_dir", "")),
+            "factor_snapshot_dir": str(snapshot_p aths.get("snapshot_dir", "")),
             "factor_snapshot_summary_path": str(snapshot_paths.get("summary_path", "")),
         }
 
@@ -945,6 +944,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     # Raw minute/daily frames are no longer needed after feature views are built.
     market_bundle.daily = pd.DataFrame()
     market_bundle.minute5 = pd.DataFrame()
+    gc.collect()
     log_progress(
         f"特征构建完成，可用频率={sorted(feat_bundle.by_freq.keys())}。",
         module="pipeline",
@@ -1085,12 +1085,12 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     factor_store_hydrate_report: Dict[str, object] = {"cache_enabled": False}
 
     if factor_store_enabled and bool(getattr(cfg.factors, "factor_value_store_build_all", False)):
-        all_factor_df = run_meta_df.copy()
-        if "category" in all_factor_df.columns:
-            all_factor_df = all_factor_df[all_factor_df["category"].astype(str) != "auto_panel"]
-        all_factors = sorted(set(all_factor_df.get("factor", pd.Series(dtype=str)).astype(str).tolist()))
+        # "Build all" means every factor admitted by the current CLI filters
+        # (`--factor-packages` / `--factor-list`). With no filters it still
+        # expands to the full default list, preserving the original full-build use case.
+        all_factors = sorted(set([str(x) for x in selected_factors if str(x).strip()]))
         log_progress(
-            f"开始构建因子值缓存仓库（完整清单）：freq={factor_freq}, factor_count={len(all_factors)}。",
+            f"开始构建因子值缓存仓库（当前筛选清单）：freq={factor_freq}, factor_count={len(all_factors)}。",
             module="pipeline",
         )
         factor_store_build_report = build_factor_store_for_full_list(
