@@ -749,6 +749,7 @@ python Strategy7/run_strategy7.py `
 8. 若 `data_baostock` 目录不可写，请显式指定 `--factor-value-store-root` 到可写路径
 9. `--factor-packages` / `--factor-list` 会限制本次构建范围；两者都不传时才构建该频率默认全量清单
 10. 日频构建若未选择 `multi_freq` / `bridge` 等跨频包，不会再展开 5min/15min/30min/60min/120min 桥接视图
+11. 增量写入同一股票缓存文件时，新值优先、旧值补缺；空旧表或全空列会被显式过滤/数值化，避免 pandas 未来版本的 concat dtype 告警
 
 推荐两步法（主入口）：
 
@@ -1120,7 +1121,7 @@ python Strategy7/run_strategy7.py `
    优先用 `run_strategy7_v2_22` 或 `run_strategy7_v2_23` 的 `--diagnose-lite` 重跑，先缩样本并切到 `csv` 路径定位是否为 parquet/native 引擎问题；脚本已默认开启 `PYTHONFAULTHANDLER=1`。
    若崩溃栈在 `pandas/io/parsers/c_parser_wrapper.py`，可显式强制文本读取走更稳解析器：`export STRATEGY7_TEXT_CSV_ENGINE=python`（当前版本默认即 python）。
 10. 日志出现 `DataFrame is highly fragmented` / `DataFrame concat FutureWarning`
-   当前版本已修复基础实现（避免逐列 `insert` 和空块拼接 dtype 警告）；若历史环境仍出现，请确认服务器代码已同步到最新。
+   当前版本已修复基础实现（避免逐列 `insert`、空块拼接 dtype 警告，以及因子值仓库旧/新缓存合并时的 `combine_first` 告警）；若历史环境仍出现，请确认服务器代码已同步到最新。
 11. 想知道到底是哪类数据导致“加载后为空/跳过很多”
    查看每次运行输出目录中的 `market_data_health.json` 与 `summary_*.json -> notes.market_source_notes`，其中包含 missing/empty/read_error 的计数和样本键值，能直接定位到数据层问题。
 

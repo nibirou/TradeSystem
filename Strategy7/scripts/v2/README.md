@@ -158,6 +158,7 @@ bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
 - 正常全量构建时，建议先保守分块：
   - `bash Strategy7/scripts/v2/run_strategy7_v2_23_factor_store.sh --factor-value-store-chunk-size 8 --log-level verbose`
 - `run_strategy7_v2_23_factor_store.sh` 中的 `--factor-packages` 会限制因子值仓库构建范围；只有不传 `--factor-packages/--factor-list` 时才按当前频率默认全量清单构建。包含 `bridge/multi_freq` 时会触发分钟源跨频聚合，建议先用 `--diagnose-lite` 或 `--max-files` 压测。
+- 因子值仓库会增量 upsert 每个股票文件；若旧文件为空或历史列 dtype 不一致，当前版本会在写入前显式过滤/数值化，避免 pandas `concat/combine_first` FutureWarning 刷屏。
 - 两个脚本均默认导出：
   - `PYTHONFAULTHANDLER=1`（出现 segfault 时输出 Python 线程栈）
   - `PYTHONUNBUFFERED=1`（日志实时刷新）

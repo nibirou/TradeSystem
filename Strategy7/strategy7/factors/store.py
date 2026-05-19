@@ -15,6 +15,18 @@ from ..core.utils import ensure_dir, log_progress
 from .base import FactorLibrary, compute_factor_panel
 from .reporting import factor_group_key, normalize_factor_package_alias
 
+FACTOR_SPAN_SUMMARY_COLUMNS: List[str] = [
+    "factor",
+    "factor_freq",
+    "factor_group",
+    "factor_package",
+    "start_time",
+    "end_time",
+    "obs_count",
+    "code_count",
+    "updated_at",
+]
+
 
 @dataclass
 class FactorStoreOptions:
@@ -125,6 +137,33 @@ def _write_table(df: pd.DataFrame, path: Path, file_format: str) -> None:
         df.to_parquet(path, index=False)
 
 
+def _dedup_keep_order(cols: Sequence[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for c in cols:
+        cs = str(c)
+        if cs in seen:
+            continue
+        seen.add(cs)
+        out.append(cs)
+    return out
+
+
+def _numeric_col_or_nan(df: pd.DataFrame, col: str, index: pd.Index) -> pd.Series:
+    if col not in df.columns:
+        return pd.Series(np.nan, index=index, dtype="float64")
+    return pd.to_numeric(df[col], errors="coerce").reindex(index)
+
+
+def _concat_non_empty(frames: Sequence[pd.DataFrame]) -> pd.DataFrame:
+    valid = [f for f in frames if f is not None and not f.empty]
+    if not valid:
+        return pd.DataFrame()
+    if len(valid) == 1:
+        return valid[0].copy()
+    return pd.concat(valid, ignore_index=True)
+
+
 def _factor_package_maps(
     *,
     factors: Sequence[str],
@@ -210,7 +249,9 @@ def load_factors_from_store(
             parts.append(tbl)
         if not parts:
             continue
-        pkg_df = pd.concat(parts, ignore_index=True)
+        pkg_df = _concat_non_empty(parts)
+        if pkg_df.empty:
+            continue
         pkg_df = pkg_df.drop_duplicates(key_cols, keep="last")
         pkg_present_cov = (float(len(pkg_df)) / base_row_count) if base_row_count > 0.0 else 0.0
         merged = merged.merge(pkg_df, on=key_cols + extra_cols, how="left")
@@ -268,17 +309,16 @@ def _merge_existing_and_new(
     for c in value_cols:
         old_c = f"{c}_old" if f"{c}_old" in merged.columns else c
         new_c = f"{c}_new" if f"{c}_new" in merged.columns else c
-        if old_c in merged.columns and new_c in merged.columns:
-            merged[c] = pd.to_numeric(merged[new_c], errors="coerce").combine_first(
-                pd.to_numeric(merged[old_c], errors="coerce")
-            )
-        elif new_c in merged.columns:
-            merged[c] = pd.to_numeric(merged[new_c], errors="coerce")
-        elif old_c in merged.columns:
-            merged[c] = pd.to_numeric(merged[old_c], errors="coerce")
-        else:
-            merged[c] = np.nan
-    keep_cols = list(key_cols) + [c for c in out.columns if c not in key_cols] + [c for c in value_cols if c not in out.columns]
+        new_s = _numeric_col_or_nan(merged, new_c, merged.index)
+        old_s = _numeric_col_or_nan(merged, old_c, merged.index)
+        # New values win, old cached values fill gaps. Avoid Series.combine_first:
+        # pandas 2.2+ warns when its internal concat sees empty/all-NA blocks.
+        merged[c] = new_s.where(new_s.notna(), old_s).astype("float32")
+    keep_cols = _dedup_keep_order(
+        list(key_cols)
+        + [c for c in out.columns if c not in key_cols]
+        + [c for c in value_cols if c not in out.columns]
+    )
     keep_cols = [c for c in keep_cols if c in merged.columns]
     merged = merged[keep_cols]
     merged = merged.drop_duplicates(list(key_cols), keep="last")
@@ -324,17 +364,26 @@ def _upsert_span_summary(
             }
         )
     summary_path = ensure_dir(store_root / str(factor_freq)) / "factor_span_summary.csv"
-    now_df = pd.DataFrame(rows)
+    now_df = pd.DataFrame(rows, columns=FACTOR_SPAN_SUMMARY_COLUMNS)
     if now_df.empty:
         if not summary_path.exists():
             now_df.to_csv(summary_path, index=False, encoding="utf-8-sig")
         return summary_path
     if summary_path.exists():
-        old = pd.read_csv(summary_path)
-        merged = pd.concat([old, now_df], ignore_index=True)
+        try:
+            old = pd.read_csv(summary_path)
+        except pd.errors.EmptyDataError:
+            old = pd.DataFrame(columns=FACTOR_SPAN_SUMMARY_COLUMNS)
+        merged = _concat_non_empty([old, now_df])
+        if merged.empty:
+            merged = now_df.copy()
         merged = merged.drop_duplicates(subset=["factor", "factor_freq"], keep="last")
     else:
         merged = now_df
+    for c in FACTOR_SPAN_SUMMARY_COLUMNS:
+        if c not in merged.columns:
+            merged[c] = np.nan
+    merged = merged[FACTOR_SPAN_SUMMARY_COLUMNS]
     merged = merged.sort_values(["factor_package", "factor"]).reset_index(drop=True)
     merged.to_csv(summary_path, index=False, encoding="utf-8-sig")
     return summary_path
@@ -355,7 +404,8 @@ def save_factors_to_store(
     key_cols = _time_key_cols(panel_df, factor_freq=factor_freq)
     extra_cols = _time_extra_cols(panel_df, factor_freq=factor_freq)
 
-    panel = _normalize_time_cols(panel_df.copy(), factor_freq=factor_freq)
+    needed_cols = _dedup_keep_order(key_cols + extra_cols + [str(c) for c in factors if str(c) in panel_df.columns])
+    panel = _normalize_time_cols(panel_df[needed_cols].copy(), factor_freq=factor_freq)
     panel = panel.dropna(subset=key_cols)
     if panel.empty:
         return {"saved_factor_count": 0, "saved_code_files": 0, "span_summary_path": ""}
