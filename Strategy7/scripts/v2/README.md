@@ -40,6 +40,7 @@
 | `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1` | 全市场低位启动10日 load 回测 | `model_run_mode=load`、`model_summary_json`、`launch_boost`、next-bar |
 | `run_strategy7_v2_22_train_allmarket_bottom_launch_10d.sh` | 全市场低位启动10日（Linux 可参数化训练模板） | Linux 参数化脚本、`--diagnose-lite`、`PYTHONFAULTHANDLER` |
 | `run_strategy7_v2_23_factor_store.sh` | 全市场因子值仓库构建（Linux 可参数化模板） | `factor_value_store_build_all/build_only`、`chunk_size`、`--diagnose-lite` |
+| `run_strategy7_v2_24_train_dfq_timesnet_smoke.ps1` | DFQ-TimesNet 轻量训练回测 | `dfq_timesnet` 分支、固定周期二维建模 |
 
 ## 2) 挖掘入口模板（run_factor_mining.py）
 
@@ -70,7 +71,7 @@
 | 复现已有模型（summary 引导） | `run_strategy7_v2_04_load_from_summary_refit.ps1`、`run_strategy7_v2_05_load_from_summary_strict.ps1` |
 | 复现已有模型（models 目录） | `run_strategy7_v2_06_load_from_models_dir_off.ps1` |
 | 复现已有模型（显式四路径） | `run_strategy7_v2_17_load_explicit_paths_off.ps1` |
-| 深度模型轻量冒烟（选股） | `run_strategy7_v2_08_train_factor_gcl_smoke.ps1`、`run_strategy7_v2_09_train_dafat_smoke.ps1` |
+| 深度模型轻量冒烟（选股） | `run_strategy7_v2_08_train_factor_gcl_smoke.ps1`、`run_strategy7_v2_09_train_dafat_smoke.ps1`、`run_strategy7_v2_24_train_dfq_timesnet_smoke.ps1` |
 | 频率扩展验证（30min/W/M） | `run_strategy7_v2_13_train_30min_intraday_realistic.ps1`、`run_strategy7_v2_12_train_weekly_volatility.ps1`、`run_strategy7_v2_18_train_monthly_multitask_catalog_off.ps1` |
 | 数据裁剪实验（price-only / 主板） | `run_strategy7_v2_14_train_price_only_mainboard.ps1`、`run_factor_mining_v2_11_price_only_mainboard_all.ps1` |
 | 自定义因子插件接入 | `run_strategy7_v2_15_train_custom_factor_plugin.ps1`、`run_factor_mining_v2_14_list_factors_with_custom_plugin.ps1` |

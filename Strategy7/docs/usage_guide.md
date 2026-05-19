@@ -15,7 +15,7 @@
 `Strategy7` 是一个模块化量化研究引擎，核心特点：
 
 1. 数据、因子、模型、回测四层可插拔
-2. 同时支持传统树模型与 `FactorGCL/DAFAT` 深度模型
+2. 同时支持传统树模型与 `FactorGCL/DAFAT/DFQ-TimesNet` 深度模型
 3. 支持因子挖掘、因子 catalog 入库、主流程自动加载
 4. 支持自定义因子表达式与自定义插件模型
 
@@ -47,7 +47,7 @@
 
 深度模型附加依赖：
 
-1. `torch`（`--stock-model-type factor_gcl` 或 `dafat` 必需）
+1. `torch`（`--stock-model-type factor_gcl`、`dafat` 或 `dfq_timesnet` 必需）
 
 建议先验证解释器：
 
@@ -185,7 +185,29 @@ python Strategy7/run_strategy7.py `
   --dafat-device auto
 ```
 
-### 5.4 仅列出因子（不加载市场数据）
+### 5.4 DFQ-TimesNet 示例
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --label-task return `
+  --horizon 20 `
+  --stock-model-type dfq_timesnet `
+  --timesnet-seq-len 60 `
+  --timesnet-periods "5,60" `
+  --timesnet-hidden-size 128 `
+  --timesnet-e-layers 1 `
+  --timesnet-hidden-size2 128 `
+  --timesnet-num-kernels 3 `
+  --timesnet-label-transform cszscore `
+  --timesnet-input-clip 3.0 `
+  --timesnet-epochs 200 `
+  --timesnet-lr 9e-5 `
+  --timesnet-device auto
+```
+
+说明：`dfq_timesnet` 默认复现研报的 TokenEmbedding、固定 `5+60` 双周期、两层 Inception、直接平均周期融合、残差连接与最后一步投影。框架仍允许用 `--factor-freq` 切换 `5min/15min/30min/60min/120min/D/W/M`，并用 `--factor-list` / `--factor-packages` / catalog / 自定义因子插件控制输入因子。
+
+### 5.5 仅列出因子（不加载市场数据）
 
 ```powershell
 python Strategy7/run_strategy7.py --list-factors --factor-freq D
@@ -315,7 +337,7 @@ python Strategy7/run_strategy7.py `
 3. `train` 模式下若传了 `--model-summary-json/--models-load-dir/--*-model-path`，主流程会提示并忽略这些 load 专用参数。
 4. 文件后缀建议：
    - `decision_tree`：`.pkl/.pickle`
-   - `factor_gcl/dafat`：`.pt/.pth`
+   - `factor_gcl/dafat/dfq_timesnet`：`.pt/.pth`
    - `volatility_regime`：`.pkl/.json`
    - `dynamic_opt/realistic_fill`：`.pkl/.json`
 5. 当对应模型类型为默认无文件实现时，会忽略其路径参数：
@@ -411,7 +433,7 @@ python Strategy7/run_strategy7.py `
 
 1. `01~03`：基础/增强/自定义四模型训练回测
 2. `04~07`：四种 load 路径（summary refit、summary strict、models_dir off、自定义 load）
-3. `08~09`：深度模型冒烟（FactorGCL、DAFAT）
+3. `08~09/24`：深度模型冒烟（FactorGCL、DAFAT、DFQ-TimesNet）
 4. `10~11`：`--list-factors` 导出、factor value store build-only
 5. `12~19`：扩展链路（W/M/30min、price-only+main_board、custom factor plugin、value store hydrate、显式四路径 load、30min JSON 导出）
 6. `20~21`：全市场低位启动10日研究链路（`launch_boost` + `bottom_launch`，train/load）
@@ -568,7 +590,7 @@ bash Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.s
 2. 因子：
    `--factor-freq --factor-list --factor-packages --custom-factor-py --list-factors --auto-export-factor-snapshot --export-factor-list --factor-list-export-format --factor-list-export-path --label-task --lookback-days --enable-factor-engineering --fe-min-coverage --fe-min-std --fe-corr-threshold --fe-preselect-top-n --fe-min-factors --fe-max-factors --fe-orth-method --fe-pca-variance-ratio --fe-pca-max-components --enable-factor-value-store --factor-value-store-root --factor-value-store-format --factor-value-store-build-all --factor-value-store-build-only --factor-value-store-chunk-size`
 3. 选股模型：
-   `--stock-model-type`（`decision_tree`/`launch_boost`/`factor_gcl`/`dafat`）
+   `--stock-model-type`（`decision_tree`/`launch_boost`/`factor_gcl`/`dafat`/`dfq_timesnet`）
    `launch_boost` 超参：`--launch-boost-max-depth --launch-boost-learning-rate --launch-boost-max-iter --launch-boost-l2 --launch-boost-return-head-weight`
 4. 择时模型：
    `--timing-model-type`（`none`/`volatility_regime`）
@@ -1114,5 +1136,6 @@ python Strategy7/run_strategy7.py `
 
 1. [FactorGCL 说明](./factor_gcl.md)
 2. [DAFAT 复现与工程实现说明](./dafat_transformer.md)
-3. [因子挖掘框架说明](./factor_mining_framework.md)
+3. [DFQ-TimesNet 复现与工程实现说明](./dfq_timesnet.md)
+4. [因子挖掘框架说明](./factor_mining_framework.md)
 

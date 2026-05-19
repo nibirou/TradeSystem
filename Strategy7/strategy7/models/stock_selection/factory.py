@@ -98,4 +98,31 @@ def build_stock_model(cfg: StockModelConfig) -> StockSelectionModel:
             device=cfg.dafat_device,
         )
 
+    # 6) DFQ-TimesNet.
+    if model_type in {"dfq_timesnet", "timesnet", "dfq-timesnet"}:
+        from .dfq_timesnet_model import DFQTimesNetStockModel
+
+        return DFQTimesNetStockModel(
+            seq_len=cfg.timesnet_seq_len,
+            hidden_size=cfg.timesnet_hidden_size,
+            e_layers=cfg.timesnet_e_layers,
+            hidden_size2=cfg.timesnet_hidden_size2,
+            periods=cfg.timesnet_periods,
+            num_kernels=cfg.timesnet_num_kernels,
+            dropout=cfg.timesnet_dropout,
+            n_epochs=cfg.timesnet_epochs,
+            lr=cfg.timesnet_lr,
+            weight_decay=cfg.timesnet_weight_decay,
+            early_stop=cfg.timesnet_early_stop,
+            smooth_steps=cfg.timesnet_smooth_steps,
+            per_epoch_batch=cfg.timesnet_per_epoch_batch,
+            batch_size=cfg.timesnet_batch_size,
+            label_transform=cfg.timesnet_label_transform,
+            input_clip=cfg.timesnet_input_clip,
+            mse_weight=cfg.timesnet_mse_weight,
+            ic_loss_weight=cfg.timesnet_ic_loss_weight,
+            random_state=cfg.random_state,
+            device=cfg.timesnet_device,
+        )
+
     raise ValueError(f"unsupported stock model type: {cfg.model_type}")

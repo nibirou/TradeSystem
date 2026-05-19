@@ -126,6 +126,25 @@ class StockModelConfig:
     dafat_use_sparse_attn: bool
     dafat_use_multiscale: bool
     dafat_device: str
+    timesnet_seq_len: int
+    timesnet_hidden_size: int
+    timesnet_e_layers: int
+    timesnet_hidden_size2: int
+    timesnet_periods: str
+    timesnet_num_kernels: int
+    timesnet_dropout: float
+    timesnet_epochs: int
+    timesnet_lr: float
+    timesnet_weight_decay: float
+    timesnet_early_stop: int
+    timesnet_smooth_steps: int
+    timesnet_per_epoch_batch: int
+    timesnet_batch_size: int
+    timesnet_label_transform: str
+    timesnet_input_clip: float
+    timesnet_mse_weight: float
+    timesnet_ic_loss_weight: float
+    timesnet_device: str
 
 
 @dataclass
@@ -847,7 +866,7 @@ def parse_args() -> argparse.Namespace:
         "--stock-model-type",
         type=str,
         default="decision_tree",
-        help="选股模型类型：decision_tree / launch_boost / factor_gcl / dafat / 自定义插件",
+        help="选股模型类型：decision_tree / launch_boost / factor_gcl / dafat / dfq_timesnet / 自定义插件",
     )
     g_stock.add_argument(
         "--custom-stock-model-py",
@@ -939,6 +958,31 @@ def parse_args() -> argparse.Namespace:
         help="是否启用多尺度融合模块",
     )
     g_stock.add_argument("--dafat-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="DAFAT 训练设备")
+    g_stock.add_argument("--timesnet-seq-len", type=int, default=60, help="DFQ-TimesNet 时序长度")
+    g_stock.add_argument("--timesnet-hidden-size", type=int, default=128, help="DFQ-TimesNet TokenEmbedding 隐层维度")
+    g_stock.add_argument("--timesnet-e-layers", type=int, default=1, help="DFQ-TimesNet TimesBlock 层数")
+    g_stock.add_argument("--timesnet-hidden-size2", type=int, default=128, help="DFQ-TimesNet Inception 中间通道数")
+    g_stock.add_argument("--timesnet-periods", type=str, default="5,60", help="DFQ-TimesNet 固定周期列表，例如 5,60")
+    g_stock.add_argument("--timesnet-num-kernels", type=int, default=3, help="DFQ-TimesNet Inception 卷积核数量")
+    g_stock.add_argument("--timesnet-dropout", type=float, default=0.0, help="DFQ-TimesNet dropout 概率")
+    g_stock.add_argument("--timesnet-epochs", type=int, default=200, help="DFQ-TimesNet 最大训练轮数")
+    g_stock.add_argument("--timesnet-lr", type=float, default=9e-5, help="DFQ-TimesNet 学习率")
+    g_stock.add_argument("--timesnet-weight-decay", type=float, default=0.0, help="DFQ-TimesNet L2 正则强度")
+    g_stock.add_argument("--timesnet-early-stop", type=int, default=20, help="DFQ-TimesNet 早停耐心轮数")
+    g_stock.add_argument("--timesnet-smooth-steps", type=int, default=5, help="DFQ-TimesNet 最优权重平滑窗口")
+    g_stock.add_argument("--timesnet-per-epoch-batch", type=int, default=100, help="DFQ-TimesNet 每轮抽取交易日切片数")
+    g_stock.add_argument("--timesnet-batch-size", type=int, default=-1, help="DFQ-TimesNet 单日截面采样数，-1=全量")
+    g_stock.add_argument(
+        "--timesnet-label-transform",
+        type=str,
+        choices=["raw", "csrank", "cszscore", "csranknorm"],
+        default="cszscore",
+        help="DFQ-TimesNet 训练标签变换方式；研报默认未来收益截面 zscore",
+    )
+    g_stock.add_argument("--timesnet-input-clip", type=float, default=3.0, help="DFQ-TimesNet 输入特征 clip 绝对值，<=0 关闭")
+    g_stock.add_argument("--timesnet-mse-weight", type=float, default=1.0, help="DFQ-TimesNet MSE 损失权重")
+    g_stock.add_argument("--timesnet-ic-loss-weight", type=float, default=0.0, help="DFQ-TimesNet IC 损失权重，研报复现默认关闭")
+    g_stock.add_argument("--timesnet-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="DFQ-TimesNet 训练设备")
 
     # =========================
     # 择时模型参数
@@ -1293,6 +1337,46 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("dafat_batch_size must be -1 or positive.")
     if float(args.dafat_mse_weight) < 0.0:
         raise ValueError("dafat_mse_weight must be non-negative.")
+    if int(args.timesnet_seq_len) <= 1:
+        raise ValueError("timesnet_seq_len must be greater than 1.")
+    if int(args.timesnet_hidden_size) <= 0:
+        raise ValueError("timesnet_hidden_size must be positive.")
+    if int(args.timesnet_e_layers) <= 0:
+        raise ValueError("timesnet_e_layers must be positive.")
+    if int(args.timesnet_hidden_size2) <= 0:
+        raise ValueError("timesnet_hidden_size2 must be positive.")
+    try:
+        timesnet_periods = [
+            int(float(x.strip()))
+            for x in str(args.timesnet_periods).replace("，", ",").replace(";", ",").split(",")
+            if x.strip()
+        ]
+    except Exception as exc:
+        raise ValueError("timesnet_periods must be a comma-separated integer list, for example: 5,60.") from exc
+    if not timesnet_periods or any(p <= 0 for p in timesnet_periods):
+        raise ValueError("timesnet_periods must contain at least one positive integer.")
+    if int(args.timesnet_num_kernels) <= 0:
+        raise ValueError("timesnet_num_kernels must be positive.")
+    if not (0.0 <= float(args.timesnet_dropout) < 1.0):
+        raise ValueError("timesnet_dropout must be in [0, 1).")
+    if int(args.timesnet_epochs) <= 0:
+        raise ValueError("timesnet_epochs must be positive.")
+    if float(args.timesnet_lr) <= 0.0:
+        raise ValueError("timesnet_lr must be positive.")
+    if float(args.timesnet_weight_decay) < 0.0:
+        raise ValueError("timesnet_weight_decay must be non-negative.")
+    if int(args.timesnet_early_stop) <= 0:
+        raise ValueError("timesnet_early_stop must be positive.")
+    if int(args.timesnet_smooth_steps) <= 0:
+        raise ValueError("timesnet_smooth_steps must be positive.")
+    if int(args.timesnet_per_epoch_batch) <= 0:
+        raise ValueError("timesnet_per_epoch_batch must be positive.")
+    if int(args.timesnet_batch_size) == 0 or int(args.timesnet_batch_size) < -1:
+        raise ValueError("timesnet_batch_size must be -1 or positive.")
+    if float(args.timesnet_mse_weight) < 0.0:
+        raise ValueError("timesnet_mse_weight must be non-negative.")
+    if float(args.timesnet_ic_loss_weight) < 0.0:
+        raise ValueError("timesnet_ic_loss_weight must be non-negative.")
     if not (0.0 < float(args.max_participation_rate) <= 1.0):
         raise ValueError("max_participation_rate must be in (0,1].")
     if not (0.0 <= float(args.base_fill_rate) <= 1.0):
@@ -1465,6 +1549,25 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         dafat_use_sparse_attn=bool(args.dafat_use_sparse_attn),
         dafat_use_multiscale=bool(args.dafat_use_multiscale),
         dafat_device=str(args.dafat_device),
+        timesnet_seq_len=int(args.timesnet_seq_len),
+        timesnet_hidden_size=int(args.timesnet_hidden_size),
+        timesnet_e_layers=int(args.timesnet_e_layers),
+        timesnet_hidden_size2=int(args.timesnet_hidden_size2),
+        timesnet_periods=str(args.timesnet_periods),
+        timesnet_num_kernels=int(args.timesnet_num_kernels),
+        timesnet_dropout=float(args.timesnet_dropout),
+        timesnet_epochs=int(args.timesnet_epochs),
+        timesnet_lr=float(args.timesnet_lr),
+        timesnet_weight_decay=float(args.timesnet_weight_decay),
+        timesnet_early_stop=int(args.timesnet_early_stop),
+        timesnet_smooth_steps=int(args.timesnet_smooth_steps),
+        timesnet_per_epoch_batch=int(args.timesnet_per_epoch_batch),
+        timesnet_batch_size=int(args.timesnet_batch_size),
+        timesnet_label_transform=str(args.timesnet_label_transform),
+        timesnet_input_clip=float(args.timesnet_input_clip),
+        timesnet_mse_weight=float(args.timesnet_mse_weight),
+        timesnet_ic_loss_weight=float(args.timesnet_ic_loss_weight),
+        timesnet_device=str(args.timesnet_device),
     )
     timing = TimingModelConfig(
         model_type=args.timing_model_type,

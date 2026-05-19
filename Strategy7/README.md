@@ -40,6 +40,12 @@ python Strategy7/run_strategy7.py --stock-model-type factor_gcl --label-task ret
 python Strategy7/run_strategy7.py --stock-model-type dafat --label-task return
 ```
 
+运行 DFQ-TimesNet（固定周期二维时序建模）：
+
+```bash
+python Strategy7/run_strategy7.py --stock-model-type dfq_timesnet --label-task return --horizon 20
+```
+
 运行因子挖掘：
 
 ```bash
@@ -113,7 +119,8 @@ python Strategy7/run_strategy7.py \
 2. [代码阅读地图](./docs/code_reading_map.md)
 3. [FactorGCL 说明](./docs/factor_gcl.md)
 4. [DAFAT 复现与工程实现说明](./docs/dafat_transformer.md)
-5. [因子挖掘框架说明](./docs/factor_mining_framework.md)
+5. [DFQ-TimesNet 复现与工程实现说明](./docs/dfq_timesnet.md)
+6. [因子挖掘框架说明](./docs/factor_mining_framework.md)
 
 ## 脚本
 

@@ -885,7 +885,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "factor_list_export_format": str(getattr(cfg.factors, "factor_list_export_format", "csv")),
             "factor_list_export_path": str(export_path) if export_path is not None else "",
             "factor_list_exported": bool(export_path is not None),
-            "factor_snapshot_dir": str(snapshot_p aths.get("snapshot_dir", "")),
+            "factor_snapshot_dir": str(snapshot_paths.get("snapshot_dir", "")),
             "factor_snapshot_summary_path": str(snapshot_paths.get("summary_path", "")),
         }
 

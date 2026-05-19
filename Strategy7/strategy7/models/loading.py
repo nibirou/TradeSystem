@@ -24,6 +24,7 @@ from .execution.engines import IdealFillExecutionModel, RealisticFillExecutionMo
 from .portfolio.weighting import DynamicOptimizationPortfolioModel, EqualWeightPortfolioModel
 from .stock_selection.dafat_transformer_model import DAFATStockModel
 from .stock_selection.factor_gcl_model import FactorGCLStockModel
+from .stock_selection.dfq_timesnet_model import DFQTimesNetStockModel
 from .stock_selection.launch_boost_model import LaunchBoostStockModel
 from .stock_selection.tree_model import TreeStockModel
 from .timing.models import NoTimingModel, VolatilityRegimeTimingModel
@@ -44,6 +45,8 @@ def _normalize_stock_model_type(model_type: str) -> str:
         return "factor_gcl"
     if t in {"dafat", "dafat_transformer", "transformer_dafat"}:
         return "dafat"
+    if t in {"dfq_timesnet", "timesnet", "dfq-timesnet"}:
+        return "dfq_timesnet"
     if t in {"launch_boost", "bottom_launch_boost", "low_start_boost", "launch10_boost"}:
         return "launch_boost"
     return t
@@ -117,6 +120,8 @@ def _candidate_name(component: str, model_type: str, run_tag: str | None) -> str
             return f"stock_model_factor_gcl{suffix}.pt"
         if m == "dafat":
             return f"stock_model_dafat{suffix}.pt"
+        if m == "dfq_timesnet":
+            return f"stock_model_dfq_timesnet{suffix}.pt"
     if component == "timing_model":
         m = _normalize_timing_model_type(model_type)
         if m == "none":
@@ -334,10 +339,13 @@ def peek_stock_model_factor_cols(cfg: StockModelConfig, model_path: str | None) 
                 return [str(x) for x in cols if str(x).strip()]
         return []
 
-    if canonical in {"factor_gcl", "dafat"}:
-        torch, _nn, _F = (
-            FactorGCLStockModel._require_torch() if canonical == "factor_gcl" else DAFATStockModel._require_torch()
-        )
+    if canonical in {"factor_gcl", "dafat", "dfq_timesnet"}:
+        if canonical == "factor_gcl":
+            torch, _nn, _F = FactorGCLStockModel._require_torch()
+        elif canonical == "dafat":
+            torch, _nn, _F = DAFATStockModel._require_torch()
+        else:
+            torch, _nn, _F = DFQTimesNetStockModel._require_torch()
         ckpt = torch.load(str(p), map_location="cpu")
         cols = ckpt.get("factor_cols", [])
         if isinstance(cols, list):
@@ -544,6 +552,50 @@ def load_stock_model(cfg: StockModelConfig, model_path: str | None) -> Tuple[Sto
         model._model = net
         return model, "artifact_file"
 
+    if canonical == "dfq_timesnet":
+        if p.suffix.lower() not in {".pt", ".pth"}:
+            raise ValueError(f"dfq_timesnet load mode expects .pt/.pth checkpoint, got: {p.suffix}")
+        torch, nn, F = DFQTimesNetStockModel._require_torch()
+        ckpt = torch.load(str(p), map_location="cpu")
+        conf = dict(ckpt.get("config", {}) or {})
+        model = DFQTimesNetStockModel(
+            seq_len=int(conf.get("seq_len", cfg.timesnet_seq_len)),
+            hidden_size=int(conf.get("hidden_size", cfg.timesnet_hidden_size)),
+            e_layers=int(conf.get("e_layers", cfg.timesnet_e_layers)),
+            hidden_size2=int(conf.get("hidden_size2", cfg.timesnet_hidden_size2)),
+            periods=conf.get("periods", cfg.timesnet_periods),
+            num_kernels=int(conf.get("num_kernels", cfg.timesnet_num_kernels)),
+            dropout=float(conf.get("dropout", cfg.timesnet_dropout)),
+            n_epochs=int(conf.get("n_epochs", cfg.timesnet_epochs)),
+            lr=float(conf.get("lr", cfg.timesnet_lr)),
+            weight_decay=float(conf.get("weight_decay", cfg.timesnet_weight_decay)),
+            early_stop=int(conf.get("early_stop", cfg.timesnet_early_stop)),
+            smooth_steps=int(conf.get("smooth_steps", cfg.timesnet_smooth_steps)),
+            per_epoch_batch=int(conf.get("per_epoch_batch", cfg.timesnet_per_epoch_batch)),
+            batch_size=int(conf.get("batch_size", cfg.timesnet_batch_size)),
+            label_transform=str(conf.get("label_transform", cfg.timesnet_label_transform)),
+            input_clip=float(conf.get("input_clip", cfg.timesnet_input_clip)),
+            mse_weight=float(conf.get("mse_weight", cfg.timesnet_mse_weight)),
+            ic_loss_weight=float(conf.get("ic_loss_weight", cfg.timesnet_ic_loss_weight)),
+            random_state=int(conf.get("random_state", cfg.random_state)),
+            device=str(conf.get("device_used", cfg.timesnet_device)),
+        )
+        model._factor_cols = [str(x) for x in ckpt.get("factor_cols", []) if str(x).strip()]
+        if not model._factor_cols:
+            raise RuntimeError("dfq_timesnet checkpoint missing factor_cols.")
+        model._fill_values = pd.Series(ckpt.get("fill_values", {}) or {}, dtype=float)
+        model._time_col = str(ckpt.get("time_col", "signal_ts"))
+        model._train_summary = dict(ckpt.get("train_summary", {}) or {})
+        model._target_col = str(conf.get("target_col", "target_return"))
+        model._score_sign = float(conf.get("score_sign", 1.0))
+        model._device_used = model._choose_device(torch)
+        net = model._build_network(input_dim=len(model._factor_cols), torch=torch, nn=nn, F=F)
+        net.load_state_dict(ckpt["state_dict"])
+        net.to(model._device_used)
+        net.eval()
+        model._model = net
+        return model, "artifact_file"
+
     raise ValueError(f"unsupported stock model type in load mode: {cfg.model_type}")
 
 
@@ -693,6 +745,37 @@ def bootstrap_stock_model_history(
             .fillna(fv)
             .fillna(0.0)
         )
+        work = work.sort_values(["code", time_col])
+        model._history_by_code = {}
+        for code, g in work.groupby("code"):
+            arr = g[factor_cols].to_numpy(dtype=np.float32)
+            n = len(arr)
+            if n == 0:
+                continue
+            model._history_by_code[str(code)] = arr[max(0, n - int(model.seq_len) + 1) :].copy()
+        return
+
+    if isinstance(model, DFQTimesNetStockModel):
+        if not factor_cols:
+            return
+        time_col = model._time_col or model._resolve_time_col(history_df)
+        work = history_df.copy()
+        work[time_col] = pd.to_datetime(work[time_col], errors="coerce")
+        work = work.dropna(subset=["code", time_col]).copy()
+        work["code"] = work["code"].astype(str)
+        missing = [c for c in factor_cols if c not in work.columns]
+        if missing:
+            return
+        fv = model.fill_values().reindex(factor_cols).fillna(0.0)
+        work[factor_cols] = (
+            work[factor_cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(fv)
+            .fillna(0.0)
+        )
+        clip = float(getattr(model, "input_clip", 0.0))
+        if clip > 0.0:
+            work[factor_cols] = work[factor_cols].clip(lower=-clip, upper=clip)
         work = work.sort_values(["code", time_col])
         model._history_by_code = {}
         for code, g in work.groupby("code"):
