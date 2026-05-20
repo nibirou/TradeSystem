@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import gc
 import hashlib
+import os
 from pathlib import Path
 import re
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
@@ -209,6 +211,20 @@ def _frame_memory_mb(df: pd.DataFrame) -> float:
     if df is None or df.empty:
         return 0.0
     return float(df.memory_usage(index=True, deep=True).sum() / (1024.0 * 1024.0))
+
+
+def _effective_data_load_workers(requested: int | None, *, symbol_count: int) -> int:
+    """Resolve I/O workers for per-symbol market-file loading.
+
+    0 means conservative auto. Use 1 for the exact serial path.
+    """
+    req = int(requested or 0)
+    if req > 0:
+        return max(req, 1)
+    if int(symbol_count) <= 1:
+        return 1
+    cpu = os.cpu_count() or 2
+    return max(1, min(8, cpu // 2, int(symbol_count)))
 
 
 def load_stock_list_keys(stock_list_path: Path) -> List[str]:
@@ -720,6 +736,7 @@ class MarketUniverseDataLoader(MarketDataLoader):
         max_files: Optional[int] = None,
         stock_list_path: Optional[Path] = None,
         main_board_only: bool = False,
+        data_load_workers: int = 0,
     ) -> Tuple[pd.DataFrame, pd.DataFrame, Dict[str, object]]:
         daily_dir = data_root / "d"
         minute_dir = data_root / "5"
@@ -781,39 +798,32 @@ class MarketUniverseDataLoader(MarketDataLoader):
         sample_empty_daily: List[str] = []
         sample_empty_minute: List[str] = []
         sample_read_errors: List[str] = []
-        for idx, key in enumerate(keys, start=1):
-            if target_loaded is not None and loaded >= target_loaded:
-                break
+
+        def _load_one_key(key: str) -> Dict[str, object]:
             daily_path = pick_existing_file(daily_dir, key, "d", file_format=file_format)
             minute_path = pick_existing_file(minute_dir, key, "5", file_format=file_format)
-            if daily_path is None:
-                missing_daily += 1
-                _limited_append(sample_missing_daily, key)
-            if minute_path is None:
-                missing_minute += 1
-                _limited_append(sample_missing_minute, key)
-            if daily_path is None or minute_path is None:
-                skipped += 1
-                continue
-
+            missing_d = daily_path is None
+            missing_m = minute_path is None
+            if missing_d or missing_m:
+                return {
+                    "status": "missing",
+                    "key": key,
+                    "missing_daily": missing_d,
+                    "missing_minute": missing_m,
+                }
             try:
                 ddf = read_data_file(daily_path, daily_cols, start_date, end_date)
                 mdf = read_data_file(minute_path, minute_cols, start_date, end_date)
             except Exception as exc:
-                broken += 1
-                read_errors += 1
-                _limited_append(sample_read_errors, f"{key}::{type(exc).__name__}: {exc}")
-                continue
+                return {
+                    "status": "read_error",
+                    "key": key,
+                    "error": f"{type(exc).__name__}: {exc}",
+                }
             if ddf.empty:
-                empty_daily += 1
-                _limited_append(sample_empty_daily, key)
-                skipped += 1
-                continue
+                return {"status": "empty_daily", "key": key}
             if mdf.empty:
-                empty_minute += 1
-                _limited_append(sample_empty_minute, key)
-                skipped += 1
-                continue
+                return {"status": "empty_minute", "key": key}
 
             ddf["code"] = ddf["code"].astype(str).str.strip()
             mdf["code"] = mdf["code"].astype(str).str.strip()
@@ -827,10 +837,7 @@ class MarketUniverseDataLoader(MarketDataLoader):
             if "tradestatus" in ddf.columns:
                 ddf = ddf[ddf["tradestatus"].fillna(1) == 1].copy()
             if ddf.empty:
-                empty_after_tradestatus += 1
-                _limited_append(sample_empty_daily, f"{key}::tradestatus_filter")
-                skipped += 1
-                continue
+                return {"status": "empty_after_tradestatus", "key": key}
 
             if "time" in mdf.columns:
                 tstr = mdf["time"].astype("Int64").astype(str).str.zfill(17).str.slice(0, 14)
@@ -841,18 +848,62 @@ class MarketUniverseDataLoader(MarketDataLoader):
             mdf["date"] = pd.to_datetime(mdf["date"], errors="coerce").dt.normalize()
             mdf = mdf.dropna(subset=["date", "datetime", "code"]).copy()
             if mdf.empty:
-                empty_after_minute_clean += 1
-                _limited_append(sample_empty_minute, f"{key}::minute_datetime_clean")
-                skipped += 1
-                continue
+                return {"status": "empty_after_minute_clean", "key": key}
 
             ddf = ddf.drop(columns=["tradestatus"], errors="ignore")
             mdf = mdf.drop(columns=["time"], errors="ignore")
-            ddf = _compact_market_numeric(ddf, frame_kind="daily")
-            mdf = _compact_market_numeric(mdf, frame_kind="minute")
+            return {
+                "status": "loaded",
+                "key": key,
+                "daily": _compact_market_numeric(ddf, frame_kind="daily"),
+                "minute": _compact_market_numeric(mdf, frame_kind="minute"),
+            }
 
-            daily_frames.append(ddf)
-            minute_frames.append(mdf)
+        def _consume_result(idx: int, result: Dict[str, object]) -> None:
+            nonlocal loaded, skipped, broken
+            nonlocal missing_daily, missing_minute, empty_daily, empty_minute
+            nonlocal empty_after_tradestatus, empty_after_minute_clean, read_errors
+            status = str(result.get("status", ""))
+            key = str(result.get("key", ""))
+            if status == "missing":
+                if bool(result.get("missing_daily", False)):
+                    missing_daily += 1
+                    _limited_append(sample_missing_daily, key)
+                if bool(result.get("missing_minute", False)):
+                    missing_minute += 1
+                    _limited_append(sample_missing_minute, key)
+                skipped += 1
+                return
+            if status == "read_error":
+                broken += 1
+                read_errors += 1
+                _limited_append(sample_read_errors, f"{key}::{result.get('error', '')}")
+                return
+            if status == "empty_daily":
+                empty_daily += 1
+                _limited_append(sample_empty_daily, key)
+                skipped += 1
+                return
+            if status == "empty_minute":
+                empty_minute += 1
+                _limited_append(sample_empty_minute, key)
+                skipped += 1
+                return
+            if status == "empty_after_tradestatus":
+                empty_after_tradestatus += 1
+                _limited_append(sample_empty_daily, f"{key}::tradestatus_filter")
+                skipped += 1
+                return
+            if status == "empty_after_minute_clean":
+                empty_after_minute_clean += 1
+                _limited_append(sample_empty_minute, f"{key}::minute_datetime_clean")
+                skipped += 1
+                return
+            if status != "loaded":
+                skipped += 1
+                return
+            daily_frames.append(result["daily"])  # type: ignore[arg-type]
+            minute_frames.append(result["minute"])  # type: ignore[arg-type]
             loaded += 1
             if loaded % 50 == 0:
                 target_desc = str(target_loaded) if target_loaded is not None else str(len(keys))
@@ -862,6 +913,30 @@ class MarketUniverseDataLoader(MarketDataLoader):
                     module="loader",
                     level="debug",
                 )
+
+        workers = _effective_data_load_workers(data_load_workers, symbol_count=len(keys))
+        log_progress(
+            f"market file loader workers: requested={int(data_load_workers or 0)}, effective={workers}",
+            module="loader",
+            level="debug",
+        )
+        if workers <= 1:
+            for idx, key in enumerate(keys, start=1):
+                if target_loaded is not None and loaded >= target_loaded:
+                    break
+                _consume_result(idx, _load_one_key(key))
+        else:
+            batch_size = max(workers * 2, 8)
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="s7-load") as executor:
+                for start_idx in range(0, len(keys), batch_size):
+                    if target_loaded is not None and loaded >= target_loaded:
+                        break
+                    batch = keys[start_idx : start_idx + batch_size]
+                    for offset, result in enumerate(executor.map(_load_one_key, batch), start=0):
+                        idx = start_idx + offset + 1
+                        if target_loaded is not None and loaded >= target_loaded:
+                            break
+                        _consume_result(idx, result)
 
         diagnostics: Dict[str, object] = {
             "data_root": str(data_root),
@@ -1251,6 +1326,7 @@ class MarketUniverseDataLoader(MarketDataLoader):
             max_files=self.data_cfg.max_files,
             stock_list_path=Path(self.data_cfg.stock_list_path) if self.data_cfg.stock_list_path else None,
             main_board_only=self.data_cfg.main_board_only,
+            data_load_workers=int(getattr(self.data_cfg, "data_load_workers", 0)),
         )
         daily_df, fund_notes = self._attach_fundamental_to_daily(
             daily_df,

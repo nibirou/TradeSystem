@@ -686,7 +686,9 @@ def resolve_selected_factors(library: FactorLibrary, freq: str, factor_list_arg:
 
 
 def compute_factor_panel(base_df: pd.DataFrame, library: FactorLibrary, freq: str, selected_factors: List[str]) -> pd.DataFrame:
-    panel = base_df.copy()
+    # Shallow copy avoids duplicating the whole base panel before appending
+    # factor columns. Factor functions must be read-only with respect to input.
+    panel = base_df.copy(deep=False)
     computed: Dict[str, pd.Series] = {}
     for fac in selected_factors:
         try:

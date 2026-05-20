@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 from pathlib import Path
 from typing import Dict, List
 
@@ -488,6 +489,12 @@ def _parse_args() -> argparse.Namespace:
         action="store_true",
         help="仅使用主板股票参与挖掘",
     )
+    g_data.add_argument(
+        "--data-load-workers",
+        type=int,
+        default=int(os.environ.get("STRATEGY7_DATA_LOAD_WORKERS", "0")),
+        help="行情日线/5分钟文件并行加载线程数；0=自动保守选择，1=串行",
+    )
 
     # =========================
     # 时间与标签参数
@@ -823,6 +830,8 @@ def _validate_args(
         raise ValueError("top_frac must be in (0,1]")
     if args.max_files is not None and int(args.max_files) <= 0:
         raise ValueError("max_files must be positive when provided")
+    if int(getattr(args, "data_load_workers", 0)) < 0:
+        raise ValueError("data_load_workers must be non-negative; use 0 for auto")
 
     if args.min_abs_ic_mean is not None and float(args.min_abs_ic_mean) < 0.0:
         raise ValueError("min_abs_ic_mean must be >= 0")
@@ -1089,6 +1098,7 @@ def main() -> None:
         file_format=str(args.file_format),
         max_files=args.max_files,
         main_board_only=bool(args.main_board_only),
+        data_load_workers=int(getattr(args, "data_load_workers", 0)),
         extra_factor_paths=[],
         extra_source_module=None,
         factor_catalog_path=None,

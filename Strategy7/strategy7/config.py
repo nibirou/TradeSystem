@@ -36,6 +36,7 @@ class DataConfig:
     file_format: str
     max_files: int | None
     main_board_only: bool
+    data_load_workers: int
     extra_factor_paths: List[str]
     extra_source_module: str | None
     factor_catalog_path: str | None
@@ -620,6 +621,12 @@ def parse_args() -> argparse.Namespace:
         "--main-board-only",
         action="store_true",
         help="仅使用主板股票（过滤创业板/科创板等）",
+    )
+    g_data.add_argument(
+        "--data-load-workers",
+        type=int,
+        default=int(os.environ.get("STRATEGY7_DATA_LOAD_WORKERS", "0")),
+        help="行情日线/5分钟文件并行加载线程数；0=自动保守选择，1=串行",
     )
     g_data.add_argument(
         "--extra-factor-paths",
@@ -1255,6 +1262,8 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("factor_value_store_build_all requires enable_factor_value_store=true.")
     if args.max_files is not None and int(args.max_files) <= 0:
         raise ValueError("max_files must be positive when provided.")
+    if int(getattr(args, "data_load_workers", 0)) < 0:
+        raise ValueError("data_load_workers must be non-negative; use 0 for auto.")
     if int(args.max_depth) <= 0:
         raise ValueError("max_depth must be positive.")
     if int(args.min_samples_leaf) <= 0:
@@ -1455,6 +1464,7 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         file_format=args.file_format,
         max_files=args.max_files,
         main_board_only=bool(args.main_board_only),
+        data_load_workers=int(getattr(args, "data_load_workers", 0)),
         extra_factor_paths=extra_paths,
         extra_source_module=_resolve_path(args.extra_source_module) if args.extra_source_module else None,
         factor_catalog_path=factor_catalog_path,

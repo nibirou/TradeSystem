@@ -87,6 +87,14 @@ python Strategy7/run_strategy7.py --universe all
 python Strategy7/run_strategy7.py --universe all --stock-list-path D:/PythonProject/Quant/data_baostock/metadata/your_custom_pool.csv
 ```
 
+行情文件读取可用线程池提速，主流程和挖掘入口通用：
+
+```bash
+python Strategy7/run_strategy7.py --universe all --data-load-workers 4
+```
+
+`--data-load-workers 0` 表示自动保守选择，`1` 表示串行；也可通过 `STRATEGY7_DATA_LOAD_WORKERS` 设置默认值。
+
 基本面数据接入（AK + Baostock）：
 
 ```bash

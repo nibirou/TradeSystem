@@ -90,6 +90,52 @@ def neutralize_cross_section(
         return y
 
 
+def _stat_rows_by_group(stat_df: pd.DataFrame, groups: pd.Series, index: pd.Index) -> pd.DataFrame:
+    rows = stat_df.reindex(pd.Index(groups.to_numpy(), name=stat_df.index.name))
+    rows.index = index
+    return rows
+
+
+def _apply_fast_winsor_zscore(
+    panel: pd.DataFrame,
+    factor_cols: List[str],
+    options: PreprocessOptions,
+    group_col: str,
+) -> pd.DataFrame:
+    """Batch cross-section winsorize/zscore without per-factor groupby loops."""
+    valid_cols = [c for c in factor_cols if c in panel.columns]
+    if not valid_cols:
+        return panel
+
+    out = panel.copy()
+    groups = out[group_col]
+    values = out[valid_cols].apply(pd.to_numeric, errors="coerce").replace([np.inf, -np.inf], np.nan)
+    grouped = values.groupby(groups, sort=False)
+
+    if float(options.winsorize_limit) > 0.0:
+        counts = grouped.count()
+        q_lo = grouped.quantile(float(options.winsorize_limit))
+        q_hi = grouped.quantile(1.0 - float(options.winsorize_limit))
+        lo_rows = _stat_rows_by_group(q_lo, groups, values.index)
+        hi_rows = _stat_rows_by_group(q_hi, groups, values.index)
+        count_rows = _stat_rows_by_group(counts, groups, values.index)
+        clipped = values.clip(lower=lo_rows, upper=hi_rows, axis=1)
+        values = clipped.where(count_rows >= 5, values)
+
+    if bool(options.do_zscore):
+        grouped = values.groupby(groups, sort=False)
+        mean = grouped.mean()
+        std = grouped.std(ddof=0)
+        mean_rows = _stat_rows_by_group(mean, groups, values.index)
+        std_rows = _stat_rows_by_group(std, groups, values.index)
+        z = (values - mean_rows) / (std_rows + EPS)
+        zero_std = (~np.isfinite(std_rows)) | (std_rows <= EPS)
+        values = z.mask(zero_std, 0.0)
+
+    out[valid_cols] = values
+    return out
+
+
 def fill_feature_na(df: pd.DataFrame, cols: List[str], method: str = "median") -> pd.DataFrame:
     valid_cols = [c for c in cols if c in df.columns]
     if not valid_cols:
@@ -156,6 +202,8 @@ def apply_cross_section_pipeline(
     """Winsorize/z-score/neutralize by cross section."""
     if panel.empty or not factor_cols:
         return panel
+    if group_col in panel.columns and not bool(options.neutralize):
+        return _apply_fast_winsor_zscore(panel, factor_cols, options, group_col)
     out = panel.copy()
     for fac in factor_cols:
         if fac not in out.columns:

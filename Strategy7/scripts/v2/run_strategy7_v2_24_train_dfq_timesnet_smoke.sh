@@ -23,6 +23,7 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python \
   --factor-packages "trend,reversal,liquidity,volatility" \
   --label-task return \
   --max-files 15 \
+  --data-load-workers "${STRATEGY7_DATA_LOAD_WORKERS:-0}" \
   --stock-model-type dfq_timesnet \
   --timesnet-seq-len 12 \
   --timesnet-hidden-size 48 \

@@ -194,6 +194,7 @@
 ### 2.9 基本面数据接入（AK + Baostock）
 
 - 新增参数：
+  - `--data-load-workers`：行情日线/5min 文件并行加载线程数，`0` 自动、`1` 串行；也可用 `STRATEGY7_DATA_LOAD_WORKERS`
   - `--fundamental-root-ak`（默认 `data_baostock/ak_fundamental`）
   - `--fundamental-root-bsq`（默认 `data_baostock/baostock_fundamental_q`）
   - `--fundamental-file-format auto|csv|parquet`
