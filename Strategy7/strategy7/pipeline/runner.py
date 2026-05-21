@@ -1189,7 +1189,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         raise RuntimeError("test set is empty.")
     log_progress(f"样本切分完成：train_rows={len(train_df)}, test_rows={len(test_df)}。", module="pipeline")
     target_col = pick_target_column(cfg.factors.label_task)
-    raw_train_df = train_df.copy()
+    raw_train_df = train_df[[c for c in selected_factors if c in train_df.columns]].copy()
     panel_for_scoring = panel.copy()
 
     # 8) Train-fitted feature fill values are reused on test set.
@@ -1216,7 +1216,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     )
     log_progress("缺失值填充完成。", module="pipeline")
     selected_factors_before_fe = list(selected_factors)
-    train_df_before_fe = train_df.copy()
+    train_df_before_fe = train_df[[c for c in selected_factors_before_fe if c in train_df.columns]].copy()
     fe_requested = bool(getattr(cfg.factors, "enable_factor_engineering", False))
     fe_report: Dict[str, object] = {
         "enabled": False,

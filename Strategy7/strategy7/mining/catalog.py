@@ -215,7 +215,13 @@ def _find_join_keys(base_panel: pd.DataFrame, table: pd.DataFrame) -> List[str]:
     return []
 
 
-def _sanitize_join_frame(df: pd.DataFrame, keys: List[str]) -> pd.DataFrame:
+def _sanitize_join_frame(
+    df: pd.DataFrame,
+    keys: List[str],
+    *,
+    allowed_codes: Set[str] | None = None,
+    allowed_times: Set[pd.Timestamp] | None = None,
+) -> pd.DataFrame:
     out = df.copy()
     if "code" in keys:
         out["code"] = out["code"].astype(str).str.strip()
@@ -224,6 +230,14 @@ def _sanitize_join_frame(df: pd.DataFrame, keys: List[str]) -> pd.DataFrame:
     if "datetime" in keys and "datetime" in out.columns:
         out["datetime"] = pd.to_datetime(out["datetime"], errors="coerce")
     out = out.dropna(subset=keys)
+    if out.empty:
+        return out
+    if allowed_codes is not None and "code" in out.columns:
+        out = out[out["code"].isin(allowed_codes)]
+    if allowed_times is not None:
+        time_key = "datetime" if "datetime" in keys else "date" if "date" in keys else ""
+        if time_key and time_key in out.columns:
+            out = out[out[time_key].isin(allowed_times)]
     if out.empty:
         return out
     return out.sort_values(keys).drop_duplicates(keys, keep="last")
@@ -267,7 +281,15 @@ def merge_catalog_factors(
             notes[table_path] = 0
             continue
 
-        table = _sanitize_join_frame(table, keys)
+        allowed_codes = {str(x).strip() for x in out["code"].dropna().astype(str).unique()} if "code" in keys else None
+        time_key = "datetime" if "datetime" in keys else "date" if "date" in keys else ""
+        allowed_times: Set[pd.Timestamp] | None = None
+        if time_key:
+            ts = pd.to_datetime(out[time_key], errors="coerce")
+            if time_key == "date":
+                ts = ts.dt.normalize()
+            allowed_times = set(pd.DatetimeIndex(ts.dropna().unique()).tolist())
+        table = _sanitize_join_frame(table, keys, allowed_codes=allowed_codes, allowed_times=allowed_times)
         if table.empty:
             notes[table_path] = 0
             continue

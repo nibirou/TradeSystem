@@ -58,11 +58,20 @@ class TableFileSource:
             df = pd.read_csv(fp)
         if self.date_col not in df.columns or self.code_col not in df.columns:
             return pd.DataFrame()
-        out = _sanitize_source_frame(df, date_col=self.date_col, code_col=self.code_col)
+
+        # Filter by the requested scope before sorting/deduping large custom
+        # tables. This keeps the same keep-last semantics for in-scope keys
+        # while avoiding unnecessary work on unrelated history/universe rows.
+        out = df.copy()
+        out[self.date_col] = pd.to_datetime(out[self.date_col], errors="coerce").dt.normalize()
+        out[self.code_col] = out[self.code_col].astype(str).str.strip()
+        out = out.dropna(subset=[self.date_col, self.code_col])
         trade_date_set = set(pd.DatetimeIndex(trade_dates).normalize().tolist())
         code_set = {str(x).strip() for x in code_universe}
         out = out[out[self.date_col].isin(trade_date_set)]
         out = out[out[self.code_col].isin(code_set)]
+        if not out.empty:
+            out = out.sort_values([self.date_col, self.code_col]).drop_duplicates([self.date_col, self.code_col], keep="last").reset_index(drop=True)
         if out.empty:
             return out
         rename_map: Dict[str, str] = {}
@@ -143,6 +152,9 @@ def merge_external_sources(
             continue
         df = _sanitize_source_frame(df, date_col="date", code_col="code")
         value_cols = [c for c in df.columns if c not in {"date", "code"}]
+        if not value_cols:
+            notes[name] = int(len(df))
+            continue
         collision_cols = [c for c in value_cols if c in out.columns]
         if collision_cols:
             prefix = _safe_name_prefix(name)

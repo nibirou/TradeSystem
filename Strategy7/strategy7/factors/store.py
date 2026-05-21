@@ -524,7 +524,9 @@ def hydrate_factor_panel_with_store(
     write_back: bool = True,
     io_workers: int = 0,
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
-    panel = base_df.copy()
+    # Factor columns are appended/replaced below; a shallow shell avoids
+    # duplicating the whole base feature matrix before cache hydration.
+    panel = base_df.copy(deep=False)
     if not selected_factors:
         return panel, {"cache_enabled": True, "loaded_factor_count": 0, "computed_factor_count": 0, "saved_factor_count": 0}
 

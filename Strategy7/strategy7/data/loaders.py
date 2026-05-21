@@ -1387,29 +1387,60 @@ def _build_minute_daily_features_one_code(code_df: pd.DataFrame) -> pd.DataFrame
     m = m.sort_values(["code", "date", "datetime"])
     grp_cols = ["code", "date"]
 
-    m["bar_idx"] = m.groupby(grp_cols).cumcount()
-    m["bar_rev_idx"] = m.groupby(grp_cols).cumcount(ascending=False)
-    m["ret_5m"] = m.groupby(grp_cols)["close"].pct_change()
+    by_day = m.groupby(grp_cols, sort=False, observed=True)
+    m["bar_idx"] = by_day.cumcount()
+    m["bar_rev_idx"] = by_day.cumcount(ascending=False)
+    m["ret_5m"] = by_day["close"].pct_change()
     m["pv"] = m["close"] * m["volume"]
     m["signed_vol"] = np.sign(m["ret_5m"].fillna(0.0)) * m["volume"]
     m["abs_ret_5m"] = m["ret_5m"].abs()
 
-    base = m.groupby(grp_cols, as_index=False).agg(
+    by_day = m.groupby(grp_cols, sort=False, observed=True)
+    base = by_day.agg(
         first_open_5m=("open", "first"),
         first_close_5m=("close", "first"),
         last_close_5m=("close", "last"),
         day_vol=("volume", "sum"),
         day_pv=("pv", "sum"),
         minute_realized_vol_5m=("ret_5m", "std"),
-        minute_up_ratio_5m=("ret_5m", lambda x: float((x > 0).mean()) if x.notna().any() else np.nan),
-        minute_ret_skew_5m=("ret_5m", lambda x: float(x.skew()) if x.notna().sum() > 2 else np.nan),
-        minute_ret_kurt_5m=("ret_5m", lambda x: float(x.kurt()) if x.notna().sum() > 3 else np.nan),
         signed_vol_sum=("signed_vol", "sum"),
         abs_ret_max=("abs_ret_5m", "max"),
+    ).reset_index()
+
+    # Keep the original minute_up_ratio denominator: NaN ret bars (the first
+    # bar of a day) counted as non-up unless the whole group has no valid ret.
+    ret_g = m["ret_5m"].groupby([m["code"], m["date"]], sort=False, observed=True)
+    ret_count = ret_g.count()
+    ret_stats = pd.DataFrame(
+        {
+            "minute_up_ratio_5m": (
+                (m["ret_5m"] > 0.0)
+                .astype("float64")
+                .groupby([m["code"], m["date"]], sort=False, observed=True)
+                .mean()
+                .where(ret_count > 0, np.nan)
+            ),
+            "minute_ret_skew_5m": ret_g.skew().where(ret_count > 2, np.nan),
+            "minute_ret_kurt_5m": ret_g.agg(lambda x: float(x.kurt()) if x.notna().sum() > 3 else np.nan),
+        }
+    ).reset_index()
+    base = base.merge(ret_stats, on=grp_cols, how="left")
+
+    first30 = (
+        m[m["bar_idx"] < 6]
+        .groupby(grp_cols, as_index=False, sort=False, observed=True)
+        .agg(pv_first30=("pv", "sum"), vol_first30=("volume", "sum"), close_30m=("close", "last"))
     )
-    first30 = m[m["bar_idx"] < 6].groupby(grp_cols, as_index=False).agg(pv_first30=("pv", "sum"), vol_first30=("volume", "sum"), close_30m=("close", "last"))
-    first60 = m[m["bar_idx"] < 12].groupby(grp_cols, as_index=False).agg(pv_first60=("pv", "sum"), vol_first60=("volume", "sum"))
-    last30 = m[m["bar_rev_idx"] < 6].groupby(grp_cols, as_index=False).agg(twap_last30=("close", "mean"), close_last30_start=("close", "first"), close_last30_end=("close", "last"))
+    first60 = (
+        m[m["bar_idx"] < 12]
+        .groupby(grp_cols, as_index=False, sort=False, observed=True)
+        .agg(pv_first60=("pv", "sum"), vol_first60=("volume", "sum"))
+    )
+    last30 = (
+        m[m["bar_rev_idx"] < 6]
+        .groupby(grp_cols, as_index=False, sort=False, observed=True)
+        .agg(twap_last30=("close", "mean"), close_last30_start=("close", "first"), close_last30_end=("close", "last"))
+    )
 
     feat = base.merge(first30, on=grp_cols, how="left").merge(first60, on=grp_cols, how="left").merge(last30, on=grp_cols, how="left")
     feat["vwap_day"] = feat["day_pv"] / (feat["day_vol"] + EPS)
@@ -1494,11 +1525,23 @@ def build_minute_daily_features(minute_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def _rolling_mean(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Series:
-    return g.transform(lambda s: s.rolling(window, min_periods=window).mean())
+    out = g.rolling(window, min_periods=window).mean().reset_index(level=0, drop=True)
+    return out.reindex(g.obj.index)
 
 
 def _rolling_std(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Series:
-    return g.transform(lambda s: s.rolling(window, min_periods=window).std())
+    out = g.rolling(window, min_periods=window).std().reset_index(level=0, drop=True)
+    return out.reindex(g.obj.index)
+
+
+def _rolling_min(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Series:
+    out = g.rolling(window, min_periods=window).min().reset_index(level=0, drop=True)
+    return out.reindex(g.obj.index)
+
+
+def _rolling_max(g: pd.core.groupby.generic.SeriesGroupBy, window: int) -> pd.Series:
+    out = g.rolling(window, min_periods=window).max().reset_index(level=0, drop=True)
+    return out.reindex(g.obj.index)
 
 
 def _get_numeric_or_nan(df: pd.DataFrame, col: str) -> pd.Series:
@@ -1556,13 +1599,13 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
         df[col] = pd.to_numeric(df[col], errors="coerce").astype("float32")
     if "preclose" not in df.columns:
         df["preclose"] = np.nan
-    df["preclose"] = df["preclose"].where(df["preclose"].notna(), df.groupby("code")["close"].shift(1))
+    df["preclose"] = df["preclose"].where(df["preclose"].notna(), df.groupby("code", sort=False, observed=True)["close"].shift(1))
     if "turn" not in df.columns:
         df["turn"] = np.nan
 
     # Merge minute-derived daily micro-structure features/prices.
     df = df.merge(minute_daily_feat, on=["code", "date"], how="left")
-    g = df.groupby("code")
+    g = df.groupby("code", sort=False, observed=True)
     df["ret_1d"] = g["close"].pct_change(1)
     df["ret_3d"] = g["close"].pct_change(3)
     df["ret_5d"] = g["close"].pct_change(5)
@@ -1573,8 +1616,8 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
     df["ma5"] = _rolling_mean(g["close"], 5)
     df["ma10"] = _rolling_mean(g["close"], 10)
     df["ma20"] = _rolling_mean(g["close"], 20)
-    df["roll_high_20"] = g["high"].transform(lambda s: s.rolling(20, min_periods=20).max())
-    df["roll_low_20"] = g["low"].transform(lambda s: s.rolling(20, min_periods=20).min())
+    df["roll_high_20"] = _rolling_max(g["high"], 20)
+    df["roll_low_20"] = _rolling_min(g["low"], 20)
     df["vol_ma5"] = _rolling_mean(g["volume"], 5)
     df["vol_ma20"] = _rolling_mean(g["volume"], 20)
     df["amount_ma20"] = _rolling_mean(g["amount"], 20)
@@ -1597,31 +1640,31 @@ def build_daily_feature_base(daily_df: pd.DataFrame, minute_daily_feat: pd.DataF
     prev_close = g["close"].shift(1)
     tr = np.maximum.reduce([(df["high"] - df["low"]).to_numpy(), (df["high"] - prev_close).abs().to_numpy(), (df["low"] - prev_close).abs().to_numpy()])
     df["tr"] = tr
-    df["atr14"] = g["tr"].transform(lambda s: s.rolling(14, min_periods=14).mean())
+    df["atr14"] = _rolling_mean(g["tr"], 14)
     df["atr_norm_14"] = df["atr14"] / (df["close"] + EPS)
     df["realized_vol_20"] = _rolling_std(g["ret_1d"], 20)
     df["ret_neg_1d"] = df["ret_1d"].where(df["ret_1d"] < 0.0, 0.0)
-    df["downside_vol_20"] = df.groupby("code")["ret_neg_1d"].transform(lambda s: s.rolling(20, min_periods=20).std())
+    df["downside_vol_20"] = _rolling_std(df.groupby("code", sort=False, observed=True)["ret_neg_1d"], 20)
     df["downside_vol_ratio_20"] = df["downside_vol_20"] / (df["realized_vol_20"] + EPS)
 
     delta = g["close"].diff()
     gain = delta.clip(lower=0.0)
     loss = (-delta).clip(lower=0.0)
-    avg_gain = gain.groupby(df["code"]).transform(lambda s: s.rolling(14, min_periods=14).mean())
-    avg_loss = loss.groupby(df["code"]).transform(lambda s: s.rolling(14, min_periods=14).mean())
+    avg_gain = _rolling_mean(gain.groupby(df["code"], sort=False, observed=True), 14)
+    avg_loss = _rolling_mean(loss.groupby(df["code"], sort=False, observed=True), 14)
     rs = avg_gain / (avg_loss + EPS)
     df["rsi14"] = 100.0 - (100.0 / (1.0 + rs))
 
     df["amihud_1d"] = np.abs(df["ret_1d"]) / (df["amount"] + EPS)
-    df["amihud_20"] = df.groupby("code")["amihud_1d"].transform(lambda s: s.rolling(20, min_periods=20).mean())
+    df["amihud_20"] = _rolling_mean(df.groupby("code", sort=False, observed=True)["amihud_1d"], 20)
     # Rolling correlation via rolling moments.
     # This avoids pandas rolling-corr pairwise/index edge cases and always returns 1D aligned output.
     by_code = df["code"]
-    mean_r = df["ret_1d"].groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
-    mean_v = df["vol_chg_1d"].groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
-    mean_rv = (df["ret_1d"] * df["vol_chg_1d"]).groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
-    mean_r2 = (df["ret_1d"] * df["ret_1d"]).groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
-    mean_v2 = (df["vol_chg_1d"] * df["vol_chg_1d"]).groupby(by_code).transform(lambda s: s.rolling(20, min_periods=20).mean())
+    mean_r = _rolling_mean(df["ret_1d"].groupby(by_code, sort=False, observed=True), 20)
+    mean_v = _rolling_mean(df["vol_chg_1d"].groupby(by_code, sort=False, observed=True), 20)
+    mean_rv = _rolling_mean((df["ret_1d"] * df["vol_chg_1d"]).groupby(by_code, sort=False, observed=True), 20)
+    mean_r2 = _rolling_mean((df["ret_1d"] * df["ret_1d"]).groupby(by_code, sort=False, observed=True), 20)
+    mean_v2 = _rolling_mean((df["vol_chg_1d"] * df["vol_chg_1d"]).groupby(by_code, sort=False, observed=True), 20)
     cov_rv = mean_rv - mean_r * mean_v
     std_r = np.sqrt(np.clip(mean_r2 - mean_r * mean_r, a_min=0.0, a_max=None))
     std_v = np.sqrt(np.clip(mean_v2 - mean_v * mean_v, a_min=0.0, a_max=None))
@@ -1734,6 +1777,12 @@ def _merge_daily_context_into_panel(panel: pd.DataFrame, daily_base: pd.DataFram
     ctx = daily_base[["date", "code", *ctx_cols]].copy()
     ctx["date"] = pd.to_datetime(ctx["date"], errors="coerce").dt.normalize()
     ctx["code"] = ctx["code"].astype(str).str.strip()
+    panel_dates = pd.DatetimeIndex(out["date"].dropna().unique())
+    panel_codes = set(out["code"].dropna().astype(str).unique())
+    if len(panel_dates) > 0:
+        ctx = ctx[ctx["date"].isin(set(panel_dates.tolist()))]
+    if panel_codes:
+        ctx = ctx[ctx["code"].isin(panel_codes)]
     ctx = ctx.dropna(subset=["date", "code"]).drop_duplicates(["date", "code"], keep="last")
 
     out = out.merge(ctx, on=["date", "code"], how="left")

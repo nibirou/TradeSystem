@@ -1134,10 +1134,38 @@ python Strategy7/run_strategy7.py `
 3. 行情文件读取支持线程池：`--data-load-workers 0` 为自动保守选择，`1` 为串行，显式设置 `4/8` 可在 Parquet/CSV I/O 较慢时提速；也可用环境变量 `STRATEGY7_DATA_LOAD_WORKERS`
 4. 因子值缓存仓库读写支持线程池：`--factor-value-store-workers 0` 自动保守选择，`1` 串行；缓存构建/水合在大量股票小文件上通常能明显减少等待
 5. 当前性能优化优先保持输出不变：I/O 并行只改变读取/写入调度，最终仍按代码和时间排序；截面 winsor/zscore 使用批量矩阵统计替代逐因子 groupby 循环，统计口径保持不变
-6. 因子值仓库构建时优先用 `--factor-packages` / `--factor-list` 收窄范围，避免不必要的跨频桥接和全量因子计算
-7. 固定 `--random-state` 便于复现
-8. 对深度模型先用小 `epochs` 验证流程，再扩到正式训练
-9. 多次挖掘后定期审阅 `factor_catalog.json`，下线失效因子
+6. 分钟聚合日特征、通用 rolling 特征、分钟/周月重采样已尽量走 pandas grouped rolling/Grouper 聚合内核，减少逐股票/逐交易日 Python 循环；输出口径与原逻辑保持一致
+7. 标签对齐校验与样本切分减少整表复制：校验只复制必要时间列，切分先计算掩码再清理 train/test 子集的 inf
+8. 外部表、catalog 因子表、日频上下文合并会先按当前日期/股票池范围过滤，再排序去重和 merge，减少历史累计表的无关处理
+9. 特征工程前的训练副本只保留候选因子列，避免为覆盖率/相关性筛选复制整张训练表
+10. 因子值仓库构建时优先用 `--factor-packages` / `--factor-list` 收窄范围，避免不必要的跨频桥接和全量因子计算
+11. 固定 `--random-state` 便于复现
+12. 对深度模型先用小 `epochs` 验证流程，再扩到正式训练
+13. 多次挖掘后定期审阅 `factor_catalog.json`，下线失效因子
+
+### 13.1 C++/pybind 引入判断
+
+当前版本先处理 Python 层确定性热点：行情文件线程池、因子值库线程池、按需频率构建、跨频桥接流式聚合、截面批量 winsor/zscore、分钟日特征向量化统计、rolling/Grouper 内核化、无缺失填充快路径、标签/切分窄表处理、外部表/catalog/日频上下文预过滤、FE 窄表副本。后续是否引入 C++/pybind，建议以服务器真实 profile 为准，而不是直接下沉业务流程。
+
+满足以下条件时才建议下沉：
+
+1. 该函数在正式参数下稳定占总耗时 20% 以上，且不是磁盘 I/O 等待
+2. 输入输出可以稳定表示为 NumPy 连续数组或少量标量/索引数组
+3. 逻辑已经稳定，短期不会频繁改研究口径
+4. 有 Python 参考实现和小样本等价测试，能比较 NaN、inf、边界窗口、停牌/缺失日期
+
+优先候选：
+
+1. 5min 路径撮合、VWAP/TWAP、止盈止损路径扫描
+2. 大规模 rolling mean/std/min/max/skew/kurt 等窗口核
+3. future label/path label 计算
+4. 大规模矩阵 winsorize/zscore/rank
+
+不建议下沉：
+
+1. CSV/Parquet 读取和 schema 兼容
+2. pandas merge/join/asof 对齐
+3. 因子注册、CLI、调度、catalog 等经常变化的研究流程
 
 ## 14. 推荐阅读
 

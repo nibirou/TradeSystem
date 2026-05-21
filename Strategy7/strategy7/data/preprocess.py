@@ -140,6 +140,8 @@ def fill_feature_na(df: pd.DataFrame, cols: List[str], method: str = "median") -
     valid_cols = [c for c in cols if c in df.columns]
     if not valid_cols:
         return df.copy()
+    if not bool(df[valid_cols].isna().to_numpy().any()):
+        return df.copy()
     out = df.copy()
     if method == "zero":
         out[valid_cols] = out[valid_cols].fillna(0.0)
@@ -172,6 +174,8 @@ def fill_feature_na_with_reference(
     """Fill NA by train-fitted statistics to avoid test-period leakage."""
     valid_cols = [c for c in cols if c in df.columns]
     if not valid_cols:
+        return df.copy()
+    if not bool(df[valid_cols].isna().to_numpy().any()):
         return df.copy()
 
     out = df.copy()

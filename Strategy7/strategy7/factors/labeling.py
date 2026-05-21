@@ -25,7 +25,7 @@ def _add_daily_label(
     price_table: pd.DataFrame,
 ) -> pd.DataFrame:
     out = panel.copy()
-    g = out.groupby("code")
+    g = out.groupby("code", sort=False, observed=True)
     out["entry_date"] = g["date"].shift(-1)
     out["exit_date"] = g["date"].shift(-(horizon + 1))
 
@@ -49,9 +49,8 @@ def _add_daily_label(
 
 
 def _add_generic_bar_label(panel: pd.DataFrame, horizon: int, time_col: str, freq: str) -> pd.DataFrame:
-    out = panel.copy()
-    out = out.sort_values(["code", time_col]).copy()
-    g = out.groupby("code")
+    out = panel.sort_values(["code", time_col]).copy()
+    g = out.groupby("code", sort=False, observed=True)
     out["entry_ts"] = g[time_col].shift(-1)
     out["exit_ts"] = g[time_col].shift(-(horizon + 1))
 
@@ -110,17 +109,19 @@ def split_train_test(
     factor_freq: str,
     label_task: str,
 ) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    out = panel.copy()
-    out = out.replace([np.inf, -np.inf], np.nan)
     target_col = pick_target_column(label_task)
     base_required: List[str] = ["entry_ts", "exit_ts", "future_ret_n", target_col]
-    out = out.dropna(subset=[c for c in base_required if c in out.columns]).copy()
+    req_cols = [c for c in base_required if c in panel.columns]
+    req = panel[req_cols].replace([np.inf, -np.inf], np.nan) if req_cols else pd.DataFrame(index=panel.index)
+    valid_required = pd.Series(True, index=panel.index)
+    if req_cols:
+        valid_required = req.notna().all(axis=1)
 
     time_col = "date" if factor_freq in {"D", "W", "M"} else "datetime"
-    if time_col not in out.columns:
+    if time_col not in panel.columns:
         raise ValueError(f"missing time column {time_col} for factor_freq={factor_freq}")
 
-    signal_ts = pd.to_datetime(out[time_col], errors="coerce")
+    signal_ts = pd.to_datetime(panel[time_col], errors="coerce")
     if factor_freq in INTRADAY_FREQS:
         # Use trading date boundaries for intraday bars to include the whole session.
         signal_anchor = signal_ts.dt.normalize()
@@ -129,21 +130,23 @@ def split_train_test(
     train_mask = (signal_anchor >= train_start) & (signal_anchor <= train_end)
     test_mask = (signal_anchor >= test_start) & (signal_anchor <= test_end)
 
-    if "target_date" in out.columns:
-        target_ts = pd.to_datetime(out["target_date"], errors="coerce")
-    elif "exit_ts" in out.columns:
-        target_ts = pd.to_datetime(out["exit_ts"], errors="coerce")
+    if "target_date" in panel.columns:
+        target_ts = pd.to_datetime(panel["target_date"], errors="coerce")
+    elif "exit_ts" in panel.columns:
+        target_ts = pd.to_datetime(panel["exit_ts"], errors="coerce")
     else:
-        target_ts = pd.Series(pd.NaT, index=out.index, dtype="datetime64[ns]")
+        target_ts = pd.Series(pd.NaT, index=panel.index, dtype="datetime64[ns]")
 
     if factor_freq in INTRADAY_FREQS:
         target_anchor = target_ts.dt.normalize()
     else:
         target_anchor = target_ts
-    train_mask = train_mask & (target_anchor <= train_end)
-    test_mask = test_mask & (target_anchor <= test_end)
+    train_mask = valid_required & train_mask & (target_anchor <= train_end)
+    test_mask = valid_required & test_mask & (target_anchor <= test_end)
 
-    return out[train_mask].copy(), out[test_mask].copy()
+    train_df = panel.loc[train_mask].copy().replace([np.inf, -np.inf], np.nan)
+    test_df = panel.loc[test_mask].copy().replace([np.inf, -np.inf], np.nan)
+    return train_df, test_df
 
 
 def validate_label_frequency_alignment(
@@ -157,10 +160,11 @@ def validate_label_frequency_alignment(
     freq = str(factor_freq)
     time_col = "datetime" if freq in INTRADAY_FREQS else "date"
 
-    out = panel.copy()
+    needed_cols = [time_col, "signal_ts", "entry_ts", "exit_ts", "time_freq", "code"]
+    out = panel[[c for c in needed_cols if c in panel.columns]].copy()
     missing: List[str] = []
     for c in [time_col, "signal_ts", "entry_ts", "exit_ts"]:
-        if c not in out.columns:
+        if c not in panel.columns:
             missing.append(c)
 
     if missing:

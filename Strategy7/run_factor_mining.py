@@ -1362,13 +1362,14 @@ def main() -> None:
                 pca_variance_ratio=0.95,
                 pca_max_components=128,
             )
+            fe_cols = [c for c in selected_material_cols if c in panel.columns]
             _, _, selected_after_fe, material_fe_report = apply_factor_engineering(
-                train_df=panel.loc[train_mask_fe].copy(),
-                test_df=panel.loc[valid_mask_fe].copy(),
+                train_df=panel.loc[train_mask_fe, fe_cols].copy(),
+                test_df=panel.loc[valid_mask_fe, fe_cols].copy(),
                 factor_cols=selected_material_cols,
                 options=fe_opts,
                 target_col="future_ret_n",
-                raw_train_df=panel.loc[train_mask_fe].copy(),
+                raw_train_df=panel.loc[train_mask_fe, fe_cols].copy(),
             )
             if selected_after_fe:
                 removed = sorted(set(selected_material_cols) - set(selected_after_fe))
