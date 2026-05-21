@@ -133,6 +133,7 @@
 - 因子值缓存复用（默认关闭）：
   - `--enable-factor-value-store` 开启后，挖掘素材因子会优先从缓存读取
   - 缺失素材因子自动增量计算并回写缓存
+  - `--factor-value-store-workers` 控制逐股票缓存文件读写线程数，`0` 自动保守选择，`1` 串行；也可用 `STRATEGY7_FACTOR_STORE_WORKERS`
   - 仓库结构与主入口一致：`<factor_freq>/by_group/<group>/<factor_package>/<code>.parquet|csv`
 - 素材特征工程（可选，默认关闭）：
   - 开关：`--enable-material-feature-engineering`
@@ -195,6 +196,7 @@
 
 - 新增参数：
   - `--data-load-workers`：行情日线/5min 文件并行加载线程数，`0` 自动、`1` 串行；也可用 `STRATEGY7_DATA_LOAD_WORKERS`
+  - `--factor-value-store-workers`：因子值缓存逐股票文件读写线程数，`0` 自动、`1` 串行；也可用 `STRATEGY7_FACTOR_STORE_WORKERS`
   - `--fundamental-root-ak`（默认 `data_baostock/ak_fundamental`）
   - `--fundamental-root-bsq`（默认 `data_baostock/baostock_fundamental_q`）
   - `--fundamental-file-format auto|csv|parquet`
@@ -463,6 +465,7 @@ python Strategy7/run_factor_mining.py \
   --enable-factor-value-store \
   --factor-value-store-root auto \
   --factor-value-store-format parquet \
+  --factor-value-store-workers 0 \
   --enable-material-feature-engineering \
   --material-fe-min-coverage 0.75 \
   --material-fe-corr-threshold 0.95 \

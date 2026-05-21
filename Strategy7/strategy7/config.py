@@ -73,6 +73,7 @@ class FactorConfig:
     factor_value_store_build_all: bool
     factor_value_store_build_only: bool
     factor_value_store_chunk_size: int
+    factor_value_store_workers: int
 
 
 @dataclass
@@ -626,7 +627,7 @@ def parse_args() -> argparse.Namespace:
         "--data-load-workers",
         type=int,
         default=int(os.environ.get("STRATEGY7_DATA_LOAD_WORKERS", "0")),
-        help="行情日线/5分钟文件并行加载线程数；0=自动保守选择，1=串行",
+        help="行情日线/5分钟文件并行加载线程数；0=自动保守选择，1=串行。I/O 充足时可以试 8，如果内存或磁盘压力明显就回到 4 或 1。",
     )
     g_data.add_argument(
         "--extra-factor-paths",
@@ -863,6 +864,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=64,
         help="批量构建缓存仓库时的分块大小（避免一次性计算过多因子）",
+    )
+    g_factor.add_argument(
+        "--factor-value-store-workers",
+        type=int,
+        default=int(os.environ.get("STRATEGY7_FACTOR_STORE_WORKERS", "0")),
+        help="因子值缓存仓库股票文件读写线程数；0=自动保守选择，1=串行。如果是网络盘或共享存储，建议先从 1/2/4 压测；本地 SSD 通常 4/8 更合适。",
     )
 
     # =========================
@@ -1256,6 +1263,8 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("fe_pca_max_components must be positive.")
     if int(args.factor_value_store_chunk_size) <= 0:
         raise ValueError("factor_value_store_chunk_size must be positive.")
+    if int(getattr(args, "factor_value_store_workers", 0)) < 0:
+        raise ValueError("factor_value_store_workers must be non-negative; use 0 for auto.")
     if bool(args.factor_value_store_build_only) and not bool(args.factor_value_store_build_all):
         raise ValueError("factor_value_store_build_only requires factor_value_store_build_all=true.")
     if bool(args.factor_value_store_build_all) and not bool(args.enable_factor_value_store):
@@ -1507,6 +1516,7 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         factor_value_store_build_all=bool(getattr(args, "factor_value_store_build_all", False)),
         factor_value_store_build_only=bool(getattr(args, "factor_value_store_build_only", False)),
         factor_value_store_chunk_size=int(getattr(args, "factor_value_store_chunk_size", 64)),
+        factor_value_store_workers=int(getattr(args, "factor_value_store_workers", 0)),
     )
     stock = StockModelConfig(
         model_type=args.stock_model_type,

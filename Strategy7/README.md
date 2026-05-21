@@ -60,7 +60,8 @@ python Strategy7/run_strategy7.py \
   --factor-packages trend \
   --enable-factor-value-store true \
   --factor-value-store-build-all true \
-  --factor-value-store-build-only true
+  --factor-value-store-build-only true \
+  --factor-value-store-workers 0
 ```
 
 不传 `--factor-packages` 和 `--factor-list` 时才会构建该频率默认全量清单；全量清单若包含跨频桥接因子，会按股票流式聚合分钟数据以降低内存峰值。
@@ -94,6 +95,8 @@ python Strategy7/run_strategy7.py --universe all --data-load-workers 4
 ```
 
 `--data-load-workers 0` 表示自动保守选择，`1` 表示串行；也可通过 `STRATEGY7_DATA_LOAD_WORKERS` 设置默认值。
+
+因子值缓存仓库的逐股票文件读写也支持线程池：`--factor-value-store-workers 0` 自动保守选择，`1` 强制串行；也可通过 `STRATEGY7_FACTOR_STORE_WORKERS` 设置默认值。
 
 基本面数据接入（AK + Baostock）：
 

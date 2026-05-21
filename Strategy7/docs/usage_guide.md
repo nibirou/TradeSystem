@@ -588,7 +588,7 @@ bash Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.s
 1. 数据：
    `--universe --data-root --stock-list-path(--hs300-list-path 兼容) --index-root --file-format --max-files --main-board-only --data-load-workers --fundamental-root-ak --fundamental-root-bsq --fundamental-file-format --disable-fundamental-data --text-root-news --text-root-notice --text-root-report-em --text-root-report-iwencai --text-file-format --disable-text-data`
 2. 因子：
-   `--factor-freq --factor-list --factor-packages --custom-factor-py --list-factors --auto-export-factor-snapshot --export-factor-list --factor-list-export-format --factor-list-export-path --label-task --lookback-days --enable-factor-engineering --fe-min-coverage --fe-min-std --fe-corr-threshold --fe-preselect-top-n --fe-min-factors --fe-max-factors --fe-orth-method --fe-pca-variance-ratio --fe-pca-max-components --enable-factor-value-store --factor-value-store-root --factor-value-store-format --factor-value-store-build-all --factor-value-store-build-only --factor-value-store-chunk-size`
+   `--factor-freq --factor-list --factor-packages --custom-factor-py --list-factors --auto-export-factor-snapshot --export-factor-list --factor-list-export-format --factor-list-export-path --label-task --lookback-days --enable-factor-engineering --fe-min-coverage --fe-min-std --fe-corr-threshold --fe-preselect-top-n --fe-min-factors --fe-max-factors --fe-orth-method --fe-pca-variance-ratio --fe-pca-max-components --enable-factor-value-store --factor-value-store-root --factor-value-store-format --factor-value-store-build-all --factor-value-store-build-only --factor-value-store-chunk-size --factor-value-store-workers`
 3. 选股模型：
    `--stock-model-type`（`decision_tree`/`launch_boost`/`factor_gcl`/`dafat`/`dfq_timesnet`）
    `launch_boost` 超参：`--launch-boost-max-depth --launch-boost-learning-rate --launch-boost-max-iter --launch-boost-l2 --launch-boost-return-head-weight`
@@ -745,11 +745,12 @@ python Strategy7/run_strategy7.py `
 4. 可按当前 CLI 筛选后的因子清单批量构建：`--factor-value-store-build-all true`
 5. 仅构建缓存后退出（不训练/不回测）：`--factor-value-store-build-only true`
 6. 分块大小：`--factor-value-store-chunk-size`（默认 `64`）
-7. 每次写入会自动更新跨度汇总：`<factor_freq>/factor_span_summary.csv`
-8. 若 `data_baostock` 目录不可写，请显式指定 `--factor-value-store-root` 到可写路径
-9. `--factor-packages` / `--factor-list` 会限制本次构建范围；两者都不传时才构建该频率默认全量清单
-10. 日频构建若未选择 `multi_freq` / `bridge` 等跨频包，不会再展开 5min/15min/30min/60min/120min 桥接视图
-11. 增量写入同一股票缓存文件时，新值优先、旧值补缺；空旧表或全空列会被显式过滤/数值化，避免 pandas 未来版本的 concat dtype 告警
+7. 逐股票文件读写线程数：`--factor-value-store-workers`（`0` 自动保守选择，`1` 串行；也可用 `STRATEGY7_FACTOR_STORE_WORKERS`）
+8. 每次写入会自动更新跨度汇总：`<factor_freq>/factor_span_summary.csv`
+9. 若 `data_baostock` 目录不可写，请显式指定 `--factor-value-store-root` 到可写路径
+10. `--factor-packages` / `--factor-list` 会限制本次构建范围；两者都不传时才构建该频率默认全量清单
+11. 日频构建若未选择 `multi_freq` / `bridge` 等跨频包，不会再展开 5min/15min/30min/60min/120min 桥接视图
+12. 增量写入同一股票缓存文件时，新值优先、旧值补缺；空旧表或全空列会被显式过滤/数值化，避免 pandas 未来版本的 concat dtype 告警
 
 推荐两步法（主入口）：
 
@@ -761,7 +762,8 @@ python Strategy7/run_strategy7.py `
   --factor-packages trend,liquidity `
   --enable-factor-value-store true `
   --factor-value-store-build-all true `
-  --factor-value-store-build-only true
+  --factor-value-store-build-only true `
+  --factor-value-store-workers 0
 ```
 
 若确实要构建该频率默认全量清单，去掉 `--factor-packages` 和 `--factor-list` 即可。全量清单包含跨频桥接因子时，框架会按股票流式聚合分钟源，仍建议从较小 `--max-files` 或较小 `--factor-value-store-chunk-size` 开始压测。
@@ -851,7 +853,7 @@ python Strategy7/run_strategy7.py `
    - `--list-factors` / `--export-factor-list`：列出并导出挖掘可用因子清单
    - `--auto-export-factor-snapshot`：可选导出“全部因子 vs 本次使用因子”快照（默认关闭）
    - `--factor-catalog-path` / `--disable-catalog-factors`：控制 catalog 因子加载与过滤
-   - `--enable-factor-value-store --factor-value-store-root --factor-value-store-format`：启用素材因子值缓存复用（命中则直读，缺失增量计算）
+   - `--enable-factor-value-store --factor-value-store-root --factor-value-store-format --factor-value-store-workers`：启用素材因子值缓存复用（命中则直读，缺失增量计算，股票文件读写可并发）
 
 框架：
 
@@ -1130,11 +1132,12 @@ python Strategy7/run_strategy7.py `
 1. 先用 `--max-files` 做小样本烟雾测试，再跑全量
 2. `--max-files` 按“最多加载的有效股票样本数”生效（不是简单截取前 N 个文件），可降低全市场小样本调试的随机空样本风险
 3. 行情文件读取支持线程池：`--data-load-workers 0` 为自动保守选择，`1` 为串行，显式设置 `4/8` 可在 Parquet/CSV I/O 较慢时提速；也可用环境变量 `STRATEGY7_DATA_LOAD_WORKERS`
-4. 当前性能优化优先保持输出不变：I/O 并行只改变读取调度，最终仍按代码和时间排序；截面 winsor/zscore 使用批量矩阵统计替代逐因子 groupby 循环，统计口径保持不变
-5. 因子值仓库构建时优先用 `--factor-packages` / `--factor-list` 收窄范围，避免不必要的跨频桥接和全量因子计算
-6. 固定 `--random-state` 便于复现
-7. 对深度模型先用小 `epochs` 验证流程，再扩到正式训练
-8. 多次挖掘后定期审阅 `factor_catalog.json`，下线失效因子
+4. 因子值缓存仓库读写支持线程池：`--factor-value-store-workers 0` 自动保守选择，`1` 串行；缓存构建/水合在大量股票小文件上通常能明显减少等待
+5. 当前性能优化优先保持输出不变：I/O 并行只改变读取/写入调度，最终仍按代码和时间排序；截面 winsor/zscore 使用批量矩阵统计替代逐因子 groupby 循环，统计口径保持不变
+6. 因子值仓库构建时优先用 `--factor-packages` / `--factor-list` 收窄范围，避免不必要的跨频桥接和全量因子计算
+7. 固定 `--random-state` 便于复现
+8. 对深度模型先用小 `epochs` 验证流程，再扩到正式训练
+9. 多次挖掘后定期审阅 `factor_catalog.json`，下线失效因子
 
 ## 14. 推荐阅读
 

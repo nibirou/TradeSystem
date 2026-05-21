@@ -23,8 +23,8 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python \
   --enable-factor-value-store true \
   --factor-value-store-root "${store_root}" \
   --factor-value-store-format parquet \
+  --factor-value-store-workers "${STRATEGY7_FACTOR_STORE_WORKERS:-0}" \
   --factor-value-store-build-all true \
   --factor-value-store-build-only true \
   --output-dir "${output_dir}" \
   --log-level normal
-

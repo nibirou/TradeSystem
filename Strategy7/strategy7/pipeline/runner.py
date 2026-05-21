@@ -1081,6 +1081,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         store_root_arg=str(getattr(cfg.factors, "factor_value_store_root", "auto")),
     )
     factor_store_fmt = str(getattr(cfg.factors, "factor_value_store_format", "parquet"))
+    factor_store_workers = int(getattr(cfg.factors, "factor_value_store_workers", 0))
     factor_store_build_report: Dict[str, object] = {}
     factor_store_hydrate_report: Dict[str, object] = {"cache_enabled": False}
 
@@ -1102,6 +1103,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             file_format=factor_store_fmt,
             factor_package_map=factor_package_map,
             chunk_size=int(getattr(cfg.factors, "factor_value_store_chunk_size", 64)),
+            io_workers=factor_store_workers,
         )
         log_progress(
             "因子值缓存仓库构建完成："
@@ -1129,6 +1131,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             factor_package_map=factor_package_map,
             coverage_threshold=0.999999,
             write_back=True,
+            io_workers=factor_store_workers,
         )
     else:
         panel = compute_factor_panel(base_df=base_df, library=factor_lib, freq=factor_freq, selected_factors=selected_factors)
@@ -1684,6 +1687,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "factor_value_store_enabled": bool(factor_store_enabled),
             "factor_value_store_root": str(factor_store_root) if factor_store_enabled else "",
             "factor_value_store_format": str(factor_store_fmt) if factor_store_enabled else "",
+            "factor_value_store_workers": int(factor_store_workers) if factor_store_enabled else 0,
             "factor_value_store_build_all": bool(getattr(cfg.factors, "factor_value_store_build_all", False)),
             "factor_value_store_build_only": bool(getattr(cfg.factors, "factor_value_store_build_only", False)),
             "factor_value_store_build_report": factor_store_build_report,

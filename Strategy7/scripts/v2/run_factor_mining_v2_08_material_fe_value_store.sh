@@ -40,7 +40,7 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python \
   --enable-factor-value-store \
   --factor-value-store-root "${value_store_root}" \
   --factor-value-store-format parquet \
+  --factor-value-store-workers "${STRATEGY7_FACTOR_STORE_WORKERS:-0}" \
   --auto-export-factor-snapshot \
   --factor-store-root "${store_root}" \
   --save-format parquet
-

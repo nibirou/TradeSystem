@@ -17,6 +17,7 @@ fundamental_file_format="auto"
 text_file_format="auto"
 store_format="csv"
 chunk_size="16"
+store_workers="${STRATEGY7_FACTOR_STORE_WORKERS:-0}"
 log_level="normal"
 diagnose_lite="0"
 
@@ -68,6 +69,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --factor-value-store-chunk-size)
       chunk_size="$2"
+      shift 2
+      ;;
+    --factor-value-store-workers)
+      store_workers="$2"
       shift 2
       ;;
     --log-level)
@@ -122,6 +127,7 @@ args=(
   --factor-value-store-build-all true
   --factor-value-store-build-only true
   --factor-value-store-chunk-size "${chunk_size}"
+  --factor-value-store-workers "${store_workers}"
   --factor-packages "bottom_launch,trend,reversal,liquidity,volatility,price_action,crowding,oscillator,overnight,multi_freq,context,fund_quality,fund_cashflow"
   --log-level "${log_level}"
   --output-dir "${output_dir}"
@@ -145,19 +151,20 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python "${args[@]}"
 # --factor-packages "bottom_launch,trend,reversal,liquidity,volatility,price_action,crowding,oscillator,overnight,multi_freq,context,fund_quality,fund_cashflow" \
 
 python3 ./Strategy7/run_strategy7.py \
-  --train-start 2024-01-01 \
-  --train-end 2024-12-31 \
-  --test-start 2025-01-01 \
-  --test-end 2025-12-31 \
+  --train-start 2025-06-01 \
+  --train-end 2025-06-30 \
+  --test-start 2025-07-01 \
+  --test-end 2025-07-31 \
   --universe all \
   --data-root auto \
   --disable-catalog-factors \
-  --factor-freq D \
+  --factor-freq 60min \
   --disable-text-data \
   --enable-factor-value-store true \
   --factor-value-store-build-all true \
   --factor-value-store-build-only true \
-  --factor-packages "trend" \
+  --factor-packages "reversal" \
   --max-files 5000 \
   --main-board-only \
-  --factor-value-store-chunk-size 16
+  --factor-value-store-chunk-size 16 \
+  --factor-value-store-workers "${STRATEGY7_FACTOR_STORE_WORKERS:-0}"

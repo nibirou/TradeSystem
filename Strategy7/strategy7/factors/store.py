@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import gc
+import os
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Sequence, Tuple
@@ -36,6 +38,19 @@ class FactorStoreOptions:
     build_all: bool = False
     build_only: bool = False
     chunk_size: int = 64
+    io_workers: int = 0
+
+
+def _effective_factor_store_workers(requested: int, item_count: int) -> int:
+    if item_count <= 1:
+        return 1
+    requested = int(requested or 0)
+    if requested == 1:
+        return 1
+    if requested > 1:
+        return min(requested, int(item_count))
+    cpu = os.cpu_count() or 2
+    return max(1, min(8, max(1, cpu // 2), int(item_count)))
 
 
 def _infer_data_baostock_root(data_root: str) -> Path:
@@ -199,12 +214,14 @@ def load_factors_from_store(
     store_root: Path,
     file_format: str,
     factor_package_map: Dict[str, str],
+    io_workers: int = 0,
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
     if base_df.empty or not factors:
         return pd.DataFrame(index=base_df.index), {
             "loaded_factor_count": 0,
             "loaded_full_count": 0,
             "loaded_partial_count": 0,
+            "store_io_workers": 1,
             "factor_present_coverage": {},
             "factor_value_coverage": {},
         }
@@ -222,6 +239,8 @@ def load_factors_from_store(
     factor_present_cov: Dict[str, float] = {str(f): 0.0 for f in factors}
     factor_value_cov: Dict[str, float] = {str(f): 0.0 for f in factors}
     base_row_count = float(len(base_keys))
+    codes = sorted(base_keys["code"].astype(str).drop_duplicates().tolist())
+    workers = _effective_factor_store_workers(int(io_workers or 0), len(codes))
     for (grp, pkg), facs in grouped.items():
         pkg_dir = _package_dir(
             store_root=store_root,
@@ -231,22 +250,35 @@ def load_factors_from_store(
         )
         if not pkg_dir.exists():
             continue
-        parts: List[pd.DataFrame] = []
-        for code in sorted(base_keys["code"].astype(str).drop_duplicates().tolist()):
+
+        def _read_one_code(code: str) -> pd.DataFrame:
             fp = _code_file_path(pkg_dir, code, fmt)
             if not fp.exists():
-                continue
+                return pd.DataFrame()
             tbl = _read_table(fp, fmt)
             if tbl.empty:
-                continue
+                return pd.DataFrame()
             tbl = _normalize_time_cols(tbl, factor_freq=factor_freq)
             keep = [c for c in key_cols + extra_cols + facs if c in tbl.columns]
             if len(keep) <= len(key_cols):
-                continue
+                return pd.DataFrame()
             tbl = tbl[keep].copy()
             tbl = tbl[tbl["code"].astype(str) == str(code)]
-            tbl = tbl.drop_duplicates(key_cols, keep="last")
-            parts.append(tbl)
+            return tbl.drop_duplicates(key_cols, keep="last")
+
+        parts: List[pd.DataFrame] = []
+        if workers <= 1:
+            for code in codes:
+                part = _read_one_code(code)
+                if not part.empty:
+                    parts.append(part)
+        else:
+            batch_size = max(8, workers * 2)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for i in range(0, len(codes), batch_size):
+                    for part in executor.map(_read_one_code, codes[i : i + batch_size]):
+                        if not part.empty:
+                            parts.append(part)
         if not parts:
             continue
         pkg_df = _concat_non_empty(parts)
@@ -280,6 +312,7 @@ def load_factors_from_store(
         "loaded_factor_count": int(len(set(loaded_cols))),
         "loaded_full_count": int(full_cnt),
         "loaded_partial_count": int(partial_cnt),
+        "store_io_workers": int(workers),
         "factor_present_coverage": factor_present_cov,
         "factor_value_coverage": factor_value_cov,
     }
@@ -397,9 +430,10 @@ def save_factors_to_store(
     store_root: Path,
     file_format: str,
     factor_package_map: Dict[str, str],
+    io_workers: int = 0,
 ) -> Dict[str, object]:
     if panel_df.empty or not factors:
-        return {"saved_factor_count": 0, "saved_code_files": 0, "span_summary_path": ""}
+        return {"saved_factor_count": 0, "saved_code_files": 0, "span_summary_path": "", "store_io_workers": 1}
     fmt = _choose_format(file_format)
     key_cols = _time_key_cols(panel_df, factor_freq=factor_freq)
     extra_cols = _time_extra_cols(panel_df, factor_freq=factor_freq)
@@ -408,10 +442,12 @@ def save_factors_to_store(
     panel = _normalize_time_cols(panel_df[needed_cols].copy(), factor_freq=factor_freq)
     panel = panel.dropna(subset=key_cols)
     if panel.empty:
-        return {"saved_factor_count": 0, "saved_code_files": 0, "span_summary_path": ""}
+        return {"saved_factor_count": 0, "saved_code_files": 0, "span_summary_path": "", "store_io_workers": 1}
 
     pkg_map, grp_map = _factor_package_maps(factors=factors, factor_package_map=factor_package_map)
     grouped = _group_factors_by_package(factors=factors, pkg_map=pkg_map, grp_map=grp_map)
+    code_count = int(panel["code"].astype(str).nunique()) if "code" in panel.columns else 0
+    workers = _effective_factor_store_workers(int(io_workers or 0), code_count)
 
     saved_files = 0
     for (grp, pkg), facs in grouped.items():
@@ -428,20 +464,37 @@ def save_factors_to_store(
             continue
         pkg_panel = panel[keep_cols].copy()
         pkg_panel = pkg_panel.drop_duplicates(key_cols, keep="last")
-        for code, g in pkg_panel.groupby("code", sort=False):
+
+        def _write_one_group(item: Tuple[str, pd.DataFrame]) -> int:
+            code, g = item
             fp = _code_file_path(pkg_dir, str(code), fmt)
             old = _read_table(fp, fmt)
             if not old.empty:
                 old = _normalize_time_cols(old, factor_freq=factor_freq)
             merged = _merge_existing_and_new(
                 old_df=old,
-                new_df=g.copy(),
+                new_df=g,
                 key_cols=key_cols + extra_cols,
                 value_cols=[c for c in facs if c in g.columns],
             )
             merged = merged.sort_values(key_cols + extra_cols).reset_index(drop=True)
             _write_table(merged, fp, fmt)
-            saved_files += 1
+            return 1
+
+        if workers <= 1:
+            for code, g in pkg_panel.groupby("code", sort=False):
+                saved_files += _write_one_group((str(code), g.copy()))
+        else:
+            batch: List[Tuple[str, pd.DataFrame]] = []
+            batch_size = max(8, workers * 2)
+            with ThreadPoolExecutor(max_workers=workers) as executor:
+                for code, g in pkg_panel.groupby("code", sort=False):
+                    batch.append((str(code), g.copy()))
+                    if len(batch) >= batch_size:
+                        saved_files += sum(executor.map(_write_one_group, batch))
+                        batch.clear()
+                if batch:
+                    saved_files += sum(executor.map(_write_one_group, batch))
 
     span_path = _upsert_span_summary(
         store_root=store_root,
@@ -454,6 +507,7 @@ def save_factors_to_store(
         "saved_factor_count": int(len(set([str(x) for x in factors]))),
         "saved_code_files": int(saved_files),
         "span_summary_path": str(span_path),
+        "store_io_workers": int(workers),
     }
 
 
@@ -468,6 +522,7 @@ def hydrate_factor_panel_with_store(
     factor_package_map: Dict[str, str],
     coverage_threshold: float = 0.999999,
     write_back: bool = True,
+    io_workers: int = 0,
 ) -> Tuple[pd.DataFrame, Dict[str, object]]:
     panel = base_df.copy()
     if not selected_factors:
@@ -480,6 +535,7 @@ def hydrate_factor_panel_with_store(
         store_root=store_root,
         file_format=file_format,
         factor_package_map=factor_package_map,
+        io_workers=io_workers,
     )
     need_compute: List[str] = []
     present_cov_map: Dict[str, float] = {
@@ -522,6 +578,7 @@ def hydrate_factor_panel_with_store(
             store_root=store_root,
             file_format=file_format,
             factor_package_map=factor_package_map,
+            io_workers=io_workers,
         )
 
     return panel, {
@@ -542,6 +599,7 @@ def build_factor_store_for_full_list(
     file_format: str,
     factor_package_map: Dict[str, str],
     chunk_size: int = 64,
+    io_workers: int = 0,
 ) -> Dict[str, object]:
     if not all_factors:
         return {
@@ -551,13 +609,16 @@ def build_factor_store_for_full_list(
             "saved_factor_count": 0,
             "saved_code_files": 0,
             "span_summary_path": "",
+            "store_io_workers": 1,
         }
     n = max(int(chunk_size), 1)
     total_saved_files = 0
     span_path = ""
+    effective_workers = 1
     total_chunks = int((len(all_factors) + n - 1) // n)
     log_progress(
-        f"factor store full build start: freq={freq}, factors={len(all_factors)}, chunk_size={n}, chunks={total_chunks}",
+        f"factor store full build start: freq={freq}, factors={len(all_factors)}, "
+        f"chunk_size={n}, chunks={total_chunks}, io_workers={int(io_workers or 0)}",
         module="factor_store",
     )
     for i in range(0, len(all_factors), n):
@@ -588,6 +649,7 @@ def build_factor_store_for_full_list(
                 store_root=store_root,
                 file_format=file_format,
                 factor_package_map=factor_package_map,
+                io_workers=io_workers,
             )
         except Exception as exc:
             raise RuntimeError(
@@ -595,6 +657,7 @@ def build_factor_store_for_full_list(
                 f"(size={len(chunk)}, first_factors={chunk[:5]}): {exc}"
             ) from exc
         total_saved_files += int(save_stats.get("saved_code_files", 0))
+        effective_workers = int(save_stats.get("store_io_workers", effective_workers))
         span_path = str(save_stats.get("span_summary_path", span_path))
         del chunk_panel
         gc.collect()
@@ -610,4 +673,5 @@ def build_factor_store_for_full_list(
         "saved_factor_count": int(len(all_factors)),
         "saved_code_files": int(total_saved_files),
         "span_summary_path": str(span_path),
+        "store_io_workers": int(effective_workers),
     }

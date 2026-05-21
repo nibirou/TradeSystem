@@ -146,7 +146,7 @@ bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
   - `--file-format --fundamental-file-format --text-file-format --log-level`
   - `--diagnose-lite`（自动切 `csv + verbose + max-files=200`，用于崩溃定位）
 - `run_strategy7_v2_23_factor_store.sh` 新增调试参数：
-  - `--factor-value-store-format --factor-value-store-chunk-size --log-level`
+  - `--factor-value-store-format --factor-value-store-chunk-size --factor-value-store-workers --log-level`
   - `--diagnose-lite`（自动切 `csv + chunk_size=8 + max-files=200`，用于崩溃定位）
 
 ## 6) 崩溃定位建议（Linux）
@@ -160,6 +160,7 @@ bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
 - `run_strategy7_v2_23_factor_store.sh` 中的 `--factor-packages` 会限制因子值仓库构建范围；只有不传 `--factor-packages/--factor-list` 时才按当前频率默认全量清单构建。包含 `bridge/multi_freq` 时会触发分钟源跨频聚合，建议先用 `--diagnose-lite` 或 `--max-files` 压测。
 - 因子值仓库会增量 upsert 每个股票文件；若旧文件为空或历史列 dtype 不一致，当前版本会在写入前显式过滤/数值化，避免 pandas `concat/combine_first` FutureWarning 刷屏。
 - 主流程和挖掘入口均支持 `--data-load-workers` 或环境变量 `STRATEGY7_DATA_LOAD_WORKERS` 控制行情文件读取线程数；`0` 自动，`1` 串行，服务器 I/O 充足时可试 `4/8`。
+- 主流程和挖掘入口也支持 `--factor-value-store-workers` 或环境变量 `STRATEGY7_FACTOR_STORE_WORKERS` 控制因子值仓库逐股票文件读写线程数；大量小文件读写时可试 `4/8`，网络盘建议先用 `1/2/4` 压测。
 - 两个脚本均默认导出：
   - `PYTHONFAULTHANDLER=1`（出现 segfault 时输出 Python 线程栈）
   - `PYTHONUNBUFFERED=1`（日志实时刷新）

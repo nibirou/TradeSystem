@@ -36,6 +36,7 @@ conda run -n env_quant --no-capture-output python .\Strategy7\run_factor_mining.
   --enable-factor-value-store `
   --factor-value-store-root $valueStoreRoot `
   --factor-value-store-format parquet `
+  --factor-value-store-workers 0 `
   --auto-export-factor-snapshot `
   --factor-store-root $storeRoot `
   --save-format parquet

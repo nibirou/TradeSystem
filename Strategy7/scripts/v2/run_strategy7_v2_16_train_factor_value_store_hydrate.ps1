@@ -24,6 +24,7 @@ conda run -n env_quant --no-capture-output python .\Strategy7\run_strategy7.py `
   --enable-factor-value-store true `
   --factor-value-store-root $storeRoot `
   --factor-value-store-format parquet `
+  --factor-value-store-workers 0 `
   --factor-value-store-build-all false `
   --factor-value-store-build-only false `
   --auto-export-factor-snapshot true `

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import gc
 import json
 import os
 from pathlib import Path
@@ -592,6 +593,12 @@ def _parse_args() -> argparse.Namespace:
         help="因子值缓存文件格式（推荐 parquet）",
     )
     g_date.add_argument(
+        "--factor-value-store-workers",
+        type=int,
+        default=int(os.environ.get("STRATEGY7_FACTOR_STORE_WORKERS", "0")),
+        help="因子值缓存仓库股票文件读写线程数；0=自动保守选择，1=串行",
+    )
+    g_date.add_argument(
         "--enable-material-feature-engineering",
         action="store_true",
         help="是否在因子挖掘前对素材因子做特征工程筛选（训练期覆盖率+相关性去冗余，默认关闭）",
@@ -832,6 +839,8 @@ def _validate_args(
         raise ValueError("max_files must be positive when provided")
     if int(getattr(args, "data_load_workers", 0)) < 0:
         raise ValueError("data_load_workers must be non-negative; use 0 for auto")
+    if int(getattr(args, "factor_value_store_workers", 0)) < 0:
+        raise ValueError("factor_value_store_workers must be non-negative; use 0 for auto")
 
     if args.min_abs_ic_mean is not None and float(args.min_abs_ic_mean) < 0.0:
         raise ValueError("min_abs_ic_mean must be >= 0")
@@ -1150,6 +1159,7 @@ def main() -> None:
     # Raw minute/daily frames are no longer needed after feature views are built.
     market_bundle.daily = pd.DataFrame()
     market_bundle.minute5 = pd.DataFrame()
+    gc.collect()
     log_progress(
         f"特征构建完成，可用频率={sorted(feat_bundle.by_freq.keys())}。",
         module="run_factor_mining",
@@ -1242,6 +1252,7 @@ def main() -> None:
         store_root_arg=str(args.factor_value_store_root),
     )
     factor_store_format = str(args.factor_value_store_format)
+    factor_store_workers = int(getattr(args, "factor_value_store_workers", 0))
     material_store_report: Dict[str, object] = {"cache_enabled": False}
     material_meta_df = fac_lib.metadata(freq=factor_freq)
     material_meta_df = _attach_factor_package_columns(material_meta_df, freq=factor_freq)
@@ -1266,6 +1277,7 @@ def main() -> None:
                 factor_package_map=material_factor_package_map,
                 coverage_threshold=0.999999,
                 write_back=True,
+                io_workers=factor_store_workers,
             )
         else:
             panel = compute_factor_panel(
@@ -1405,6 +1417,7 @@ def main() -> None:
                 "factor_value_store_enabled": bool(factor_store_enabled),
                 "factor_value_store_root": str(factor_store_root) if factor_store_enabled else "",
                 "factor_value_store_format": str(factor_store_format) if factor_store_enabled else "",
+                "factor_value_store_workers": int(factor_store_workers) if factor_store_enabled else 0,
                 "factor_value_store_report": material_store_report,
             },
         )
@@ -1523,6 +1536,7 @@ def main() -> None:
     summary["factor_value_store_enabled"] = bool(factor_store_enabled)
     summary["factor_value_store_root"] = str(factor_store_root) if factor_store_enabled else ""
     summary["factor_value_store_format"] = str(factor_store_format) if factor_store_enabled else ""
+    summary["factor_value_store_workers"] = int(factor_store_workers) if factor_store_enabled else 0
     summary["factor_value_store_report"] = material_store_report
     summary["factor_snapshot_dir"] = str(material_snapshot.get("snapshot_dir", ""))
     summary["factor_snapshot_summary_path"] = str(material_snapshot.get("summary_path", ""))

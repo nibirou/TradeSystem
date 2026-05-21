@@ -28,6 +28,7 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python \
   --enable-factor-value-store true \
   --factor-value-store-root "${store_root}" \
   --factor-value-store-format parquet \
+  --factor-value-store-workers "${STRATEGY7_FACTOR_STORE_WORKERS:-0}" \
   --factor-value-store-build-all false \
   --factor-value-store-build-only false \
   --auto-export-factor-snapshot true \
@@ -44,4 +45,3 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python \
   --slippage-bps 1.5 \
   --save-models false \
   --output-dir "${output_dir}"
-
