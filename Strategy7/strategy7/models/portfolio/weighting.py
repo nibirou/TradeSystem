@@ -96,7 +96,8 @@ def _build_style_matrix(selected_df: pd.DataFrame, universe_df: pd.DataFrame) ->
     ]
     if selected_df.empty:
         return np.zeros((0, 0), dtype=float), np.zeros(0, dtype=float)
-    u = universe_df.copy()
+    keep_cols = list(dict.fromkeys(["code", *[c for c in style_cols if c in universe_df.columns]]))
+    u = universe_df[keep_cols].copy()
     u["code"] = u["code"].astype(str)
     sel_codes = selected_df["code"].astype(str)
     exposures: List[np.ndarray] = []
@@ -199,8 +200,36 @@ class DynamicOptimizationPortfolioModel(PortfolioModel):
             code = str(day_pick.iloc[0]["code"])
             return pd.Series({code: 1.0}), {"opt_iterations": 0.0, "opt_converged": 1.0}
 
-        pick = day_pick.copy().reset_index(drop=True)
-        uni = day_universe.copy()
+        style_cols = [
+            "barra_size_proxy",
+            "barra_momentum_proxy",
+            "barra_volatility_proxy",
+            "barra_liquidity_proxy",
+            "barra_beta_proxy",
+        ]
+        pick_needed = [
+            "code",
+            "pred_score",
+            "ret_20d",
+            "morning_momentum_30m",
+            "realized_vol_20",
+            "crowding_proxy_raw",
+            "amount_ma20",
+            "amount",
+            "industry_bucket",
+            *style_cols,
+        ]
+        uni_needed = [
+            "code",
+            "industry_bucket",
+            "realized_vol_20",
+            "vol_ratio_20",
+            "turn_ratio_5",
+            "ret_vol_corr_20",
+            *style_cols,
+        ]
+        pick = day_pick[[c for c in dict.fromkeys(pick_needed) if c in day_pick.columns]].copy().reset_index(drop=True)
+        uni = day_universe[[c for c in dict.fromkeys(uni_needed) if c in day_universe.columns]].copy()
         pick_codes = pick["code"].astype(str).tolist()
         pick_code_set = set(pick_codes)
 
@@ -333,4 +362,3 @@ class DynamicOptimizationPortfolioModel(PortfolioModel):
             pickle.dump(self, f)
         dump_json(meta, {"model_type": "dynamic_opt", "config": self.cfg.__dict__})
         return {"model_pkl": str(pkl), "meta_json": str(meta)}
-

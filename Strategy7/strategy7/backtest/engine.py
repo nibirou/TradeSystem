@@ -69,7 +69,16 @@ def run_backtest(
         rebalance_stride=backtest_cfg.rebalance_stride,
     )
     index_benchmark_enabled = _supports_index_benchmark(factor_freq)
-    rebalance_points = sorted(pd.to_datetime(data[signal_col].dropna().unique()))
+    # Parse and group signal timestamps once.  The previous loop rebuilt the
+    # same datetime Series and scanned the full prediction table on every
+    # rebalance point, which is costly for all-universe backtests.
+    data["_bt_signal_key"] = pd.to_datetime(data[signal_col])
+    signal_groups = {
+        pd.Timestamp(k): idx
+        for k, idx in data.groupby("_bt_signal_key", sort=False, observed=True).indices.items()
+        if pd.notna(k)
+    }
+    rebalance_points = sorted(signal_groups.keys())
     trade_records: List[Dict[str, object]] = []
     position_records: List[Dict[str, object]] = []
     prev_weights: Dict[str, float] = {}
@@ -81,7 +90,11 @@ def run_backtest(
     # Rebalance loop: each step is one "decision timestamp".
     for idx in range(0, len(rebalance_points), int(backtest_cfg.rebalance_stride)):
         dt = rebalance_points[idx]
-        day_raw = data[pd.to_datetime(data[signal_col]) == dt].copy()
+        day_idx = signal_groups.get(pd.Timestamp(dt))
+        if day_idx is None:
+            day_raw = data.iloc[0:0].drop(columns=["_bt_signal_key"], errors="ignore").copy()
+        else:
+            day_raw = data.iloc[day_idx].drop(columns=["_bt_signal_key"], errors="ignore").copy()
         day_all = day_raw.dropna(subset=["entry_price", "exit_price", "net_trade_ret", "future_ret_n"]).copy()
 
         if not day_all.empty:
@@ -176,7 +189,7 @@ def run_backtest(
             portfolio_turnover = float(portfolio_diag.get("opt_turnover", _turnover(prev_weights, new_weights)))
             prev_weights = new_weights
 
-            for _, r in day_exec.iterrows():
+            for r in day_exec.to_dict(orient="records"):
                 position_records.append(
                     {
                         "signal_ts": pd.Timestamp(r["signal_ts"]),

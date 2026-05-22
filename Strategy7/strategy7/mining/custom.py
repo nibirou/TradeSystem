@@ -134,6 +134,11 @@ class _ExprEvaluator:
             return pd.Series(float(x), index=self.df.index, dtype=float)
         raise ValueError(f"unsupported value type: {type(x)}")
 
+    def _rolling_by_code(self, x: pd.Series, window: int, min_periods: int, op: str) -> pd.Series:
+        grouped = x.groupby(self.df[self.code_col], sort=False, observed=True)
+        rolled = getattr(grouped.rolling(window, min_periods=min_periods), op)()
+        return rolled.reset_index(level=0, drop=True).reindex(self.df.index)
+
     def _binary(self, left, right, op):
         a = self._series(left)
         b = self._series(right)
@@ -202,34 +207,35 @@ class _ExprEvaluator:
         if fn == "delay":
             x = self._series(args[0])
             n = int(float(args[1]))
-            return x.groupby(self.df[self.code_col]).shift(n)
+            return x.groupby(self.df[self.code_col], sort=False, observed=True).shift(n)
         if fn == "delta":
             x = self._series(args[0])
             n = int(float(args[1]))
-            return x - x.groupby(self.df[self.code_col]).shift(n)
+            return x - x.groupby(self.df[self.code_col], sort=False, observed=True).shift(n)
         if fn == "pct":
             x = self._series(args[0])
             n = int(float(args[1]))
-            prev = x.groupby(self.df[self.code_col]).shift(n)
+            prev = x.groupby(self.df[self.code_col], sort=False, observed=True).shift(n)
             return x / (prev + EPS) - 1.0
         if fn == "ts_mean":
             x = self._series(args[0])
             n = max(1, int(float(args[1])))
-            return x.groupby(self.df[self.code_col]).transform(lambda s: s.rolling(n, min_periods=max(2, n // 3)).mean())
+            return self._rolling_by_code(x, n, max(2, n // 3), "mean")
         if fn == "ts_std":
             x = self._series(args[0])
             n = max(2, int(float(args[1])))
-            return x.groupby(self.df[self.code_col]).transform(lambda s: s.rolling(n, min_periods=max(2, n // 3)).std())
+            return self._rolling_by_code(x, n, max(2, n // 3), "std")
         if fn == "ts_z":
             x = self._series(args[0])
             n = max(2, int(float(args[1])))
-            m = x.groupby(self.df[self.code_col]).transform(lambda s: s.rolling(n, min_periods=max(2, n // 3)).mean())
-            st = x.groupby(self.df[self.code_col]).transform(lambda s: s.rolling(n, min_periods=max(2, n // 3)).std())
+            minp = max(2, n // 3)
+            m = self._rolling_by_code(x, n, minp, "mean")
+            st = self._rolling_by_code(x, n, minp, "std")
             return (x - m) / (st + EPS)
 
         if fn == "cs_rank":
             x = self._series(args[0])
-            return x.groupby(self.df[self.time_col]).transform(lambda s: s.rank(pct=True, method="average"))
+            return x.groupby(self.df[self.time_col], sort=False, observed=True).transform(lambda s: s.rank(pct=True, method="average"))
         if fn == "cs_z":
             x = self._series(args[0])
 

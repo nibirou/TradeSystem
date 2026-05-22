@@ -16,15 +16,19 @@
   - `FundamentalFormulaSpec`（11 参数）
   - `MinuteFormulaSpec`（10 参数）
   - 基本面/分钟公式计算、后处理（去极值、中性化、标准化）
+  - rolling/corr/beta 类时序计算优先使用 grouped rolling 内核，避免逐组 lambda 调度
 - `strategy7/mining/evaluation.py`
   - 多目标评估指标（|IC|、IC 胜率、NDCG、多头收益/夏普/胜率）
   - 频率分层入库标准与准入检查
+  - 评估前先收窄列并统一清理 inf/NaN，减少大面板重复复制
 - `strategy7/mining/nsga.py`
   - NSGA-II（基本面三目标）
   - NSGA-III（分钟级五目标）
   - 动态短板惩罚机制
+  - 非支配排序使用 NumPy 分块矩阵比较，保持选择顺序确定且降低 Python 双层循环开销
 - `strategy7/mining/custom.py`
   - 用户自定义表达式解析与计算（ts/cs 运算支持）
+  - `ts_mean/ts_std/ts_z` 使用 grouped rolling 内核，适合较大股票池的表达式批量评估
 - `strategy7/mining/catalog.py`
   - 因子入库目录（catalog）读写
   - 因子表 merge + 因子库自动注册

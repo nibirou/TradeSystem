@@ -73,6 +73,20 @@ def cs_zscore(s: pd.Series, group: pd.Series) -> pd.Series:
     return s.groupby(group).transform(_z)
 
 
+def _rolling_by_group(
+    s: pd.Series,
+    group: pd.Series | List[pd.Series],
+    window: int,
+    min_periods: int,
+    op: str,
+) -> pd.Series:
+    x = pd.to_numeric(s, errors="coerce")
+    grouped = x.groupby(group, sort=False, observed=True)
+    rolled = getattr(grouped.rolling(window, min_periods=min_periods), op)()
+    group_levels = len(group) if isinstance(group, list) else 1
+    return rolled.reset_index(level=list(range(group_levels)), drop=True).reindex(s.index)
+
+
 def neutralize_series(
     y: pd.Series,
     df: pd.DataFrame,
@@ -82,7 +96,7 @@ def neutralize_series(
 ) -> pd.Series:
     out = pd.Series(np.nan, index=y.index, dtype=float)
 
-    for _t, g in df.groupby(group_col):
+    for _t, g in df.groupby(group_col, sort=False, observed=True):
         idx = g.index
         yy = pd.to_numeric(y.loc[idx], errors="coerce")
         valid = yy.notna()
@@ -145,7 +159,7 @@ def build_minute_feature_matrix(minute_df: pd.DataFrame) -> pd.DataFrame:
             m[c] = pd.to_numeric(m[c], errors="coerce")
 
     m = m.dropna(subset=["date", "datetime", "code", "close"]).sort_values(["code", "date", "datetime"]).copy()
-    g_day = m.groupby(["code", "date"]) 
+    g_day = m.groupby(["code", "date"], sort=False, observed=True)
 
     m["return"] = g_day["close"].pct_change().fillna(0.0)
     m["twap"] = g_day["close"].expanding().mean().reset_index(level=[0, 1], drop=True)
@@ -164,7 +178,7 @@ def build_minute_feature_matrix(minute_df: pd.DataFrame) -> pd.DataFrame:
     for base in ["close", "return", "volume", "vol_per_trade"]:
         for w in [5, 15, 30]:
             col = f"{base}_ma{w}"
-            m[col] = g_day[base].transform(lambda s: s.rolling(w, min_periods=max(2, w // 3)).mean())
+            m[col] = _rolling_by_group(m[base], [m["code"], m["date"]], w, max(2, w // 3), "mean")
 
     return m
 
@@ -185,7 +199,7 @@ def _transform_ts_feature(
         return x
 
     lag = 63 if str(tr_period).lower() in {"q", "qoq", "quarter", "season"} else 252
-    g = x.groupby(code)
+    g = x.groupby(code, sort=False, observed=True)
     prev = g.shift(lag)
 
     form = str(tr_form).lower()
@@ -194,7 +208,7 @@ def _transform_ts_feature(
     if form == "pct":
         return x / (prev + EPS) - 1.0
     if form == "std":
-        return g.transform(lambda v: v.rolling(lag, min_periods=max(5, lag // 6)).std())
+        return _rolling_by_group(x, code, lag, max(5, lag // 6), "std")
     return x
 
 
@@ -250,20 +264,20 @@ def compute_fundamental_factor(
     elif mode == "mean":
         raw = 0.5 * (y + x)
     elif mode == "corr20":
-        mean_y = y.groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
-        mean_x = x.groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
-        mean_yx = (y * x).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
-        mean_y2 = (y * y).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
-        mean_x2 = (x * x).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        mean_y = _rolling_by_group(y, code, 20, 10, "mean")
+        mean_x = _rolling_by_group(x, code, 20, 10, "mean")
+        mean_yx = _rolling_by_group(y * x, code, 20, 10, "mean")
+        mean_y2 = _rolling_by_group(y * y, code, 20, 10, "mean")
+        mean_x2 = _rolling_by_group(x * x, code, 20, 10, "mean")
         cov_yx = mean_yx - mean_y * mean_x
         var_y = mean_y2 - mean_y * mean_y
         var_x = mean_x2 - mean_x * mean_x
         raw = cov_yx / (np.sqrt(np.clip(var_y * var_x, a_min=0.0, a_max=None)) + EPS)
     elif mode == "beta20":
-        mean_y = y.groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
-        mean_x = x.groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
-        mean_yx = (y * x).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
-        mean_x2 = (x * x).groupby(code).transform(lambda s: s.rolling(20, min_periods=10).mean())
+        mean_y = _rolling_by_group(y, code, 20, 10, "mean")
+        mean_x = _rolling_by_group(x, code, 20, 10, "mean")
+        mean_yx = _rolling_by_group(y * x, code, 20, 10, "mean")
+        mean_x2 = _rolling_by_group(x * x, code, 20, 10, "mean")
         cov_yx = mean_yx - mean_y * mean_x
         var_x = mean_x2 - mean_x * mean_x
         raw = cov_yx / (var_x + EPS)

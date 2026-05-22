@@ -62,7 +62,7 @@ def evaluate_factor_panel(
         return float(v) if np.isfinite(v) else 0.0
 
     base = panel[[group_col, factor_col, ret_col]].copy()
-    base = base.replace([np.inf, -np.inf], np.nan)
+    base[[factor_col, ret_col]] = base[[factor_col, ret_col]].replace([np.inf, -np.inf], np.nan)
 
     total_rows = int(len(base))
     covered_rows = int(base[factor_col].notna().sum())
@@ -76,8 +76,8 @@ def evaluate_factor_panel(
     long_excess_list: List[float] = []
     long_win_flags: List[float] = []
 
-    for _t, g in base.groupby(group_col):
-        sub = g[[factor_col, ret_col]].dropna()
+    valid = base.dropna(subset=[factor_col, ret_col])
+    for _t, sub in valid.groupby(group_col, sort=False):
         if len(sub) < int(min_cross_section):
             continue
         if sub[factor_col].nunique() < 2 or sub[ret_col].nunique() < 2:

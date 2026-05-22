@@ -1138,14 +1138,19 @@ python Strategy7/run_strategy7.py `
 7. 标签对齐校验与样本切分减少整表复制：校验只复制必要时间列，切分先计算掩码再清理 train/test 子集的 inf
 8. 外部表、catalog 因子表、日频上下文合并会先按当前日期/股票池范围过滤，再排序去重和 merge，减少历史累计表的无关处理
 9. 特征工程前的训练副本只保留候选因子列，避免为覆盖率/相关性筛选复制整张训练表
-10. 因子值仓库构建时优先用 `--factor-packages` / `--factor-list` 收窄范围，避免不必要的跨频桥接和全量因子计算
-11. 固定 `--random-state` 便于复现
-12. 对深度模型先用小 `epochs` 验证流程，再扩到正式训练
-13. 多次挖掘后定期审阅 `factor_catalog.json`，下线失效因子
+10. 回测层会预先解析并按 `signal_ts` 建索引，避免每个调仓点重复扫描预测大表；IC、分层收益、因子评估会先收窄列并统一清理 inf/NaN，再做截面 groupby
+11. 深度选股模型的训练样本构造、预测 batch 构造、load 模式 history bootstrap 只复制 `code/time/factor` 等必要列；DAFAT 额外只保留市场状态候选列
+12. 组合优化会在单日层面收窄 pick/universe 列集后再构建风格、行业、流动性矩阵，减少回测中重复复制全量字段
+13. 因子挖掘中的 NSGA-II/III 非支配排序已使用 NumPy 分块矩阵比较，保持确定性排序但减少 Python 双层循环开销
+14. 自定义因子表达式和参数化基本面公式中的 rolling mean/std/corr/beta 优先走 grouped rolling 内核，减少逐组 lambda 的 Python 调度
+15. 因子值仓库构建时优先用 `--factor-packages` / `--factor-list` 收窄范围，避免不必要的跨频桥接和全量因子计算
+16. 固定 `--random-state` 便于复现
+17. 对深度模型先用小 `epochs` 验证流程，再扩到正式训练
+18. 多次挖掘后定期审阅 `factor_catalog.json`，下线失效因子
 
 ### 13.1 C++/pybind 引入判断
 
-当前版本先处理 Python 层确定性热点：行情文件线程池、因子值库线程池、按需频率构建、跨频桥接流式聚合、截面批量 winsor/zscore、分钟日特征向量化统计、rolling/Grouper 内核化、无缺失填充快路径、标签/切分窄表处理、外部表/catalog/日频上下文预过滤、FE 窄表副本。后续是否引入 C++/pybind，建议以服务器真实 profile 为准，而不是直接下沉业务流程。
+当前版本先处理 Python 层确定性热点：行情文件线程池、因子值库线程池、按需频率构建、跨频桥接流式聚合、截面批量 winsor/zscore、分钟日特征向量化统计、rolling/Grouper 内核化、无缺失填充快路径、标签/切分窄表处理、外部表/catalog/日频上下文预过滤、FE 窄表副本、回测日期分组索引、模型样本构造窄表化、组合优化窄表化、NSGA 分块向量化。后续是否引入 C++/pybind，建议以服务器真实 profile 为准，而不是直接下沉业务流程。
 
 满足以下条件时才建议下沉：
 

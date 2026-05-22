@@ -206,16 +206,15 @@ def _filter_by_group_stride(df: pd.DataFrame, group_col: str, eval_stride: int) 
     stride = max(int(eval_stride), 1)
     if stride <= 1 or df.empty or group_col not in df.columns:
         return df
-    work = df.copy()
-    raw = work[group_col]
+    raw = df[group_col]
     ts = pd.to_datetime(raw, errors="coerce")
     if ts.notna().sum() >= int(raw.notna().sum()) and ts.notna().sum() > 0:
         uniq = pd.DatetimeIndex(ts.dropna().unique()).sort_values()
         keep = pd.DatetimeIndex(uniq[::stride])
-        return work.loc[ts.isin(keep)].copy()
+        return df.loc[ts.isin(keep)].copy()
     uniq = pd.Index(raw.dropna().unique()).sort_values()
     keep = set(uniq[::stride].tolist())
-    return work.loc[raw.isin(keep)].copy()
+    return df.loc[raw.isin(keep)].copy()
 
 
 def calc_ic_for_column(
@@ -228,9 +227,11 @@ def calc_ic_for_column(
     constant_as_zero: bool = True,
 ) -> pd.DataFrame:
     work = _filter_by_group_stride(df, group_col=group_col, eval_stride=eval_stride)
+    work = work[[group_col, score_col, ret_col]].copy()
+    work[[score_col, ret_col]] = work[[score_col, ret_col]].replace([np.inf, -np.inf], np.nan)
+    work = work.dropna(subset=[score_col, ret_col])
     records: List[Dict[str, object]] = []
-    for dt, g in work.groupby(group_col):
-        sub = g[[score_col, ret_col]].replace([np.inf, -np.inf], np.nan).dropna()
+    for dt, sub in work.groupby(group_col, sort=False):
         n = len(sub)
         if n < min_cross_section:
             continue
@@ -337,10 +338,12 @@ def compute_score_spread(
     eval_stride: int = 1,
 ) -> Dict[str, float]:
     work = _filter_by_group_stride(df, group_col=group_col, eval_stride=eval_stride)
+    work = work[[group_col, score_col, ret_col]].copy()
+    work[[score_col, ret_col]] = work[[score_col, ret_col]].replace([np.inf, -np.inf], np.nan)
+    work = work.dropna(subset=[score_col, ret_col])
     spreads: List[float] = []
     qn = max(int(quantiles), 2)
-    for _, g in work.groupby(group_col):
-        sub = g[[score_col, ret_col]].replace([np.inf, -np.inf], np.nan).dropna()
+    for _, sub in work.groupby(group_col, sort=False):
         if len(sub) < qn:
             continue
         if sub[score_col].nunique() < 2 or sub[ret_col].nunique() < 2:

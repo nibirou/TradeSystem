@@ -133,13 +133,13 @@ class DAFATStockModel(StockSelectionModel):
         if self.label_transform == "raw":
             return y_raw
         if self.label_transform == "csrank":
-            return y_raw.groupby(anchor).transform(lambda s: s.rank(pct=True, method="average"))
+            return y_raw.groupby(anchor, sort=False, observed=True).transform(lambda s: s.rank(pct=True, method="average"))
         if self.label_transform == "cszscore":
-            return y_raw.groupby(anchor).transform(self._zscore)
+            return y_raw.groupby(anchor, sort=False, observed=True).transform(self._zscore)
 
-        ranked = y_raw.groupby(anchor).transform(lambda s: s.rank(pct=True, method="average"))
+        ranked = y_raw.groupby(anchor, sort=False, observed=True).transform(lambda s: s.rank(pct=True, method="average"))
         ranked = ranked.replace([np.inf, -np.inf], np.nan)
-        return ranked.groupby(anchor).transform(self._zscore)
+        return ranked.groupby(anchor, sort=False, observed=True).transform(self._zscore)
 
     @staticmethod
     def _pick_first_existing_column(df: pd.DataFrame, candidates: List[str]) -> str | None:
@@ -149,7 +149,22 @@ class DAFATStockModel(StockSelectionModel):
         return None
 
     def _build_market_state_frame(self, df: pd.DataFrame, time_col: str) -> pd.DataFrame:
-        out = df.copy()
+        state_candidates = [
+            "realized_vol_20",
+            "rv_12",
+            "target_volatility",
+            "ret_1d",
+            "target_return",
+            "future_ret_n",
+            "turn",
+            "turn_ratio_5",
+            "amount_ratio_20",
+            "amount",
+            "volume",
+            "industry_bucket",
+        ]
+        keep_cols = list(dict.fromkeys([time_col, *[c for c in state_candidates if c in df.columns]]))
+        out = df[keep_cols].copy()
         out["_state_time"] = pd.to_datetime(out[time_col], errors="coerce").dt.normalize()
         out = out.dropna(subset=["_state_time"]).copy()
         if out.empty:
@@ -265,7 +280,8 @@ class DAFATStockModel(StockSelectionModel):
         target: pd.Series,
         state_lookup: Dict[pd.Timestamp, np.ndarray],
     ) -> Dict[pd.Timestamp, List[_TrainSample]]:
-        out = df.copy()
+        keep_cols = list(dict.fromkeys(["code", self._time_col, *factor_cols]))
+        out = df[keep_cols].copy()
         out["_model_time"] = pd.to_datetime(out[self._time_col], errors="coerce")
         out["_target"] = pd.to_numeric(target, errors="coerce")
         out = out.dropna(subset=["code", "_model_time"]).sort_values(["code", "_model_time"])
@@ -274,8 +290,7 @@ class DAFATStockModel(StockSelectionModel):
         self._history_by_code = {}
         self._history_time_by_code = {}
 
-        for code, g in out.groupby("code"):
-            g = g.sort_values("_model_time")
+        for code, g in out.groupby("code", sort=False, observed=True):
             x = g[factor_cols].to_numpy(dtype=np.float32)
             y = g["_target"].to_numpy(dtype=np.float32)
             t = pd.to_datetime(g["_model_time"], errors="coerce")
@@ -829,7 +844,8 @@ class DAFATStockModel(StockSelectionModel):
         df: pd.DataFrame,
         factor_cols: List[str],
     ) -> Dict[pd.Timestamp, List[tuple[int, np.ndarray, np.ndarray]]]:
-        out = df.copy()
+        keep_cols = list(dict.fromkeys(["code", self._time_col, *factor_cols]))
+        out = df[keep_cols].copy()
         out["_model_time"] = pd.to_datetime(out[self._time_col], errors="coerce")
         out = out.dropna(subset=["code", "_model_time"]).copy()
         out["code"] = out["code"].astype(str)
@@ -837,7 +853,7 @@ class DAFATStockModel(StockSelectionModel):
 
         batches: Dict[pd.Timestamp, List[tuple[int, np.ndarray, np.ndarray]]] = defaultdict(list)
 
-        for code, g in out.groupby("code"):
+        for code, g in out.groupby("code", sort=False, observed=True):
             c = str(code)
             feat = g[factor_cols].to_numpy(dtype=np.float32)
             times = pd.to_datetime(g["_model_time"], errors="coerce").to_numpy(dtype="datetime64[ns]")
@@ -901,7 +917,24 @@ class DAFATStockModel(StockSelectionModel):
         torch, _nn, _F = self._require_torch()
         self._model.eval()
 
-        out = df.copy()
+        state_cols = [
+            "realized_vol_20",
+            "rv_12",
+            "target_volatility",
+            "ret_1d",
+            "target_return",
+            "future_ret_n",
+            "turn",
+            "turn_ratio_5",
+            "amount_ratio_20",
+            "amount",
+            "volume",
+            "industry_bucket",
+        ]
+        keep_cols = list(
+            dict.fromkeys(["code", self._time_col, *self._factor_cols, *[c for c in state_cols if c in df.columns]])
+        )
+        out = df[keep_cols].copy()
         out[self._factor_cols] = (
             out[self._factor_cols]
             .replace([np.inf, -np.inf], np.nan)
@@ -939,7 +972,7 @@ class DAFATStockModel(StockSelectionModel):
 
         raw_pred = raw_pred * float(self._score_sign)
         anchor = self._time_anchor(out[self._time_col])
-        score = raw_pred.groupby(anchor).rank(pct=True, method="average")
+        score = raw_pred.groupby(anchor, sort=False, observed=True).rank(pct=True, method="average")
         score = score.fillna(0.5)
         score = score.reindex(df.index).fillna(0.5)
         return score.rename("pred_score")

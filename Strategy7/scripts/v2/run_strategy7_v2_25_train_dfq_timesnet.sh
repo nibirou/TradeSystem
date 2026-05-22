@@ -10,11 +10,11 @@ python3 ./Strategy7/run_strategy7.py \
   --disable-text-data \
   --factor-packages "trend,reversal,liquidity,volatility" \
   --label-task return \
-  --data-load-workers "${STRATEGY7_DATA_LOAD_WORKERS:-4}" \
+  --data-load-workers "${STRATEGY7_DATA_LOAD_WORKERS:-8}" \
   --enable-factor-value-store true \
   --factor-value-store-root auto \
   --factor-value-store-format csv \
-  --factor-value-store-workers "${STRATEGY7_FACTOR_STORE_WORKERS:-0}" \
+  --factor-value-store-workers "${STRATEGY7_FACTOR_STORE_WORKERS:-8}" \
   --enable-factor-engineering true \
   --fe-corr-threshold 0.90 \
   --fe-preselect-top-n 300 \
@@ -26,12 +26,12 @@ python3 ./Strategy7/run_strategy7.py \
   --timesnet-hidden-size2 48 \
   --timesnet-periods "3,12" \
   --timesnet-num-kernels 2 \
-  --timesnet-dropout 0.0 \
-  --timesnet-epochs 1 \
+  --timesnet-dropout 0.5 \
+  --timesnet-epochs 500 \
   --timesnet-lr 2e-4 \
   --timesnet-weight-decay 0.0 \
-  --timesnet-early-stop 1 \
-  --timesnet-smooth-steps 1 \
+  --timesnet-early-stop 20 \
+  --timesnet-smooth-steps 5 \
   --timesnet-per-epoch-batch 8 \
   --timesnet-batch-size 64 \
   --timesnet-label-transform cszscore \

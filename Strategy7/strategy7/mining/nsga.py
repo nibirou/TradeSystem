@@ -28,18 +28,28 @@ def non_dominated_sort(objectives: Sequence[Sequence[float]]) -> List[List[int]]
     if n == 0:
         return []
 
-    dominated_count = np.zeros(n, dtype=int)
+    dominated_count = np.zeros(n, dtype=np.int64)
     dominates_set: List[List[int]] = [[] for _ in range(n)]
     fronts: List[List[int]] = [[]]
 
-    for i in range(n):
-        for j in range(i + 1, n):
-            if dominates(obj[i], obj[j]):
-                dominates_set[i].append(j)
-                dominated_count[j] += 1
-            elif dominates(obj[j], obj[i]):
-                dominates_set[j].append(i)
-                dominated_count[i] += 1
+    # Build dominance relations in NumPy blocks instead of a Python pair loop.
+    # This keeps NSGA-II/III selection deterministic while moving the O(n^2)
+    # comparisons into vectorized kernels; the block size caps peak memory for
+    # larger factor-candidate populations.
+    max_pairs_per_block = 8_000_000
+    block_size = max(1, min(n, max_pairs_per_block // max(n, 1)))
+    for start in range(0, n, block_size):
+        end = min(start + block_size, n)
+        left = obj[start:end]
+        dom_block = np.all(left[:, None, :] >= obj[None, :, :], axis=2) & np.any(
+            left[:, None, :] > obj[None, :, :],
+            axis=2,
+        )
+        row_ids = np.arange(start, end)
+        dom_block[np.arange(end - start), row_ids] = False
+        dominated_count += dom_block.sum(axis=0)
+        for local_i, global_i in enumerate(row_ids):
+            dominates_set[int(global_i)] = np.flatnonzero(dom_block[local_i]).astype(int).tolist()
 
     for i in range(n):
         if dominated_count[i] == 0:

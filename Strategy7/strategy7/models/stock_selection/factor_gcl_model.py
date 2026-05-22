@@ -115,18 +115,20 @@ class FactorGCLStockModel(StockSelectionModel):
             return y_raw
 
         if self.label_transform == "csrank":
-            return y_raw.groupby(anchor).transform(lambda s: s.rank(pct=True, method="average"))
+            return y_raw.groupby(anchor, sort=False, observed=True).transform(lambda s: s.rank(pct=True, method="average"))
 
         if self.label_transform == "cszscore":
-            return y_raw.groupby(anchor).transform(self._zscore)
+            return y_raw.groupby(anchor, sort=False, observed=True).transform(self._zscore)
 
         # default: csranknorm = cross-sectional rank percentile then zscore
-        ranked = y_raw.groupby(anchor).transform(lambda s: s.rank(pct=True, method="average"))
+        ranked = y_raw.groupby(anchor, sort=False, observed=True).transform(lambda s: s.rank(pct=True, method="average"))
         ranked = ranked.replace([np.inf, -np.inf], np.nan)
-        return ranked.groupby(anchor).transform(self._zscore)
+        return ranked.groupby(anchor, sort=False, observed=True).transform(self._zscore)
 
     def _fit_concepts(self, df: pd.DataFrame) -> None:
-        base = df.copy()
+        keep_cols = ["code"]
+        keep_cols.extend([c for c in ["industry_bucket", "board_type"] if c in df.columns])
+        base = df[list(dict.fromkeys(keep_cols))].copy()
         base["code"] = base["code"].astype(str)
 
         if "industry_bucket" in base.columns:
@@ -164,7 +166,8 @@ class FactorGCLStockModel(StockSelectionModel):
         factor_cols: List[str],
         target: pd.Series,
     ) -> Dict[pd.Timestamp, List[_TrainSample]]:
-        out = df.copy()
+        keep_cols = list(dict.fromkeys(["code", self._time_col, *factor_cols]))
+        out = df[keep_cols].copy()
         out["_model_time"] = pd.to_datetime(out[self._time_col], errors="coerce")
         out["_target"] = pd.to_numeric(target, errors="coerce")
         out = out.dropna(subset=["code", "_model_time"]).sort_values(["code", "_model_time"])
@@ -172,8 +175,7 @@ class FactorGCLStockModel(StockSelectionModel):
         grouped: Dict[pd.Timestamp, List[_TrainSample]] = defaultdict(list)
         self._history_by_code = {}
 
-        for code, g in out.groupby("code"):
-            g = g.sort_values("_model_time")
+        for code, g in out.groupby("code", sort=False, observed=True):
             x = g[factor_cols].to_numpy(dtype=np.float32)
             y = g["_target"].to_numpy(dtype=np.float32)
             t = pd.to_datetime(g["_model_time"], errors="coerce")
@@ -570,7 +572,8 @@ class FactorGCLStockModel(StockSelectionModel):
         return self
 
     def _build_predict_batches(self, df: pd.DataFrame, factor_cols: List[str]) -> Dict[pd.Timestamp, List[tuple[int, str, np.ndarray]]]:
-        out = df.copy()
+        keep_cols = list(dict.fromkeys(["code", self._time_col, *factor_cols]))
+        out = df[keep_cols].copy()
         out["_model_time"] = pd.to_datetime(out[self._time_col], errors="coerce")
         out = out.dropna(subset=["code", "_model_time"]).copy()
         out["code"] = out["code"].astype(str)
@@ -578,7 +581,7 @@ class FactorGCLStockModel(StockSelectionModel):
 
         batches: Dict[pd.Timestamp, List[tuple[int, str, np.ndarray]]] = defaultdict(list)
 
-        for code, g in out.groupby("code"):
+        for code, g in out.groupby("code", sort=False, observed=True):
             c = str(code)
             feat = g[factor_cols].to_numpy(dtype=np.float32)
             hist = self._history_by_code.get(c)
@@ -617,7 +620,8 @@ class FactorGCLStockModel(StockSelectionModel):
         torch, _nn, _F = self._require_torch()
         self._model.eval()
 
-        out = df.copy()
+        keep_cols = list(dict.fromkeys(["code", self._time_col, *self._factor_cols]))
+        out = df[keep_cols].copy()
         out[self._factor_cols] = (
             out[self._factor_cols]
             .replace([np.inf, -np.inf], np.nan)
@@ -644,7 +648,7 @@ class FactorGCLStockModel(StockSelectionModel):
 
         raw_pred = raw_pred * float(self._score_sign)
         anchor = self._time_anchor(out[self._time_col])
-        score = raw_pred.groupby(anchor).rank(pct=True, method="average")
+        score = raw_pred.groupby(anchor, sort=False, observed=True).rank(pct=True, method="average")
         score = score.fillna(0.5)
         score = score.reindex(df.index).fillna(0.5)
         return score.rename("pred_score")

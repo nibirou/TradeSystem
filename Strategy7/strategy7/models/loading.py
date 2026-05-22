@@ -731,13 +731,14 @@ def bootstrap_stock_model_history(
         if not factor_cols:
             return
         time_col = model._time_col or model._resolve_time_col(history_df)
-        work = history_df.copy()
+        missing = [c for c in factor_cols if c not in history_df.columns]
+        if missing:
+            return
+        keep_cols = list(dict.fromkeys(["code", time_col, *factor_cols]))
+        work = history_df[keep_cols].copy()
         work[time_col] = pd.to_datetime(work[time_col], errors="coerce")
         work = work.dropna(subset=["code", time_col]).copy()
         work["code"] = work["code"].astype(str)
-        missing = [c for c in factor_cols if c not in work.columns]
-        if missing:
-            return
         fv = model.fill_values().reindex(factor_cols).fillna(0.0)
         work[factor_cols] = (
             work[factor_cols]
@@ -747,7 +748,7 @@ def bootstrap_stock_model_history(
         )
         work = work.sort_values(["code", time_col])
         model._history_by_code = {}
-        for code, g in work.groupby("code"):
+        for code, g in work.groupby("code", sort=False, observed=True):
             arr = g[factor_cols].to_numpy(dtype=np.float32)
             n = len(arr)
             if n == 0:
@@ -759,13 +760,14 @@ def bootstrap_stock_model_history(
         if not factor_cols:
             return
         time_col = model._time_col or model._resolve_time_col(history_df)
-        work = history_df.copy()
+        missing = [c for c in factor_cols if c not in history_df.columns]
+        if missing:
+            return
+        keep_cols = list(dict.fromkeys(["code", time_col, *factor_cols]))
+        work = history_df[keep_cols].copy()
         work[time_col] = pd.to_datetime(work[time_col], errors="coerce")
         work = work.dropna(subset=["code", time_col]).copy()
         work["code"] = work["code"].astype(str)
-        missing = [c for c in factor_cols if c not in work.columns]
-        if missing:
-            return
         fv = model.fill_values().reindex(factor_cols).fillna(0.0)
         work[factor_cols] = (
             work[factor_cols]
@@ -778,7 +780,7 @@ def bootstrap_stock_model_history(
             work[factor_cols] = work[factor_cols].clip(lower=-clip, upper=clip)
         work = work.sort_values(["code", time_col])
         model._history_by_code = {}
-        for code, g in work.groupby("code"):
+        for code, g in work.groupby("code", sort=False, observed=True):
             arr = g[factor_cols].to_numpy(dtype=np.float32)
             n = len(arr)
             if n == 0:
@@ -790,13 +792,14 @@ def bootstrap_stock_model_history(
         if not factor_cols:
             return
         time_col = model._time_col or model._resolve_time_col(history_df)
-        work = history_df.copy()
+        missing = [c for c in factor_cols if c not in history_df.columns]
+        if missing:
+            return
+        keep_cols = list(dict.fromkeys(["code", time_col, *factor_cols]))
+        work = history_df[keep_cols].copy()
         work[time_col] = pd.to_datetime(work[time_col], errors="coerce")
         work = work.dropna(subset=["code", time_col]).copy()
         work["code"] = work["code"].astype(str)
-        missing = [c for c in factor_cols if c not in work.columns]
-        if missing:
-            return
         fv = model.fill_values().reindex(factor_cols).fillna(0.0)
         work[factor_cols] = (
             work[factor_cols]
@@ -807,7 +810,7 @@ def bootstrap_stock_model_history(
         work = work.sort_values(["code", time_col])
         model._history_by_code = {}
         model._history_time_by_code = {}
-        for code, g in work.groupby("code"):
+        for code, g in work.groupby("code", sort=False, observed=True):
             arr = g[factor_cols].to_numpy(dtype=np.float32)
             ts_arr = pd.to_datetime(g[time_col], errors="coerce").to_numpy(dtype="datetime64[ns]")
             n = len(arr)
