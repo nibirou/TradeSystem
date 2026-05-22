@@ -47,4 +47,4 @@
 2. `label_task` 决定训练目标列；评估会兼容连续与二分类
 3. `--list-factors` 当前是“快速路径”，不会依赖行情文件
 4. catalog 因子是“值表 + 注册定义”两步生效
-5. 深度选股模型入口统一在 `strategy7/models/stock_selection/factory.py`；FactorGCL、DAFAT、DFQ-TimesNet 分别对应 `factor_gcl_model.py`、`dafat_transformer_model.py`、`dfq_timesnet_model.py`
+5. 深度选股模型入口统一在 `strategy7/models/stock_selection/factory.py`；FactorGCL、DAFAT、DFQ-TimesNet、StockFormer 分别对应 `factor_gcl_model.py`、`dafat_transformer_model.py`、`dfq_timesnet_model.py`、`stockformer_model.py`

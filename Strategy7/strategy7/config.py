@@ -147,6 +147,38 @@ class StockModelConfig:
     timesnet_mse_weight: float
     timesnet_ic_loss_weight: float
     timesnet_device: str
+    stockformer_seq_len: int
+    stockformer_rel_seq_len: int
+    stockformer_hidden_size: int
+    stockformer_num_layers: int
+    stockformer_num_heads: int
+    stockformer_ffn_mult: int
+    stockformer_dropout: float
+    stockformer_pretrain_epochs: int
+    stockformer_sac_episodes: int
+    stockformer_lr: float
+    stockformer_sac_lr: float
+    stockformer_weight_decay: float
+    stockformer_gamma: float
+    stockformer_tau: float
+    stockformer_init_alpha: float
+    stockformer_target_entropy_scale: float
+    stockformer_early_stop: int
+    stockformer_buffer_size: int
+    stockformer_learning_starts: int
+    stockformer_batch_transitions: int
+    stockformer_updates_per_step: int
+    stockformer_per_epoch_batch: int
+    stockformer_batch_size: int
+    stockformer_label_transform: str
+    stockformer_input_clip: float
+    stockformer_mse_weight: float
+    stockformer_ic_loss_weight: float
+    stockformer_reward_cost_bps: float
+    stockformer_turnover_penalty: float
+    stockformer_tracking_penalty: float
+    stockformer_min_cross_section: int
+    stockformer_device: str
 
 
 @dataclass
@@ -880,7 +912,7 @@ def parse_args() -> argparse.Namespace:
         "--stock-model-type",
         type=str,
         default="decision_tree",
-        help="选股模型类型：decision_tree / launch_boost / factor_gcl / dafat / dfq_timesnet / 自定义插件",
+        help="选股模型类型：decision_tree / launch_boost / factor_gcl / dafat / dfq_timesnet / stockformer / 自定义插件",
     )
     g_stock.add_argument(
         "--custom-stock-model-py",
@@ -997,6 +1029,44 @@ def parse_args() -> argparse.Namespace:
     g_stock.add_argument("--timesnet-mse-weight", type=float, default=1.0, help="DFQ-TimesNet MSE 损失权重")
     g_stock.add_argument("--timesnet-ic-loss-weight", type=float, default=0.0, help="DFQ-TimesNet IC 损失权重，研报复现默认关闭")
     g_stock.add_argument("--timesnet-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="DFQ-TimesNet 训练设备")
+    g_stock.add_argument("--stockformer-seq-len", type=int, default=60, help="StockFormer 短/长收益分支输入序列长度")
+    g_stock.add_argument("--stockformer-rel-seq-len", type=int, default=252, help="StockFormer 关系状态分支序列长度")
+    g_stock.add_argument("--stockformer-hidden-size", type=int, default=64, help="StockFormer Transformer 隐层维度")
+    g_stock.add_argument("--stockformer-num-layers", type=int, default=2, help="StockFormer Transformer 层数")
+    g_stock.add_argument("--stockformer-num-heads", type=int, default=10, help="StockFormer 多头注意力头数")
+    g_stock.add_argument("--stockformer-ffn-mult", type=int, default=4, help="StockFormer 多头 FFN 扩展倍数")
+    g_stock.add_argument("--stockformer-dropout", type=float, default=0.10, help="StockFormer dropout 概率")
+    g_stock.add_argument("--stockformer-pretrain-epochs", type=int, default=50, help="StockFormer 三路 Transformer 预训练轮数")
+    g_stock.add_argument("--stockformer-sac-episodes", type=int, default=50, help="StockFormer SAC episode 轮数")
+    g_stock.add_argument("--stockformer-lr", type=float, default=1e-3, help="StockFormer Transformer 预训练学习率")
+    g_stock.add_argument("--stockformer-sac-lr", type=float, default=3e-4, help="StockFormer SAC 学习率")
+    g_stock.add_argument("--stockformer-weight-decay", type=float, default=0.0, help="StockFormer L2 正则强度")
+    g_stock.add_argument("--stockformer-gamma", type=float, default=0.999, help="StockFormer SAC 折现因子")
+    g_stock.add_argument("--stockformer-tau", type=float, default=0.005, help="StockFormer 目标 Q 网络软更新系数")
+    g_stock.add_argument("--stockformer-init-alpha", type=float, default=0.5, help="StockFormer 初始熵正则系数")
+    g_stock.add_argument("--stockformer-target-entropy-scale", type=float, default=1.0, help="StockFormer 目标熵缩放")
+    g_stock.add_argument("--stockformer-early-stop", type=int, default=20, help="StockFormer 预训练/SAC 早停耐心")
+    g_stock.add_argument("--stockformer-buffer-size", type=int, default=100000, help="StockFormer replay buffer 最大 transition 数")
+    g_stock.add_argument("--stockformer-learning-starts", type=int, default=100, help="StockFormer SAC 开始更新前的 warmup 天数")
+    g_stock.add_argument("--stockformer-batch-transitions", type=int, default=16, help="StockFormer SAC 每次更新采样 transition 数")
+    g_stock.add_argument("--stockformer-updates-per-step", type=int, default=1, help="StockFormer 每个交易日采样后更新次数")
+    g_stock.add_argument("--stockformer-per-epoch-batch", type=int, default=100, help="StockFormer 预训练每轮抽取交易日切片数")
+    g_stock.add_argument("--stockformer-batch-size", type=int, default=-1, help="StockFormer 单日截面采样数，-1=全量")
+    g_stock.add_argument(
+        "--stockformer-label-transform",
+        type=str,
+        choices=["raw", "csrank", "cszscore", "csranknorm"],
+        default="csrank",
+        help="StockFormer 训练标签变换；研报基线使用未来收益排序分位数",
+    )
+    g_stock.add_argument("--stockformer-input-clip", type=float, default=3.0, help="StockFormer 输入特征 clip 绝对值，<=0 关闭")
+    g_stock.add_argument("--stockformer-mse-weight", type=float, default=1.0, help="StockFormer 预训练 MSE 损失权重")
+    g_stock.add_argument("--stockformer-ic-loss-weight", type=float, default=1.0, help="StockFormer 预训练 IC 损失权重")
+    g_stock.add_argument("--stockformer-reward-cost-bps", type=float, default=30.0, help="StockFormer 奖励函数换手成本 bps")
+    g_stock.add_argument("--stockformer-turnover-penalty", type=float, default=1.0, help="StockFormer 奖励函数换手成本惩罚倍率")
+    g_stock.add_argument("--stockformer-tracking-penalty", type=float, default=0.05, help="StockFormer 奖励函数跟踪误差惩罚")
+    g_stock.add_argument("--stockformer-min-cross-section", type=int, default=8, help="StockFormer 单日最小截面股票数")
+    g_stock.add_argument("--stockformer-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="StockFormer 训练设备")
 
     # =========================
     # 择时模型参数
@@ -1395,6 +1465,64 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("timesnet_mse_weight must be non-negative.")
     if float(args.timesnet_ic_loss_weight) < 0.0:
         raise ValueError("timesnet_ic_loss_weight must be non-negative.")
+    if int(args.stockformer_seq_len) <= 1:
+        raise ValueError("stockformer_seq_len must be greater than 1.")
+    if int(args.stockformer_rel_seq_len) <= 1:
+        raise ValueError("stockformer_rel_seq_len must be greater than 1.")
+    if int(args.stockformer_hidden_size) <= 0:
+        raise ValueError("stockformer_hidden_size must be positive.")
+    if int(args.stockformer_num_layers) <= 0:
+        raise ValueError("stockformer_num_layers must be positive.")
+    if int(args.stockformer_num_heads) <= 0:
+        raise ValueError("stockformer_num_heads must be positive.")
+    if int(args.stockformer_ffn_mult) <= 0:
+        raise ValueError("stockformer_ffn_mult must be positive.")
+    if not (0.0 <= float(args.stockformer_dropout) < 1.0):
+        raise ValueError("stockformer_dropout must be in [0, 1).")
+    if int(args.stockformer_pretrain_epochs) <= 0:
+        raise ValueError("stockformer_pretrain_epochs must be positive.")
+    if int(args.stockformer_sac_episodes) <= 0:
+        raise ValueError("stockformer_sac_episodes must be positive.")
+    if float(args.stockformer_lr) <= 0.0:
+        raise ValueError("stockformer_lr must be positive.")
+    if float(args.stockformer_sac_lr) <= 0.0:
+        raise ValueError("stockformer_sac_lr must be positive.")
+    if float(args.stockformer_weight_decay) < 0.0:
+        raise ValueError("stockformer_weight_decay must be non-negative.")
+    if not (0.0 <= float(args.stockformer_gamma) <= 1.0):
+        raise ValueError("stockformer_gamma must be in [0, 1].")
+    if not (0.0 < float(args.stockformer_tau) <= 1.0):
+        raise ValueError("stockformer_tau must be in (0, 1].")
+    if float(args.stockformer_init_alpha) <= 0.0:
+        raise ValueError("stockformer_init_alpha must be positive.")
+    if float(args.stockformer_target_entropy_scale) <= 0.0:
+        raise ValueError("stockformer_target_entropy_scale must be positive.")
+    if int(args.stockformer_early_stop) <= 0:
+        raise ValueError("stockformer_early_stop must be positive.")
+    if int(args.stockformer_buffer_size) <= 0:
+        raise ValueError("stockformer_buffer_size must be positive.")
+    if int(args.stockformer_learning_starts) <= 0:
+        raise ValueError("stockformer_learning_starts must be positive.")
+    if int(args.stockformer_batch_transitions) <= 0:
+        raise ValueError("stockformer_batch_transitions must be positive.")
+    if int(args.stockformer_updates_per_step) <= 0:
+        raise ValueError("stockformer_updates_per_step must be positive.")
+    if int(args.stockformer_per_epoch_batch) <= 0:
+        raise ValueError("stockformer_per_epoch_batch must be positive.")
+    if int(args.stockformer_batch_size) == 0 or int(args.stockformer_batch_size) < -1:
+        raise ValueError("stockformer_batch_size must be -1 or positive.")
+    if float(args.stockformer_mse_weight) < 0.0:
+        raise ValueError("stockformer_mse_weight must be non-negative.")
+    if float(args.stockformer_ic_loss_weight) < 0.0:
+        raise ValueError("stockformer_ic_loss_weight must be non-negative.")
+    if float(args.stockformer_reward_cost_bps) < 0.0:
+        raise ValueError("stockformer_reward_cost_bps must be non-negative.")
+    if float(args.stockformer_turnover_penalty) < 0.0:
+        raise ValueError("stockformer_turnover_penalty must be non-negative.")
+    if float(args.stockformer_tracking_penalty) < 0.0:
+        raise ValueError("stockformer_tracking_penalty must be non-negative.")
+    if int(args.stockformer_min_cross_section) <= 1:
+        raise ValueError("stockformer_min_cross_section must be greater than 1.")
     if not (0.0 < float(args.max_participation_rate) <= 1.0):
         raise ValueError("max_participation_rate must be in (0,1].")
     if not (0.0 <= float(args.base_fill_rate) <= 1.0):
@@ -1588,6 +1716,38 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         timesnet_mse_weight=float(args.timesnet_mse_weight),
         timesnet_ic_loss_weight=float(args.timesnet_ic_loss_weight),
         timesnet_device=str(args.timesnet_device),
+        stockformer_seq_len=int(args.stockformer_seq_len),
+        stockformer_rel_seq_len=int(args.stockformer_rel_seq_len),
+        stockformer_hidden_size=int(args.stockformer_hidden_size),
+        stockformer_num_layers=int(args.stockformer_num_layers),
+        stockformer_num_heads=int(args.stockformer_num_heads),
+        stockformer_ffn_mult=int(args.stockformer_ffn_mult),
+        stockformer_dropout=float(args.stockformer_dropout),
+        stockformer_pretrain_epochs=int(args.stockformer_pretrain_epochs),
+        stockformer_sac_episodes=int(args.stockformer_sac_episodes),
+        stockformer_lr=float(args.stockformer_lr),
+        stockformer_sac_lr=float(args.stockformer_sac_lr),
+        stockformer_weight_decay=float(args.stockformer_weight_decay),
+        stockformer_gamma=float(args.stockformer_gamma),
+        stockformer_tau=float(args.stockformer_tau),
+        stockformer_init_alpha=float(args.stockformer_init_alpha),
+        stockformer_target_entropy_scale=float(args.stockformer_target_entropy_scale),
+        stockformer_early_stop=int(args.stockformer_early_stop),
+        stockformer_buffer_size=int(args.stockformer_buffer_size),
+        stockformer_learning_starts=int(args.stockformer_learning_starts),
+        stockformer_batch_transitions=int(args.stockformer_batch_transitions),
+        stockformer_updates_per_step=int(args.stockformer_updates_per_step),
+        stockformer_per_epoch_batch=int(args.stockformer_per_epoch_batch),
+        stockformer_batch_size=int(args.stockformer_batch_size),
+        stockformer_label_transform=str(args.stockformer_label_transform),
+        stockformer_input_clip=float(args.stockformer_input_clip),
+        stockformer_mse_weight=float(args.stockformer_mse_weight),
+        stockformer_ic_loss_weight=float(args.stockformer_ic_loss_weight),
+        stockformer_reward_cost_bps=float(args.stockformer_reward_cost_bps),
+        stockformer_turnover_penalty=float(args.stockformer_turnover_penalty),
+        stockformer_tracking_penalty=float(args.stockformer_tracking_penalty),
+        stockformer_min_cross_section=int(args.stockformer_min_cross_section),
+        stockformer_device=str(args.stockformer_device),
     )
     timing = TimingModelConfig(
         model_type=args.timing_model_type,

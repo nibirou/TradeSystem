@@ -125,4 +125,44 @@ def build_stock_model(cfg: StockModelConfig) -> StockSelectionModel:
             device=cfg.timesnet_device,
         )
 
+    # 7) StockFormer (predictive-coding Transformer + SAC).
+    if model_type in {"stockformer", "stock_former", "sac_stockformer"}:
+        from .stockformer_model import StockFormerStockModel
+
+        return StockFormerStockModel(
+            seq_len=cfg.stockformer_seq_len,
+            rel_seq_len=cfg.stockformer_rel_seq_len,
+            hidden_size=cfg.stockformer_hidden_size,
+            num_layers=cfg.stockformer_num_layers,
+            num_heads=cfg.stockformer_num_heads,
+            ffn_mult=cfg.stockformer_ffn_mult,
+            dropout=cfg.stockformer_dropout,
+            pretrain_epochs=cfg.stockformer_pretrain_epochs,
+            sac_episodes=cfg.stockformer_sac_episodes,
+            lr=cfg.stockformer_lr,
+            sac_lr=cfg.stockformer_sac_lr,
+            weight_decay=cfg.stockformer_weight_decay,
+            gamma=cfg.stockformer_gamma,
+            tau=cfg.stockformer_tau,
+            init_alpha=cfg.stockformer_init_alpha,
+            target_entropy_scale=cfg.stockformer_target_entropy_scale,
+            early_stop=cfg.stockformer_early_stop,
+            buffer_size=cfg.stockformer_buffer_size,
+            learning_starts=cfg.stockformer_learning_starts,
+            batch_transitions=cfg.stockformer_batch_transitions,
+            updates_per_step=cfg.stockformer_updates_per_step,
+            per_epoch_batch=cfg.stockformer_per_epoch_batch,
+            batch_size=cfg.stockformer_batch_size,
+            label_transform=cfg.stockformer_label_transform,
+            input_clip=cfg.stockformer_input_clip,
+            mse_weight=cfg.stockformer_mse_weight,
+            ic_loss_weight=cfg.stockformer_ic_loss_weight,
+            reward_cost_bps=cfg.stockformer_reward_cost_bps,
+            turnover_penalty=cfg.stockformer_turnover_penalty,
+            tracking_penalty=cfg.stockformer_tracking_penalty,
+            min_cross_section=cfg.stockformer_min_cross_section,
+            random_state=cfg.random_state,
+            device=cfg.stockformer_device,
+        )
+
     raise ValueError(f"unsupported stock model type: {cfg.model_type}")

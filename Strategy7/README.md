@@ -46,6 +46,12 @@ python Strategy7/run_strategy7.py --stock-model-type dafat --label-task return
 python Strategy7/run_strategy7.py --stock-model-type dfq_timesnet --label-task return --horizon 20
 ```
 
+运行 StockFormer（Transformer predictive coding + SAC 强化学习）：
+
+```bash
+python Strategy7/run_strategy7.py --stock-model-type stockformer --label-task return --horizon 5
+```
+
 运行因子挖掘：
 
 ```bash
@@ -131,7 +137,8 @@ python Strategy7/run_strategy7.py \
 3. [FactorGCL 说明](./docs/factor_gcl.md)
 4. [DAFAT 复现与工程实现说明](./docs/dafat_transformer.md)
 5. [DFQ-TimesNet 复现与工程实现说明](./docs/dfq_timesnet.md)
-6. [因子挖掘框架说明](./docs/factor_mining_framework.md)
+6. [StockFormer 复现与工程实现说明](./docs/stockformer.md)
+7. [因子挖掘框架说明](./docs/factor_mining_framework.md)
 
 ## 脚本
 

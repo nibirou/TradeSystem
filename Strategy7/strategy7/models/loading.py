@@ -25,6 +25,7 @@ from .portfolio.weighting import DynamicOptimizationPortfolioModel, EqualWeightP
 from .stock_selection.dafat_transformer_model import DAFATStockModel
 from .stock_selection.factor_gcl_model import FactorGCLStockModel
 from .stock_selection.dfq_timesnet_model import DFQTimesNetStockModel
+from .stock_selection.stockformer_model import StockFormerStockModel
 from .stock_selection.launch_boost_model import LaunchBoostStockModel
 from .stock_selection.tree_model import TreeStockModel
 from .timing.models import NoTimingModel, VolatilityRegimeTimingModel
@@ -47,6 +48,8 @@ def _normalize_stock_model_type(model_type: str) -> str:
         return "dafat"
     if t in {"dfq_timesnet", "timesnet", "dfq-timesnet"}:
         return "dfq_timesnet"
+    if t in {"stockformer", "stock_former", "sac_stockformer"}:
+        return "stockformer"
     if t in {"launch_boost", "bottom_launch_boost", "low_start_boost", "launch10_boost"}:
         return "launch_boost"
     return t
@@ -122,6 +125,8 @@ def _candidate_name(component: str, model_type: str, run_tag: str | None) -> str
             return f"stock_model_dafat{suffix}.pt"
         if m == "dfq_timesnet":
             return f"stock_model_dfq_timesnet{suffix}.pt"
+        if m == "stockformer":
+            return f"stock_model_stockformer{suffix}.pt"
     if component == "timing_model":
         m = _normalize_timing_model_type(model_type)
         if m == "none":
@@ -339,11 +344,13 @@ def peek_stock_model_factor_cols(cfg: StockModelConfig, model_path: str | None) 
                 return [str(x) for x in cols if str(x).strip()]
         return []
 
-    if canonical in {"factor_gcl", "dafat", "dfq_timesnet"}:
+    if canonical in {"factor_gcl", "dafat", "dfq_timesnet", "stockformer"}:
         if canonical == "factor_gcl":
             torch, _nn, _F = FactorGCLStockModel._require_torch()
         elif canonical == "dafat":
             torch, _nn, _F = DAFATStockModel._require_torch()
+        elif canonical == "stockformer":
+            torch, _nn, _F = StockFormerStockModel._require_torch()
         else:
             torch, _nn, _F = DFQTimesNetStockModel._require_torch()
         ckpt = torch.load(str(p), map_location="cpu")
@@ -596,6 +603,63 @@ def load_stock_model(cfg: StockModelConfig, model_path: str | None) -> Tuple[Sto
         model._model = net
         return model, "artifact_file"
 
+    if canonical == "stockformer":
+        if p.suffix.lower() not in {".pt", ".pth"}:
+            raise ValueError(f"stockformer load mode expects .pt/.pth checkpoint, got: {p.suffix}")
+        torch, nn, F = StockFormerStockModel._require_torch()
+        ckpt = torch.load(str(p), map_location="cpu")
+        conf = dict(ckpt.get("config", {}) or {})
+        model = StockFormerStockModel(
+            seq_len=int(conf.get("seq_len", cfg.stockformer_seq_len)),
+            rel_seq_len=int(conf.get("rel_seq_len", cfg.stockformer_rel_seq_len)),
+            hidden_size=int(conf.get("hidden_size", cfg.stockformer_hidden_size)),
+            num_layers=int(conf.get("num_layers", cfg.stockformer_num_layers)),
+            num_heads=int(conf.get("num_heads", cfg.stockformer_num_heads)),
+            ffn_mult=int(conf.get("ffn_mult", cfg.stockformer_ffn_mult)),
+            dropout=float(conf.get("dropout", cfg.stockformer_dropout)),
+            pretrain_epochs=int(conf.get("pretrain_epochs", cfg.stockformer_pretrain_epochs)),
+            sac_episodes=int(conf.get("sac_episodes", cfg.stockformer_sac_episodes)),
+            lr=float(conf.get("lr", cfg.stockformer_lr)),
+            sac_lr=float(conf.get("sac_lr", cfg.stockformer_sac_lr)),
+            weight_decay=float(conf.get("weight_decay", cfg.stockformer_weight_decay)),
+            gamma=float(conf.get("gamma", cfg.stockformer_gamma)),
+            tau=float(conf.get("tau", cfg.stockformer_tau)),
+            init_alpha=float(conf.get("init_alpha", cfg.stockformer_init_alpha)),
+            target_entropy_scale=float(conf.get("target_entropy_scale", cfg.stockformer_target_entropy_scale)),
+            early_stop=int(conf.get("early_stop", cfg.stockformer_early_stop)),
+            buffer_size=int(conf.get("buffer_size", cfg.stockformer_buffer_size)),
+            learning_starts=int(conf.get("learning_starts", cfg.stockformer_learning_starts)),
+            batch_transitions=int(conf.get("batch_transitions", cfg.stockformer_batch_transitions)),
+            updates_per_step=int(conf.get("updates_per_step", cfg.stockformer_updates_per_step)),
+            per_epoch_batch=int(conf.get("per_epoch_batch", cfg.stockformer_per_epoch_batch)),
+            batch_size=int(conf.get("batch_size", cfg.stockformer_batch_size)),
+            label_transform=str(conf.get("label_transform", cfg.stockformer_label_transform)),
+            input_clip=float(conf.get("input_clip", cfg.stockformer_input_clip)),
+            mse_weight=float(conf.get("mse_weight", cfg.stockformer_mse_weight)),
+            ic_loss_weight=float(conf.get("ic_loss_weight", cfg.stockformer_ic_loss_weight)),
+            reward_cost_bps=float(conf.get("reward_cost_bps", cfg.stockformer_reward_cost_bps)),
+            turnover_penalty=float(conf.get("turnover_penalty", cfg.stockformer_turnover_penalty)),
+            tracking_penalty=float(conf.get("tracking_penalty", cfg.stockformer_tracking_penalty)),
+            min_cross_section=int(conf.get("min_cross_section", cfg.stockformer_min_cross_section)),
+            random_state=int(conf.get("random_state", cfg.random_state)),
+            device=str(conf.get("device_used", cfg.stockformer_device)),
+        )
+        model._factor_cols = [str(x) for x in ckpt.get("factor_cols", []) if str(x).strip()]
+        if not model._factor_cols:
+            raise RuntimeError("stockformer checkpoint missing factor_cols.")
+        model._fill_values = pd.Series(ckpt.get("fill_values", {}) or {}, dtype=float)
+        model._time_col = str(ckpt.get("time_col", "signal_ts"))
+        model._train_summary = dict(ckpt.get("train_summary", {}) or {})
+        model._target_col = str(conf.get("target_col", "target_return"))
+        model._score_sign = float(conf.get("score_sign", 1.0))
+        model._device_used = model._choose_device(torch)
+        net = model._build_network(input_dim=len(model._factor_cols), torch=torch, nn=nn, F=F)
+        net.load_state_dict(ckpt["state_dict"])
+        net.to(model._device_used)
+        net.eval()
+        model._model = net
+        return model, "artifact_file"
+
     raise ValueError(f"unsupported stock model type in load mode: {cfg.model_type}")
 
 
@@ -819,4 +883,42 @@ def bootstrap_stock_model_history(
             start = max(0, n - int(model.seq_len) + 1)
             model._history_by_code[str(code)] = arr[start:].copy()
             model._history_time_by_code[str(code)] = ts_arr[start:].copy()
+        return
+
+    if isinstance(model, StockFormerStockModel):
+        if not factor_cols:
+            return
+        time_col = model._time_col or model._resolve_time_col(history_df)
+        missing = [c for c in factor_cols if c not in history_df.columns]
+        if missing:
+            return
+        keep_cols = list(dict.fromkeys(["code", time_col, *factor_cols, "industry_bucket", "board_type"]))
+        work = history_df[[c for c in keep_cols if c in history_df.columns]].copy()
+        work[time_col] = pd.to_datetime(work[time_col], errors="coerce")
+        work = work.dropna(subset=["code", time_col]).copy()
+        work["code"] = work["code"].astype(str)
+        fv = model.fill_values().reindex(factor_cols).fillna(0.0)
+        work[factor_cols] = (
+            work[factor_cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(fv)
+            .fillna(0.0)
+        )
+        clip = float(getattr(model, "input_clip", 0.0))
+        if clip > 0.0:
+            work[factor_cols] = work[factor_cols].clip(lower=-clip, upper=clip)
+        model._time_col = time_col
+        rel = model._build_relation_frame(df=work, x=work[factor_cols])
+        work = work.sort_values(["code", time_col])
+        rel = rel.reindex(work.index)
+        model._history_by_code = {}
+        model._history_rel_by_code = {}
+        for code, g in work.groupby("code", sort=False, observed=True):
+            arr = g[factor_cols].to_numpy(dtype=np.float32)
+            rel_arr = rel.loc[g.index, factor_cols].to_numpy(dtype=np.float32)
+            n = len(arr)
+            if n == 0:
+                continue
+            model._history_by_code[str(code)] = arr[max(0, n - int(model.seq_len) + 1) :].copy()
+            model._history_rel_by_code[str(code)] = rel_arr[max(0, n - int(model.rel_seq_len) + 1) :].copy()
         return
