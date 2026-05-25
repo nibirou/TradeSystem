@@ -339,14 +339,24 @@ def _merge_existing_and_new(
         how="outer",
         suffixes=("_old", "_new"),
     )
-    for c in value_cols:
+    merged_value_cols: Dict[str, pd.Series] = {}
+    for c in _dedup_keep_order([str(c) for c in value_cols]):
         old_c = f"{c}_old" if f"{c}_old" in merged.columns else c
         new_c = f"{c}_new" if f"{c}_new" in merged.columns else c
         new_s = _numeric_col_or_nan(merged, new_c, merged.index)
         old_s = _numeric_col_or_nan(merged, old_c, merged.index)
         # New values win, old cached values fill gaps. Avoid Series.combine_first:
         # pandas 2.2+ warns when its internal concat sees empty/all-NA blocks.
-        merged[c] = new_s.where(new_s.notna(), old_s).astype("float32")
+        merged_value_cols[c] = new_s.where(new_s.notna(), old_s).astype("float32")
+    if merged_value_cols:
+        merged = pd.concat(
+            [
+                merged.drop(columns=list(merged_value_cols.keys()), errors="ignore"),
+                pd.DataFrame(merged_value_cols, index=merged.index),
+            ],
+            axis=1,
+            copy=False,
+        )
     keep_cols = _dedup_keep_order(
         list(key_cols)
         + [c for c in out.columns if c not in key_cols]
