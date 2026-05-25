@@ -44,6 +44,8 @@
 | `run_strategy7_v2_25_train_dfq_timesnet.sh` | DFQ-TimesNet 研究型训练模板 | `dfq_timesnet` + FE + factor value store |
 | `run_strategy7_v2_26_train_stockformer_smoke.ps1` | StockFormer 轻量训练回测 | 三路 Transformer predictive coding + SAC |
 | `run_strategy7_v2_27_train_stockformer.ps1` | StockFormer 研究型训练模板 | 研报参数风格、日频滚动研究配置 |
+| `run_strategy7_v2_28_train_dtlc_rl_smoke.ps1` | DTLC_RL 轻量训练回测 | TCN/多尺度 Transformer/GRN + 对比学习 + PPO |
+| `run_strategy7_v2_29_train_dtlc_rl.ps1` | DTLC_RL 研究型训练模板 | 西南证券解耦时序对比强化学习模型、20 日标签/月频调仓风格 |
 
 ## 2) 挖掘入口模板（run_factor_mining.py）
 
@@ -74,8 +76,9 @@
 | 复现已有模型（summary 引导） | `run_strategy7_v2_04_load_from_summary_refit.ps1`、`run_strategy7_v2_05_load_from_summary_strict.ps1` |
 | 复现已有模型（models 目录） | `run_strategy7_v2_06_load_from_models_dir_off.ps1` |
 | 复现已有模型（显式四路径） | `run_strategy7_v2_17_load_explicit_paths_off.ps1` |
-| 深度模型轻量冒烟（选股） | `run_strategy7_v2_08_train_factor_gcl_smoke.ps1`、`run_strategy7_v2_09_train_dafat_smoke.ps1`、`run_strategy7_v2_24_train_dfq_timesnet_smoke.ps1`、`run_strategy7_v2_26_train_stockformer_smoke.ps1` |
+| 深度模型轻量冒烟（选股） | `run_strategy7_v2_08_train_factor_gcl_smoke.ps1`、`run_strategy7_v2_09_train_dafat_smoke.ps1`、`run_strategy7_v2_24_train_dfq_timesnet_smoke.ps1`、`run_strategy7_v2_26_train_stockformer_smoke.ps1`、`run_strategy7_v2_28_train_dtlc_rl_smoke.ps1` |
 | StockFormer 强化学习交易状态实验 | `run_strategy7_v2_26_train_stockformer_smoke.ps1`、`run_strategy7_v2_27_train_stockformer.ps1` |
+| DTLC_RL 解耦时序对比强化学习选股 | `run_strategy7_v2_28_train_dtlc_rl_smoke.ps1`、`run_strategy7_v2_29_train_dtlc_rl.ps1` |
 | 频率扩展验证（30min/W/M） | `run_strategy7_v2_13_train_30min_intraday_realistic.ps1`、`run_strategy7_v2_12_train_weekly_volatility.ps1`、`run_strategy7_v2_18_train_monthly_multitask_catalog_off.ps1` |
 | 数据裁剪实验（price-only / 主板） | `run_strategy7_v2_14_train_price_only_mainboard.ps1`、`run_factor_mining_v2_11_price_only_mainboard_all.ps1` |
 | 自定义因子插件接入 | `run_strategy7_v2_15_train_custom_factor_plugin.ps1`、`run_factor_mining_v2_14_list_factors_with_custom_plugin.ps1` |

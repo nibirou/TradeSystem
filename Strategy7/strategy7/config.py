@@ -147,6 +147,43 @@ class StockModelConfig:
     timesnet_mse_weight: float
     timesnet_ic_loss_weight: float
     timesnet_device: str
+    dtlc_seq_len: int
+    dtlc_hidden_size: int
+    dtlc_latent_size: int
+    dtlc_num_heads: int
+    dtlc_encoder_layers: int
+    dtlc_grn_layers: int
+    dtlc_ffn_mult: int
+    dtlc_tcn_kernel_size: int
+    dtlc_alpha_scales: str
+    dtlc_dropout: float
+    dtlc_pretrain_epochs: int
+    dtlc_ppo_epochs: int
+    dtlc_lr: float
+    dtlc_ppo_lr: float
+    dtlc_weight_decay: float
+    dtlc_early_stop: int
+    dtlc_per_epoch_batch: int
+    dtlc_batch_size: int
+    dtlc_label_transform: str
+    dtlc_input_clip: float
+    dtlc_mse_weight: float
+    dtlc_ic_loss_weight: float
+    dtlc_contrastive_weight: float
+    dtlc_orthogonal_weight: float
+    dtlc_contrastive_tau: float
+    dtlc_positive_rank_pct: float
+    dtlc_ppo_clip: float
+    dtlc_gae_lambda: float
+    dtlc_gamma: float
+    dtlc_ppo_update_epochs: int
+    dtlc_ppo_batch_size: int
+    dtlc_entropy_weight: float
+    dtlc_value_weight: float
+    dtlc_stable_weight: float
+    dtlc_diversity_weight: float
+    dtlc_min_cross_section: int
+    dtlc_device: str
     stockformer_seq_len: int
     stockformer_rel_seq_len: int
     stockformer_hidden_size: int
@@ -912,7 +949,7 @@ def parse_args() -> argparse.Namespace:
         "--stock-model-type",
         type=str,
         default="decision_tree",
-        help="选股模型类型：decision_tree / launch_boost / factor_gcl / dafat / dfq_timesnet / stockformer / 自定义插件",
+        help="选股模型类型：decision_tree / launch_boost / factor_gcl / dafat / dfq_timesnet / dtlc_rl / stockformer / 自定义插件",
     )
     g_stock.add_argument(
         "--custom-stock-model-py",
@@ -1029,6 +1066,49 @@ def parse_args() -> argparse.Namespace:
     g_stock.add_argument("--timesnet-mse-weight", type=float, default=1.0, help="DFQ-TimesNet MSE 损失权重")
     g_stock.add_argument("--timesnet-ic-loss-weight", type=float, default=0.0, help="DFQ-TimesNet IC 损失权重，研报复现默认关闭")
     g_stock.add_argument("--timesnet-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="DFQ-TimesNet 训练设备")
+    g_stock.add_argument("--dtlc-seq-len", type=int, default=60, help="DTLC_RL 时序窗口长度；研报日频默认 60")
+    g_stock.add_argument("--dtlc-hidden-size", type=int, default=64, help="DTLC_RL 编码器隐层维度")
+    g_stock.add_argument("--dtlc-latent-size", type=int, default=32, help="DTLC_RL 三空间编码维度；研报 Beta 输出 32 维")
+    g_stock.add_argument("--dtlc-num-heads", type=int, default=4, help="DTLC_RL Alpha Transformer 注意力头数")
+    g_stock.add_argument("--dtlc-encoder-layers", type=int, default=2, help="DTLC_RL Beta/Alpha 编码层数")
+    g_stock.add_argument("--dtlc-grn-layers", type=int, default=2, help="DTLC_RL Theta 门控残差层数")
+    g_stock.add_argument("--dtlc-ffn-mult", type=int, default=4, help="DTLC_RL FFN 扩展倍数")
+    g_stock.add_argument("--dtlc-tcn-kernel-size", type=int, default=3, help="DTLC_RL Beta TCN 卷积核大小")
+    g_stock.add_argument("--dtlc-alpha-scales", type=str, default="20,40,60", help="DTLC_RL Alpha 多尺度 Transformer 窗口")
+    g_stock.add_argument("--dtlc-dropout", type=float, default=0.10, help="DTLC_RL dropout 概率")
+    g_stock.add_argument("--dtlc-pretrain-epochs", type=int, default=80, help="DTLC_RL 编码器监督预训练轮数")
+    g_stock.add_argument("--dtlc-ppo-epochs", type=int, default=30, help="DTLC_RL PPO 融合控制器训练轮数")
+    g_stock.add_argument("--dtlc-lr", type=float, default=1e-4, help="DTLC_RL 监督预训练学习率")
+    g_stock.add_argument("--dtlc-ppo-lr", type=float, default=3e-4, help="DTLC_RL PPO 学习率")
+    g_stock.add_argument("--dtlc-weight-decay", type=float, default=1e-4, help="DTLC_RL L2 正则强度")
+    g_stock.add_argument("--dtlc-early-stop", type=int, default=20, help="DTLC_RL 监督预训练早停耐心")
+    g_stock.add_argument("--dtlc-per-epoch-batch", type=int, default=100, help="DTLC_RL 每轮抽取交易日切片数")
+    g_stock.add_argument("--dtlc-batch-size", type=int, default=-1, help="DTLC_RL 单日截面采样数，-1=全量")
+    g_stock.add_argument(
+        "--dtlc-label-transform",
+        type=str,
+        choices=["raw", "csrank", "cszscore", "csranknorm"],
+        default="cszscore",
+        help="DTLC_RL 标签变换；研报以未来收益做截面预测，默认截面 zscore",
+    )
+    g_stock.add_argument("--dtlc-input-clip", type=float, default=3.0, help="DTLC_RL 输入特征 clip 绝对值，<=0 关闭")
+    g_stock.add_argument("--dtlc-mse-weight", type=float, default=0.05, help="DTLC_RL MSE 辅助损失权重")
+    g_stock.add_argument("--dtlc-ic-loss-weight", type=float, default=1.0, help="DTLC_RL IC 损失权重")
+    g_stock.add_argument("--dtlc-contrastive-weight", type=float, default=0.05, help="DTLC_RL InfoNCE 对比损失权重")
+    g_stock.add_argument("--dtlc-orthogonal-weight", type=float, default=0.05, help="DTLC_RL 三空间正交约束权重")
+    g_stock.add_argument("--dtlc-contrastive-tau", type=float, default=0.10, help="DTLC_RL InfoNCE 温度系数")
+    g_stock.add_argument("--dtlc-positive-rank-pct", type=float, default=0.20, help="DTLC_RL 正样本收益排名邻域比例")
+    g_stock.add_argument("--dtlc-ppo-clip", type=float, default=0.20, help="DTLC_RL PPO clip epsilon")
+    g_stock.add_argument("--dtlc-gae-lambda", type=float, default=0.95, help="DTLC_RL PPO GAE lambda")
+    g_stock.add_argument("--dtlc-gamma", type=float, default=0.99, help="DTLC_RL PPO 折现因子")
+    g_stock.add_argument("--dtlc-ppo-update-epochs", type=int, default=3, help="DTLC_RL 每条轨迹 PPO 更新轮数")
+    g_stock.add_argument("--dtlc-ppo-batch-size", type=int, default=32, help="DTLC_RL PPO mini-batch 大小")
+    g_stock.add_argument("--dtlc-entropy-weight", type=float, default=0.01, help="DTLC_RL PPO 熵奖励权重")
+    g_stock.add_argument("--dtlc-value-weight", type=float, default=0.50, help="DTLC_RL PPO 价值损失权重")
+    g_stock.add_argument("--dtlc-stable-weight", type=float, default=0.05, help="DTLC_RL 权重稳定奖励权重")
+    g_stock.add_argument("--dtlc-diversity-weight", type=float, default=0.02, help="DTLC_RL 权重分散奖励权重")
+    g_stock.add_argument("--dtlc-min-cross-section", type=int, default=8, help="DTLC_RL 单日最小截面股票数")
+    g_stock.add_argument("--dtlc-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="DTLC_RL 训练设备")
     g_stock.add_argument("--stockformer-seq-len", type=int, default=60, help="StockFormer 短/长收益分支输入序列长度")
     g_stock.add_argument("--stockformer-rel-seq-len", type=int, default=252, help="StockFormer 关系状态分支序列长度")
     g_stock.add_argument("--stockformer-hidden-size", type=int, default=64, help="StockFormer Transformer 隐层维度")
@@ -1465,6 +1545,82 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("timesnet_mse_weight must be non-negative.")
     if float(args.timesnet_ic_loss_weight) < 0.0:
         raise ValueError("timesnet_ic_loss_weight must be non-negative.")
+    if int(args.dtlc_seq_len) <= 1:
+        raise ValueError("dtlc_seq_len must be greater than 1.")
+    if int(args.dtlc_hidden_size) <= 0:
+        raise ValueError("dtlc_hidden_size must be positive.")
+    if int(args.dtlc_latent_size) <= 0:
+        raise ValueError("dtlc_latent_size must be positive.")
+    if int(args.dtlc_num_heads) <= 0:
+        raise ValueError("dtlc_num_heads must be positive.")
+    if int(args.dtlc_encoder_layers) <= 0:
+        raise ValueError("dtlc_encoder_layers must be positive.")
+    if int(args.dtlc_grn_layers) <= 0:
+        raise ValueError("dtlc_grn_layers must be positive.")
+    if int(args.dtlc_ffn_mult) <= 0:
+        raise ValueError("dtlc_ffn_mult must be positive.")
+    if int(args.dtlc_tcn_kernel_size) <= 0:
+        raise ValueError("dtlc_tcn_kernel_size must be positive.")
+    try:
+        dtlc_alpha_scales = [
+            int(float(x.strip()))
+            for x in str(args.dtlc_alpha_scales).replace("，", ",").replace(";", ",").split(",")
+            if x.strip()
+        ]
+    except Exception as exc:
+        raise ValueError("dtlc_alpha_scales must be a comma-separated integer list, for example: 20,40,60.") from exc
+    if not dtlc_alpha_scales or any(p <= 0 for p in dtlc_alpha_scales):
+        raise ValueError("dtlc_alpha_scales must contain at least one positive integer.")
+    if not (0.0 <= float(args.dtlc_dropout) < 1.0):
+        raise ValueError("dtlc_dropout must be in [0, 1).")
+    if int(args.dtlc_pretrain_epochs) <= 0:
+        raise ValueError("dtlc_pretrain_epochs must be positive.")
+    if int(args.dtlc_ppo_epochs) <= 0:
+        raise ValueError("dtlc_ppo_epochs must be positive.")
+    if float(args.dtlc_lr) <= 0.0:
+        raise ValueError("dtlc_lr must be positive.")
+    if float(args.dtlc_ppo_lr) <= 0.0:
+        raise ValueError("dtlc_ppo_lr must be positive.")
+    if float(args.dtlc_weight_decay) < 0.0:
+        raise ValueError("dtlc_weight_decay must be non-negative.")
+    if int(args.dtlc_early_stop) <= 0:
+        raise ValueError("dtlc_early_stop must be positive.")
+    if int(args.dtlc_per_epoch_batch) <= 0:
+        raise ValueError("dtlc_per_epoch_batch must be positive.")
+    if int(args.dtlc_batch_size) == 0 or int(args.dtlc_batch_size) < -1:
+        raise ValueError("dtlc_batch_size must be -1 or positive.")
+    if float(args.dtlc_mse_weight) < 0.0:
+        raise ValueError("dtlc_mse_weight must be non-negative.")
+    if float(args.dtlc_ic_loss_weight) < 0.0:
+        raise ValueError("dtlc_ic_loss_weight must be non-negative.")
+    if float(args.dtlc_contrastive_weight) < 0.0:
+        raise ValueError("dtlc_contrastive_weight must be non-negative.")
+    if float(args.dtlc_orthogonal_weight) < 0.0:
+        raise ValueError("dtlc_orthogonal_weight must be non-negative.")
+    if float(args.dtlc_contrastive_tau) <= 0.0:
+        raise ValueError("dtlc_contrastive_tau must be positive.")
+    if not (0.0 < float(args.dtlc_positive_rank_pct) <= 1.0):
+        raise ValueError("dtlc_positive_rank_pct must be in (0, 1].")
+    if not (0.0 < float(args.dtlc_ppo_clip) <= 1.0):
+        raise ValueError("dtlc_ppo_clip must be in (0, 1].")
+    if not (0.0 <= float(args.dtlc_gae_lambda) <= 1.0):
+        raise ValueError("dtlc_gae_lambda must be in [0, 1].")
+    if not (0.0 <= float(args.dtlc_gamma) <= 1.0):
+        raise ValueError("dtlc_gamma must be in [0, 1].")
+    if int(args.dtlc_ppo_update_epochs) <= 0:
+        raise ValueError("dtlc_ppo_update_epochs must be positive.")
+    if int(args.dtlc_ppo_batch_size) <= 0:
+        raise ValueError("dtlc_ppo_batch_size must be positive.")
+    if float(args.dtlc_entropy_weight) < 0.0:
+        raise ValueError("dtlc_entropy_weight must be non-negative.")
+    if float(args.dtlc_value_weight) < 0.0:
+        raise ValueError("dtlc_value_weight must be non-negative.")
+    if float(args.dtlc_stable_weight) < 0.0:
+        raise ValueError("dtlc_stable_weight must be non-negative.")
+    if float(args.dtlc_diversity_weight) < 0.0:
+        raise ValueError("dtlc_diversity_weight must be non-negative.")
+    if int(args.dtlc_min_cross_section) <= 1:
+        raise ValueError("dtlc_min_cross_section must be greater than 1.")
     if int(args.stockformer_seq_len) <= 1:
         raise ValueError("stockformer_seq_len must be greater than 1.")
     if int(args.stockformer_rel_seq_len) <= 1:
@@ -1716,6 +1872,43 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         timesnet_mse_weight=float(args.timesnet_mse_weight),
         timesnet_ic_loss_weight=float(args.timesnet_ic_loss_weight),
         timesnet_device=str(args.timesnet_device),
+        dtlc_seq_len=int(args.dtlc_seq_len),
+        dtlc_hidden_size=int(args.dtlc_hidden_size),
+        dtlc_latent_size=int(args.dtlc_latent_size),
+        dtlc_num_heads=int(args.dtlc_num_heads),
+        dtlc_encoder_layers=int(args.dtlc_encoder_layers),
+        dtlc_grn_layers=int(args.dtlc_grn_layers),
+        dtlc_ffn_mult=int(args.dtlc_ffn_mult),
+        dtlc_tcn_kernel_size=int(args.dtlc_tcn_kernel_size),
+        dtlc_alpha_scales=str(args.dtlc_alpha_scales),
+        dtlc_dropout=float(args.dtlc_dropout),
+        dtlc_pretrain_epochs=int(args.dtlc_pretrain_epochs),
+        dtlc_ppo_epochs=int(args.dtlc_ppo_epochs),
+        dtlc_lr=float(args.dtlc_lr),
+        dtlc_ppo_lr=float(args.dtlc_ppo_lr),
+        dtlc_weight_decay=float(args.dtlc_weight_decay),
+        dtlc_early_stop=int(args.dtlc_early_stop),
+        dtlc_per_epoch_batch=int(args.dtlc_per_epoch_batch),
+        dtlc_batch_size=int(args.dtlc_batch_size),
+        dtlc_label_transform=str(args.dtlc_label_transform),
+        dtlc_input_clip=float(args.dtlc_input_clip),
+        dtlc_mse_weight=float(args.dtlc_mse_weight),
+        dtlc_ic_loss_weight=float(args.dtlc_ic_loss_weight),
+        dtlc_contrastive_weight=float(args.dtlc_contrastive_weight),
+        dtlc_orthogonal_weight=float(args.dtlc_orthogonal_weight),
+        dtlc_contrastive_tau=float(args.dtlc_contrastive_tau),
+        dtlc_positive_rank_pct=float(args.dtlc_positive_rank_pct),
+        dtlc_ppo_clip=float(args.dtlc_ppo_clip),
+        dtlc_gae_lambda=float(args.dtlc_gae_lambda),
+        dtlc_gamma=float(args.dtlc_gamma),
+        dtlc_ppo_update_epochs=int(args.dtlc_ppo_update_epochs),
+        dtlc_ppo_batch_size=int(args.dtlc_ppo_batch_size),
+        dtlc_entropy_weight=float(args.dtlc_entropy_weight),
+        dtlc_value_weight=float(args.dtlc_value_weight),
+        dtlc_stable_weight=float(args.dtlc_stable_weight),
+        dtlc_diversity_weight=float(args.dtlc_diversity_weight),
+        dtlc_min_cross_section=int(args.dtlc_min_cross_section),
+        dtlc_device=str(args.dtlc_device),
         stockformer_seq_len=int(args.stockformer_seq_len),
         stockformer_rel_seq_len=int(args.stockformer_rel_seq_len),
         stockformer_hidden_size=int(args.stockformer_hidden_size),

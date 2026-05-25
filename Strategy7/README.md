@@ -46,6 +46,12 @@ python Strategy7/run_strategy7.py --stock-model-type dafat --label-task return
 python Strategy7/run_strategy7.py --stock-model-type dfq_timesnet --label-task return --horizon 20
 ```
 
+运行 DTLC_RL（解耦时序对比学习 + PPO 空间融合）：
+
+```bash
+python Strategy7/run_strategy7.py --stock-model-type dtlc_rl --label-task return --horizon 20 --rebalance-stride 20
+```
+
 运行 StockFormer（Transformer predictive coding + SAC 强化学习）：
 
 ```bash

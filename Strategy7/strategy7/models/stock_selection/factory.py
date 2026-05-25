@@ -125,7 +125,52 @@ def build_stock_model(cfg: StockModelConfig) -> StockSelectionModel:
             device=cfg.timesnet_device,
         )
 
-    # 7) StockFormer (predictive-coding Transformer + SAC).
+    # 7) DTLC_RL (decoupled temporal contrastive learning + PPO fusion).
+    if model_type in {"dtlc_rl", "dtlcrl", "dtlc", "dtlc-rl"}:
+        from .dtlc_rl_model import DTLCRLStockModel
+
+        return DTLCRLStockModel(
+            seq_len=cfg.dtlc_seq_len,
+            hidden_size=cfg.dtlc_hidden_size,
+            latent_size=cfg.dtlc_latent_size,
+            num_heads=cfg.dtlc_num_heads,
+            encoder_layers=cfg.dtlc_encoder_layers,
+            grn_layers=cfg.dtlc_grn_layers,
+            ffn_mult=cfg.dtlc_ffn_mult,
+            tcn_kernel_size=cfg.dtlc_tcn_kernel_size,
+            alpha_scales=cfg.dtlc_alpha_scales,
+            dropout=cfg.dtlc_dropout,
+            pretrain_epochs=cfg.dtlc_pretrain_epochs,
+            ppo_epochs=cfg.dtlc_ppo_epochs,
+            lr=cfg.dtlc_lr,
+            ppo_lr=cfg.dtlc_ppo_lr,
+            weight_decay=cfg.dtlc_weight_decay,
+            early_stop=cfg.dtlc_early_stop,
+            per_epoch_batch=cfg.dtlc_per_epoch_batch,
+            batch_size=cfg.dtlc_batch_size,
+            label_transform=cfg.dtlc_label_transform,
+            input_clip=cfg.dtlc_input_clip,
+            mse_weight=cfg.dtlc_mse_weight,
+            ic_loss_weight=cfg.dtlc_ic_loss_weight,
+            contrastive_weight=cfg.dtlc_contrastive_weight,
+            orthogonal_weight=cfg.dtlc_orthogonal_weight,
+            contrastive_tau=cfg.dtlc_contrastive_tau,
+            positive_rank_pct=cfg.dtlc_positive_rank_pct,
+            ppo_clip=cfg.dtlc_ppo_clip,
+            gae_lambda=cfg.dtlc_gae_lambda,
+            gamma=cfg.dtlc_gamma,
+            ppo_update_epochs=cfg.dtlc_ppo_update_epochs,
+            ppo_batch_size=cfg.dtlc_ppo_batch_size,
+            entropy_weight=cfg.dtlc_entropy_weight,
+            value_weight=cfg.dtlc_value_weight,
+            stable_weight=cfg.dtlc_stable_weight,
+            diversity_weight=cfg.dtlc_diversity_weight,
+            min_cross_section=cfg.dtlc_min_cross_section,
+            random_state=cfg.random_state,
+            device=cfg.dtlc_device,
+        )
+
+    # 8) StockFormer (predictive-coding Transformer + SAC).
     if model_type in {"stockformer", "stock_former", "sac_stockformer"}:
         from .stockformer_model import StockFormerStockModel
 

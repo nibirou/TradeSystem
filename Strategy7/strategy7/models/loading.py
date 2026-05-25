@@ -25,6 +25,7 @@ from .portfolio.weighting import DynamicOptimizationPortfolioModel, EqualWeightP
 from .stock_selection.dafat_transformer_model import DAFATStockModel
 from .stock_selection.factor_gcl_model import FactorGCLStockModel
 from .stock_selection.dfq_timesnet_model import DFQTimesNetStockModel
+from .stock_selection.dtlc_rl_model import DTLCRLStockModel
 from .stock_selection.stockformer_model import StockFormerStockModel
 from .stock_selection.launch_boost_model import LaunchBoostStockModel
 from .stock_selection.tree_model import TreeStockModel
@@ -48,6 +49,8 @@ def _normalize_stock_model_type(model_type: str) -> str:
         return "dafat"
     if t in {"dfq_timesnet", "timesnet", "dfq-timesnet"}:
         return "dfq_timesnet"
+    if t in {"dtlc_rl", "dtlcrl", "dtlc", "dtlc-rl"}:
+        return "dtlc_rl"
     if t in {"stockformer", "stock_former", "sac_stockformer"}:
         return "stockformer"
     if t in {"launch_boost", "bottom_launch_boost", "low_start_boost", "launch10_boost"}:
@@ -125,6 +128,8 @@ def _candidate_name(component: str, model_type: str, run_tag: str | None) -> str
             return f"stock_model_dafat{suffix}.pt"
         if m == "dfq_timesnet":
             return f"stock_model_dfq_timesnet{suffix}.pt"
+        if m == "dtlc_rl":
+            return f"stock_model_dtlc_rl{suffix}.pt"
         if m == "stockformer":
             return f"stock_model_stockformer{suffix}.pt"
     if component == "timing_model":
@@ -344,11 +349,13 @@ def peek_stock_model_factor_cols(cfg: StockModelConfig, model_path: str | None) 
                 return [str(x) for x in cols if str(x).strip()]
         return []
 
-    if canonical in {"factor_gcl", "dafat", "dfq_timesnet", "stockformer"}:
+    if canonical in {"factor_gcl", "dafat", "dfq_timesnet", "dtlc_rl", "stockformer"}:
         if canonical == "factor_gcl":
             torch, _nn, _F = FactorGCLStockModel._require_torch()
         elif canonical == "dafat":
             torch, _nn, _F = DAFATStockModel._require_torch()
+        elif canonical == "dtlc_rl":
+            torch, _nn, _F = DTLCRLStockModel._require_torch()
         elif canonical == "stockformer":
             torch, _nn, _F = StockFormerStockModel._require_torch()
         else:
@@ -597,6 +604,99 @@ def load_stock_model(cfg: StockModelConfig, model_path: str | None) -> Tuple[Sto
         model._score_sign = float(conf.get("score_sign", 1.0))
         model._device_used = model._choose_device(torch)
         net = model._build_network(input_dim=len(model._factor_cols), torch=torch, nn=nn, F=F)
+        net.load_state_dict(ckpt["state_dict"])
+        net.to(model._device_used)
+        net.eval()
+        model._model = net
+        return model, "artifact_file"
+
+    if canonical == "dtlc_rl":
+        if p.suffix.lower() not in {".pt", ".pth"}:
+            raise ValueError(f"dtlc_rl load mode expects .pt/.pth checkpoint, got: {p.suffix}")
+        torch, nn, F = DTLCRLStockModel._require_torch()
+        ckpt = torch.load(str(p), map_location="cpu")
+        conf = dict(ckpt.get("config", {}) or {})
+        model = DTLCRLStockModel(
+            seq_len=int(conf.get("seq_len", cfg.dtlc_seq_len)),
+            hidden_size=int(conf.get("hidden_size", cfg.dtlc_hidden_size)),
+            latent_size=int(conf.get("latent_size", cfg.dtlc_latent_size)),
+            num_heads=int(conf.get("num_heads", cfg.dtlc_num_heads)),
+            encoder_layers=int(conf.get("encoder_layers", cfg.dtlc_encoder_layers)),
+            grn_layers=int(conf.get("grn_layers", cfg.dtlc_grn_layers)),
+            ffn_mult=int(conf.get("ffn_mult", cfg.dtlc_ffn_mult)),
+            tcn_kernel_size=int(conf.get("tcn_kernel_size", cfg.dtlc_tcn_kernel_size)),
+            alpha_scales=conf.get("alpha_scales", cfg.dtlc_alpha_scales),
+            dropout=float(conf.get("dropout", cfg.dtlc_dropout)),
+            pretrain_epochs=int(conf.get("pretrain_epochs", cfg.dtlc_pretrain_epochs)),
+            ppo_epochs=int(conf.get("ppo_epochs", cfg.dtlc_ppo_epochs)),
+            lr=float(conf.get("lr", cfg.dtlc_lr)),
+            ppo_lr=float(conf.get("ppo_lr", cfg.dtlc_ppo_lr)),
+            weight_decay=float(conf.get("weight_decay", cfg.dtlc_weight_decay)),
+            early_stop=int(conf.get("early_stop", cfg.dtlc_early_stop)),
+            per_epoch_batch=int(conf.get("per_epoch_batch", cfg.dtlc_per_epoch_batch)),
+            batch_size=int(conf.get("batch_size", cfg.dtlc_batch_size)),
+            label_transform=str(conf.get("label_transform", cfg.dtlc_label_transform)),
+            input_clip=float(conf.get("input_clip", cfg.dtlc_input_clip)),
+            mse_weight=float(conf.get("mse_weight", cfg.dtlc_mse_weight)),
+            ic_loss_weight=float(conf.get("ic_loss_weight", cfg.dtlc_ic_loss_weight)),
+            contrastive_weight=float(conf.get("contrastive_weight", cfg.dtlc_contrastive_weight)),
+            orthogonal_weight=float(conf.get("orthogonal_weight", cfg.dtlc_orthogonal_weight)),
+            contrastive_tau=float(conf.get("contrastive_tau", cfg.dtlc_contrastive_tau)),
+            positive_rank_pct=float(conf.get("positive_rank_pct", cfg.dtlc_positive_rank_pct)),
+            ppo_clip=float(conf.get("ppo_clip", cfg.dtlc_ppo_clip)),
+            gae_lambda=float(conf.get("gae_lambda", cfg.dtlc_gae_lambda)),
+            gamma=float(conf.get("gamma", cfg.dtlc_gamma)),
+            ppo_update_epochs=int(conf.get("ppo_update_epochs", cfg.dtlc_ppo_update_epochs)),
+            ppo_batch_size=int(conf.get("ppo_batch_size", cfg.dtlc_ppo_batch_size)),
+            entropy_weight=float(conf.get("entropy_weight", cfg.dtlc_entropy_weight)),
+            value_weight=float(conf.get("value_weight", cfg.dtlc_value_weight)),
+            stable_weight=float(conf.get("stable_weight", cfg.dtlc_stable_weight)),
+            diversity_weight=float(conf.get("diversity_weight", cfg.dtlc_diversity_weight)),
+            min_cross_section=int(conf.get("min_cross_section", cfg.dtlc_min_cross_section)),
+            random_state=int(conf.get("random_state", cfg.random_state)),
+            device=str(conf.get("device_used", cfg.dtlc_device)),
+        )
+        model._factor_cols = [str(x) for x in ckpt.get("factor_cols", []) if str(x).strip()]
+        if not model._factor_cols:
+            raise RuntimeError("dtlc_rl checkpoint missing factor_cols.")
+        raw_space = ckpt.get("space_cols", {}) or {}
+        if isinstance(raw_space, dict):
+            space_cols = {
+                str(k): [str(x) for x in v if str(x).strip()]
+                for k, v in raw_space.items()
+                if isinstance(v, list)
+            }
+        else:
+            space_cols = {}
+        if not {"beta", "alpha", "theta"}.issubset(set(space_cols)):
+            space_cols = model._resolve_space_cols(model._factor_cols)
+        model._set_space_cols(space_cols)
+        model._fill_values = pd.Series(ckpt.get("fill_values", {}) or {}, dtype=float)
+        model._time_col = str(ckpt.get("time_col", "signal_ts"))
+        model._train_summary = dict(ckpt.get("train_summary", {}) or {})
+        model._target_col = str(conf.get("target_col", "target_return"))
+        model._score_sign = float(conf.get("score_sign", 1.0))
+        ms_mean = ckpt.get("market_state_mean", {}) or {}
+        ms_std = ckpt.get("market_state_std", {}) or {}
+        model._market_state_mean = pd.Series(ms_mean, dtype=float).reindex(model._state_cols).fillna(0.0)
+        model._market_state_std = pd.Series(ms_std, dtype=float).reindex(model._state_cols).replace(0.0, 1.0).fillna(1.0)
+        model._market_state_lookup = {}
+        for k, v in (ckpt.get("market_state_lookup", {}) or {}).items():
+            try:
+                ts = pd.to_datetime(k)
+            except Exception:
+                continue
+            model._market_state_lookup[pd.Timestamp(ts)] = np.asarray(v, dtype=np.float32)
+        model._device_used = model._choose_device(torch)
+        net = model._build_network(
+            beta_dim=len(model._space_indices["beta"]),
+            alpha_dim=len(model._space_indices["alpha"]),
+            theta_dim=len(model._space_indices["theta"]),
+            state_dim=len(model._state_cols),
+            torch=torch,
+            nn=nn,
+            F=F,
+        )
         net.load_state_dict(ckpt["state_dict"])
         net.to(model._device_used)
         net.eval()
@@ -883,6 +983,60 @@ def bootstrap_stock_model_history(
             start = max(0, n - int(model.seq_len) + 1)
             model._history_by_code[str(code)] = arr[start:].copy()
             model._history_time_by_code[str(code)] = ts_arr[start:].copy()
+        return
+
+    if isinstance(model, DTLCRLStockModel):
+        if not factor_cols:
+            return
+        time_col = model._time_col or model._resolve_time_col(history_df)
+        missing = [c for c in factor_cols if c not in history_df.columns]
+        if missing:
+            return
+        state_cols = [
+            "ret_1d",
+            "ret_1",
+            "mom_5",
+            "ret_3",
+            "ret_6",
+            "realized_vol_20",
+            "rv_12",
+            "intraday_range",
+            "range_norm",
+            "turn",
+            "turn_ratio_5",
+            "amount_ratio_20",
+            "amount_ratio_12",
+            "amount",
+            "volume",
+        ]
+        keep_cols = list(dict.fromkeys(["code", time_col, *factor_cols, *[c for c in state_cols if c in history_df.columns]]))
+        work = history_df[keep_cols].copy()
+        work[time_col] = pd.to_datetime(work[time_col], errors="coerce")
+        work = work.dropna(subset=["code", time_col]).copy()
+        work["code"] = work["code"].astype(str)
+        fv = model.fill_values().reindex(factor_cols).fillna(0.0)
+        work[factor_cols] = (
+            work[factor_cols]
+            .replace([np.inf, -np.inf], np.nan)
+            .fillna(fv)
+            .fillna(0.0)
+        )
+        clip = float(getattr(model, "input_clip", 0.0))
+        if clip > 0.0:
+            work[factor_cols] = work[factor_cols].clip(lower=-clip, upper=clip)
+        model._time_col = time_col
+        state_raw = model._build_market_state_frame(work, time_col=time_col)
+        state_norm = model._normalize_market_state_frame(state_raw)
+        for k in state_norm.index:
+            model._market_state_lookup[pd.Timestamp(k)] = state_norm.loc[k, model._state_cols].to_numpy(dtype=np.float32)
+        work = work.sort_values(["code", time_col])
+        model._history_by_code = {}
+        for code, g in work.groupby("code", sort=False, observed=True):
+            arr = g[factor_cols].to_numpy(dtype=np.float32)
+            n = len(arr)
+            if n == 0:
+                continue
+            model._history_by_code[str(code)] = arr[max(0, n - int(model.seq_len) + 1) :].copy()
         return
 
     if isinstance(model, StockFormerStockModel):

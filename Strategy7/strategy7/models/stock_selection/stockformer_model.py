@@ -109,6 +109,7 @@ class StockFormerStockModel(StockSelectionModel):
     _device_used: str = field(default="cpu", init=False, repr=False)
     _target_col: str = field(default="target_return", init=False, repr=False)
     _train_summary: Dict[str, float] = field(default_factory=dict, init=False, repr=False)
+    _sequence_summary: Dict[str, float] = field(default_factory=dict, init=False, repr=False)
     _score_sign: float = field(default=1.0, init=False, repr=False)
 
     @staticmethod
@@ -222,6 +223,27 @@ class StockFormerStockModel(StockSelectionModel):
             mix = 0.80 * mix + 0.20 * (x - board_mean)
         return mix.replace([np.inf, -np.inf], np.nan).fillna(0.0)
 
+    @staticmethod
+    def _left_padded_window(arr: np.ndarray, end_pos: int, window: int) -> np.ndarray:
+        """Return a fixed-length historical window ending at ``end_pos``.
+
+        StockFormer's relation branch often uses a long annual window.  Some
+        Strategy7 research slices or lower-frequency panels do not have that
+        many valid bars per stock after time splitting, so training uses the
+        same left-padding policy as inference instead of dropping the sample.
+        """
+        end_pos = int(end_pos)
+        window = int(window)
+        if window <= 0:
+            raise ValueError("window must be positive.")
+        head = arr[: end_pos + 1]
+        if len(head) == 0:
+            return np.zeros((window, arr.shape[1]), dtype=np.float32)
+        if len(head) >= window:
+            return head[-window:]
+        pad = np.repeat(head[:1], repeats=window - len(head), axis=0)
+        return np.vstack([pad, head])
+
     def _build_train_samples(
         self,
         df: pd.DataFrame,
@@ -248,7 +270,10 @@ class StockFormerStockModel(StockSelectionModel):
 
         seq_len = int(self.seq_len)
         rel_len = int(self.rel_seq_len)
-        start_idx = max(seq_len, rel_len) - 1
+        raw_samples = 0
+        padded_seq_samples = 0
+        padded_rel_samples = 0
+        max_obs_per_code = 0
         for code, g in out.groupby("code", sort=False, observed=True):
             rows = g["_row"].to_numpy(dtype=int)
             x = x_all[rows]
@@ -260,20 +285,24 @@ class StockFormerStockModel(StockSelectionModel):
             n = len(g)
             if n == 0:
                 continue
+            max_obs_per_code = max(max_obs_per_code, int(n))
             self._history_by_code[str(code)] = x[max(0, n - seq_len + 1) :].copy()
             self._history_rel_by_code[str(code)] = rel_x[max(0, n - rel_len + 1) :].copy()
-            if n <= start_idx:
-                continue
 
-            for i in range(start_idx, n):
+            for i in range(n):
                 if np.isnan(long_y[i]) or np.isnan(short_y[i]) or np.isnan(reward_ret[i]):
                     continue
-                past = x[i - seq_len + 1 : i + 1]
-                rel_past = rel_x[i - rel_len + 1 : i + 1]
+                past = self._left_padded_window(x, i, seq_len)
+                rel_past = self._left_padded_window(rel_x, i, rel_len)
                 if past.shape[0] != seq_len or rel_past.shape[0] != rel_len:
                     continue
                 if np.isnan(past).any() or np.isnan(rel_past).any():
                     continue
+                raw_samples += 1
+                if i + 1 < seq_len:
+                    padded_seq_samples += 1
+                if i + 1 < rel_len:
+                    padded_rel_samples += 1
                 key = pd.Timestamp(t.iloc[i])
                 if key == key.normalize():
                     key = key.normalize()
@@ -289,6 +318,15 @@ class StockFormerStockModel(StockSelectionModel):
                         reward_return=float(reward_ret[i]),
                     )
                 )
+        self._sequence_summary = {
+            "sequence_raw_sample_count": float(raw_samples),
+            "sequence_day_count_before_min_cross_section": float(len(grouped)),
+            "sequence_padded_seq_sample_count": float(padded_seq_samples),
+            "sequence_padded_rel_sample_count": float(padded_rel_samples),
+            "sequence_max_obs_per_code": float(max_obs_per_code),
+            "sequence_seq_len": float(seq_len),
+            "sequence_rel_seq_len": float(rel_len),
+        }
         return grouped
 
     @staticmethod
@@ -897,9 +935,18 @@ class StockFormerStockModel(StockSelectionModel):
             short_target=short_target,
             long_target=long_target,
         )
+        day_count_before_filter = len(grouped)
+        sample_count_before_filter = sum(len(v) for v in grouped.values())
         grouped = {k: v for k, v in grouped.items() if len(v) >= int(self.min_cross_section)}
         if not grouped:
-            raise RuntimeError("StockFormer valid training samples are empty after sequence construction.")
+            raise RuntimeError(
+                "StockFormer valid training samples are empty after sequence construction. "
+                f"raw_days={day_count_before_filter}, raw_samples={sample_count_before_filter}, "
+                f"min_cross_section={int(self.min_cross_section)}, "
+                f"seq_len={int(self.seq_len)}, rel_seq_len={int(self.rel_seq_len)}, "
+                f"max_obs_per_code={self._sequence_summary.get('sequence_max_obs_per_code', 0.0):.0f}. "
+                "Please check target availability, time/code columns, and cross-section size."
+            )
 
         keys = sorted(grouped.keys())
         split = max(1, int(len(keys) * 0.8))
@@ -934,6 +981,10 @@ class StockFormerStockModel(StockSelectionModel):
             "device": self._device_used,
             "train_day_count": float(len(train_day_states)),
             "val_day_count": float(len(val_day_states)),
+            "sequence_day_count_before_min_cross_section": float(day_count_before_filter),
+            "sequence_sample_count_before_min_cross_section": float(sample_count_before_filter),
+            "sequence_day_count_after_min_cross_section": float(len(grouped)),
+            **self._sequence_summary,
         }
         return self
 

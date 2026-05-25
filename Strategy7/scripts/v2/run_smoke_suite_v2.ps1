@@ -188,12 +188,17 @@ if (-not $SkipDeepModels) {
   Invoke-Step -Name "run_strategy7_v2_26_train_stockformer_smoke" -Action {
     & (Join-Path $scriptRoot "run_strategy7_v2_26_train_stockformer_smoke.ps1")
   } | Out-Null
+
+  Invoke-Step -Name "run_strategy7_v2_28_train_dtlc_rl_smoke" -Action {
+    & (Join-Path $scriptRoot "run_strategy7_v2_28_train_dtlc_rl_smoke.ps1")
+  } | Out-Null
 }
 else {
   Add-Skipped -Name "run_strategy7_v2_08_train_factor_gcl_smoke" -Reason "SkipDeepModels"
   Add-Skipped -Name "run_strategy7_v2_09_train_dafat_smoke" -Reason "SkipDeepModels"
   Add-Skipped -Name "run_strategy7_v2_24_train_dfq_timesnet_smoke" -Reason "SkipDeepModels"
   Add-Skipped -Name "run_strategy7_v2_26_train_stockformer_smoke" -Reason "SkipDeepModels"
+  Add-Skipped -Name "run_strategy7_v2_28_train_dtlc_rl_smoke" -Reason "SkipDeepModels"
 }
 
 Invoke-Step -Name "run_strategy7_v2_10_list_factors_export" -Action {

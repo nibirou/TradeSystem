@@ -15,7 +15,7 @@
 `Strategy7` 是一个模块化量化研究引擎，核心特点：
 
 1. 数据、因子、模型、回测四层可插拔
-2. 同时支持传统树模型与 `FactorGCL/DAFAT/DFQ-TimesNet/StockFormer` 深度模型
+2. 同时支持传统树模型与 `FactorGCL/DAFAT/DFQ-TimesNet/DTLC_RL/StockFormer` 深度模型
 3. 支持因子挖掘、因子 catalog 入库、主流程自动加载
 4. 支持自定义因子表达式与自定义插件模型
 
@@ -47,7 +47,7 @@
 
 深度模型附加依赖：
 
-1. `torch`（`--stock-model-type factor_gcl`、`dafat`、`dfq_timesnet` 或 `stockformer` 必需）
+1. `torch`（`--stock-model-type factor_gcl`、`dafat`、`dfq_timesnet`、`dtlc_rl` 或 `stockformer` 必需）
 
 建议先验证解释器：
 
@@ -447,9 +447,9 @@ python Strategy7/run_strategy7.py `
 新版模板目录：`Strategy7/scripts/v2`。  
 当前模板规模：
 
-1. 主流程 `run_strategy7_v2_*.ps1` 共 `01~27`
+1. 主流程 `run_strategy7_v2_*.ps1` 共 `01~29`
 2. 挖掘入口 `run_factor_mining_v2_*.ps1` 共 `01~14`
-3. Linux 对应脚本：主流程 `run_strategy7_v2_*.sh` 共 `01~27`（其中 `22/23` 为全市场自定义诊断模板），挖掘入口 `run_factor_mining_v2_*.sh` 共 `01~14`，并含 `run_smoke_suite_v2.sh`
+3. Linux 对应脚本：主流程 `run_strategy7_v2_*.sh` 共 `01~29`（其中 `22/23` 为全市场自定义诊断模板），挖掘入口 `run_factor_mining_v2_*.sh` 共 `01~14`，并含 `run_smoke_suite_v2.sh`
 
 完整模板索引与每个模板覆盖点详见：`Strategy7/scripts/v2/README.md`。
 
@@ -457,11 +457,11 @@ python Strategy7/run_strategy7.py `
 
 1. `01~03`：基础/增强/自定义四模型训练回测
 2. `04~07`：四种 load 路径（summary refit、summary strict、models_dir off、自定义 load）
-3. `08~09/24/26`：深度模型冒烟（FactorGCL、DAFAT、DFQ-TimesNet、StockFormer）
+3. `08~09/24/26/28`：深度模型冒烟（FactorGCL、DAFAT、DFQ-TimesNet、StockFormer、DTLC_RL）
 4. `10~11`：`--list-factors` 导出、factor value store build-only
 5. `12~19`：扩展链路（W/M/30min、price-only+main_board、custom factor plugin、value store hydrate、显式四路径 load、30min JSON 导出）
 6. `20~21`：全市场低位启动10日研究链路（`launch_boost` + `bottom_launch`，train/load）
-7. `25~27`：DFQ-TimesNet / StockFormer 研究型深度模型模板
+7. `25~29`：DFQ-TimesNet / StockFormer / DTLC_RL 研究型深度模型模板
 
 挖掘模板（`run_factor_mining_v2_*.ps1`）速览：
 
@@ -1202,6 +1202,7 @@ python Strategy7/run_strategy7.py `
 1. [FactorGCL 说明](./factor_gcl.md)
 2. [DAFAT 复现与工程实现说明](./dafat_transformer.md)
 3. [DFQ-TimesNet 复现与工程实现说明](./dfq_timesnet.md)
-4. [StockFormer 复现与工程实现说明](./stockformer.md)
-5. [因子挖掘框架说明](./factor_mining_framework.md)
+4. [DTLC_RL 复现与工程实现说明](./dtlc_rl.md)
+5. [StockFormer 复现与工程实现说明](./stockformer.md)
+6. [因子挖掘框架说明](./factor_mining_framework.md)
 

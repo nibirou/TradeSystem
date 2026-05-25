@@ -166,11 +166,13 @@ if [[ "${skip_deep_models}" == "false" ]]; then
   invoke_step "run_strategy7_v2_09_train_dafat_smoke" bash "${script_root}/run_strategy7_v2_09_train_dafat_smoke.sh" || true
   invoke_step "run_strategy7_v2_24_train_dfq_timesnet_smoke" bash "${script_root}/run_strategy7_v2_24_train_dfq_timesnet_smoke.sh" || true
   invoke_step "run_strategy7_v2_26_train_stockformer_smoke" bash "${script_root}/run_strategy7_v2_26_train_stockformer_smoke.sh" || true
+  invoke_step "run_strategy7_v2_28_train_dtlc_rl_smoke" bash "${script_root}/run_strategy7_v2_28_train_dtlc_rl_smoke.sh" || true
 else
   add_skipped "run_strategy7_v2_08_train_factor_gcl_smoke" "SkipDeepModels"
   add_skipped "run_strategy7_v2_09_train_dafat_smoke" "SkipDeepModels"
   add_skipped "run_strategy7_v2_24_train_dfq_timesnet_smoke" "SkipDeepModels"
   add_skipped "run_strategy7_v2_26_train_stockformer_smoke" "SkipDeepModels"
+  add_skipped "run_strategy7_v2_28_train_dtlc_rl_smoke" "SkipDeepModels"
 fi
 
 invoke_step "run_strategy7_v2_10_list_factors_export" bash "${script_root}/run_strategy7_v2_10_list_factors_export.sh" || true
