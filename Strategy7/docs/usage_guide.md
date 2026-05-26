@@ -374,25 +374,28 @@ python Strategy7/run_strategy7.py `
 
 ### 5.8 基于已有模型直接回测（不重新训练）
 
-当前主入口已支持双模式：
+当前主入口支持全局模式与组件级模式：
 
-1. `--model-run-mode train`（默认）：训练新模型后回测
-2. `--model-run-mode load`：加载已有模型后直接回测
+1. `--model-run-mode train`（默认）：四类模型默认训练或按配置构建。
+2. `--model-run-mode load`：四类模型默认加载已有模型。
+3. `--stock-model-run-mode/--timing-model-run-mode/--portfolio-model-run-mode/--execution-model-run-mode` 可分别设为 `inherit/train/load`；默认 `inherit`，表示沿用全局模式。
 
-`load` 模式下的模型路径解析优先级：
+因此可以表达混合链路，例如：选股模型重新训练，择时模型加载已有 LSTM，组合优化按当前配置构建，执行模型加载已有 realistic_fill。
+
+任一组件处于 `load` 模式时，该组件模型路径解析优先级：
 
 1. 显式传入单模型路径（`--stock-model-path/--timing-model-path/...`）
 2. `--model-summary-json` 自动读取 `summary_*.json` 里的 `outputs.model_files`
 3. `--models-load-dir` + 可选 `--models-load-run-tag` 自动匹配模型文件
 
-`load` 模式参数冲突与约束（新增）：
+`load` 模式参数冲突与约束：
 
-1. `load + FE` 由 `--load-fe-mode strict|refit|off` 控制，不再是固定阻断：
+1. 只有选股模型处于 `load` 时，`load + FE` 才由 `--load-fe-mode strict|refit|off` 控制：
    - `strict`：按 `--model-summary-json` 中记录的 FE 结果回放（要求 `notes.feature_engineering_summary` 存在且启用；当前不支持 `pca` 回放）。
    - `refit`：按当前样本重新拟合 FE（默认）。
    - `off`：即使 `--enable-factor-engineering true` 也跳过 FE。
-2. `strict` 模式必须提供 `--model-summary-json`，否则会显式报错阻断（避免语义错位）。
-3. `train` 模式下若传了 `--model-summary-json/--models-load-dir/--*-model-path`，主流程会提示并忽略这些 load 专用参数。
+2. 选股模型 `load` 且 `strict` 模式必须提供 `--model-summary-json`，否则会显式报错阻断（避免语义错位）。
+3. 某个组件是 `train` 时，对应 `--*-model-path` 不参与该组件加载；四个组件全是 `train` 时，`--model-summary-json/--models-load-dir/--*-model-path` 会提示并忽略。
 4. 文件后缀建议：
    - `decision_tree`：`.pkl/.pickle`
    - `factor_gcl/dafat/dfq_timesnet`：`.pt/.pth`
@@ -452,6 +455,25 @@ python Strategy7/run_strategy7.py `
   --models-load-dir D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/_tmp_freq_guard/pipeline_W/models `
   --models-load-run-tag W_h3_allboards_equal_weight_edb61102ec `
   --factor-freq W --horizon 3 --top-k 10
+```
+
+混合 train/load 示例：
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --model-run-mode train `
+  --stock-model-run-mode train `
+  --timing-model-run-mode load `
+  --portfolio-model-run-mode train `
+  --execution-model-run-mode load `
+  --stock-model-type decision_tree `
+  --timing-model-type lstm_madl `
+  --portfolio-model-type dynamic_opt `
+  --execution-model-type realistic_fill `
+  --timing-model-path D:/.../models/timing_lstm_madl_XXX.pt `
+  --execution-model-path D:/.../models/execution_realistic_XXX.pkl `
+  --factor-freq D --horizon 1 --top-k 50 `
+  --save-models true
 ```
 
 ### 5.9 next bar 快速推理（四类模型联动）
@@ -662,7 +684,7 @@ bash Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.s
 7. 回测：
    `--horizon --top-k --long-threshold --execution-scheme --fee-bps --slippage-bps`
 8. 模型运行模式与推理：
-   `--model-run-mode --load-fe-mode --model-summary-json --models-load-dir --models-load-run-tag --stock-model-path --timing-model-path --portfolio-model-path --execution-model-path --enable-next-bar-inference --inference-top-k`
+   `--model-run-mode --stock-model-run-mode --timing-model-run-mode --portfolio-model-run-mode --execution-model-run-mode --load-fe-mode --model-summary-json --models-load-dir --models-load-run-tag --stock-model-path --timing-model-path --portfolio-model-path --execution-model-path --enable-next-bar-inference --inference-top-k`
 9. 产物：
    `--output-dir --save-models`
 

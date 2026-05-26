@@ -199,7 +199,13 @@ def _resolve_from_dir(models_dir: Path, component: str, model_type: str, run_tag
     return _latest_matching_file(models_dir=models_dir, component=component, model_type=model_type)
 
 
-def resolve_model_artifact_paths(cfg: RunConfig) -> ResolvedModelPaths:
+def resolve_model_artifact_paths(cfg: RunConfig, components: set[str] | None = None) -> ResolvedModelPaths:
+    requested_components = set(components) if components is not None else {
+        "stock_model",
+        "timing_model",
+        "portfolio_model",
+        "execution_model",
+    }
     model_run = cfg.model_run
     summary_entries: Dict[str, object] = {}
     summary_base_dir: Path | None = None
@@ -270,12 +276,20 @@ def resolve_model_artifact_paths(cfg: RunConfig) -> ResolvedModelPaths:
                 return p
         return None
 
-    stock_path = _resolve(
-        component="stock_model",
-        explicit_path=model_run.stock_model_path,
-        model_type=cfg.stock_model.model_type,
-    )
-    if timing_needs_artifact:
+    if "stock_model" in requested_components:
+        stock_path = _resolve(
+            component="stock_model",
+            explicit_path=model_run.stock_model_path,
+            model_type=cfg.stock_model.model_type,
+        )
+    else:
+        stock_path = None
+        source["stock_model"] = "not_requested"
+
+    if "timing_model" not in requested_components:
+        timing_path = None
+        source["timing_model"] = "not_requested"
+    elif timing_needs_artifact:
         timing_path = _resolve(
             component="timing_model",
             explicit_path=model_run.timing_model_path,
@@ -285,7 +299,10 @@ def resolve_model_artifact_paths(cfg: RunConfig) -> ResolvedModelPaths:
         timing_path = None
         source["timing_model"] = "not_required"
 
-    if portfolio_needs_artifact:
+    if "portfolio_model" not in requested_components:
+        portfolio_path = None
+        source["portfolio_model"] = "not_requested"
+    elif portfolio_needs_artifact:
         portfolio_path = _resolve(
             component="portfolio_model",
             explicit_path=model_run.portfolio_model_path,
@@ -295,7 +312,10 @@ def resolve_model_artifact_paths(cfg: RunConfig) -> ResolvedModelPaths:
         portfolio_path = None
         source["portfolio_model"] = "not_required"
 
-    if execution_needs_artifact:
+    if "execution_model" not in requested_components:
+        execution_path = None
+        source["execution_model"] = "not_requested"
+    elif execution_needs_artifact:
         execution_path = _resolve(
             component="execution_model",
             explicit_path=model_run.execution_model_path,

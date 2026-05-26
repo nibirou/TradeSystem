@@ -296,6 +296,10 @@ class BacktestConfig:
 @dataclass
 class ModelRunConfig:
     mode: str
+    stock_model_mode: str
+    timing_model_mode: str
+    portfolio_model_mode: str
+    execution_model_mode: str
     load_fe_mode: str
     model_summary_json: str | None
     models_load_dir: str | None
@@ -1286,7 +1290,35 @@ def parse_args() -> argparse.Namespace:
         type=str,
         choices=["train", "load"],
         default="train",
-        help="模型运行模式：train=训练新模型后回测；load=加载已有模型直接回测",
+        help="四类模型默认运行模式：train=训练/按配置构建；load=加载已有模型。可被组件级 run-mode 覆盖",
+    )
+    g_mode.add_argument(
+        "--stock-model-run-mode",
+        type=str,
+        choices=["inherit", "train", "load"],
+        default="inherit",
+        help="选股模型运行模式；inherit 表示沿用 --model-run-mode",
+    )
+    g_mode.add_argument(
+        "--timing-model-run-mode",
+        type=str,
+        choices=["inherit", "train", "load"],
+        default="inherit",
+        help="择时模型运行模式；inherit 表示沿用 --model-run-mode",
+    )
+    g_mode.add_argument(
+        "--portfolio-model-run-mode",
+        type=str,
+        choices=["inherit", "train", "load"],
+        default="inherit",
+        help="组合模型运行模式；train 表示按配置构建，load 表示加载已有模型",
+    )
+    g_mode.add_argument(
+        "--execution-model-run-mode",
+        type=str,
+        choices=["inherit", "train", "load"],
+        default="inherit",
+        help="执行模型运行模式；train 表示按配置构建，load 表示加载已有模型",
     )
     g_mode.add_argument(
         "--load-fe-mode",
@@ -1860,10 +1892,22 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
     model_run_mode = str(getattr(args, "model_run_mode", "train")).strip().lower()
     if model_run_mode not in {"train", "load"}:
         raise ValueError("model_run_mode must be one of: train/load.")
+    def _resolve_component_run_mode(arg_name: str) -> str:
+        raw = str(getattr(args, arg_name, "inherit")).strip().lower()
+        if raw == "inherit":
+            return model_run_mode
+        if raw not in {"train", "load"}:
+            raise ValueError(f"{arg_name} must be one of: inherit/train/load.")
+        return raw
+
+    stock_model_run_mode = _resolve_component_run_mode("stock_model_run_mode")
+    timing_model_run_mode = _resolve_component_run_mode("timing_model_run_mode")
+    portfolio_model_run_mode = _resolve_component_run_mode("portfolio_model_run_mode")
+    execution_model_run_mode = _resolve_component_run_mode("execution_model_run_mode")
     load_fe_mode = str(getattr(args, "load_fe_mode", "refit")).strip().lower()
     if load_fe_mode not in {"strict", "refit", "off"}:
         raise ValueError("load_fe_mode must be one of: strict/refit/off.")
-    if model_run_mode == "load":
+    if stock_model_run_mode == "load":
         has_stock_source = any(
             [
                 bool(getattr(args, "model_summary_json", None)),
@@ -1874,7 +1918,7 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         )
         if not has_stock_source:
             raise ValueError(
-                "model_run_mode=load requires a stock-model source: "
+                "stock-model load mode requires a stock-model source: "
                 "model_summary_json / models_load_dir / stock_model_path / custom_stock_model_py."
             )
 
@@ -2156,7 +2200,11 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         ic_eval_mode=str(args.ic_eval_mode),
     )
     model_run = ModelRunConfig(
-        mode=str(getattr(args, "model_run_mode", "train")).strip().lower(),
+        mode=model_run_mode,
+        stock_model_mode=stock_model_run_mode,
+        timing_model_mode=timing_model_run_mode,
+        portfolio_model_mode=portfolio_model_run_mode,
+        execution_model_mode=execution_model_run_mode,
         load_fe_mode=str(getattr(args, "load_fe_mode", "refit")).strip().lower(),
         model_summary_json=(
             _resolve_path(getattr(args, "model_summary_json"))

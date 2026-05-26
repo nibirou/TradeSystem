@@ -71,6 +71,17 @@ python Strategy7/run_strategy7.py \
   --label-task return --horizon 1
 ```
 
+四类模型可独立控制 train/load；未设置组件级参数时会继承 `--model-run-mode`：
+
+```bash
+python Strategy7/run_strategy7.py \
+  --model-run-mode train \
+  --stock-model-run-mode train \
+  --timing-model-run-mode load \
+  --portfolio-model-run-mode train \
+  --execution-model-run-mode load
+```
+
 运行因子挖掘：
 
 ```bash

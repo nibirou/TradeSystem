@@ -629,26 +629,38 @@ def _build_next_bar_inference(
 def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     factor_freq = cfg.factors.factor_freq
     model_run_mode = str(getattr(cfg.model_run, "mode", "train")).strip().lower()
+    component_run_modes: Dict[str, str] = {
+        "stock_model": str(getattr(cfg.model_run, "stock_model_mode", model_run_mode)).strip().lower(),
+        "timing_model": str(getattr(cfg.model_run, "timing_model_mode", model_run_mode)).strip().lower(),
+        "portfolio_model": str(getattr(cfg.model_run, "portfolio_model_mode", model_run_mode)).strip().lower(),
+        "execution_model": str(getattr(cfg.model_run, "execution_model_mode", model_run_mode)).strip().lower(),
+    }
+    for component, mode in list(component_run_modes.items()):
+        if mode not in {"train", "load"}:
+            component_run_modes[component] = model_run_mode if model_run_mode in {"train", "load"} else "train"
+    any_component_load = any(mode == "load" for mode in component_run_modes.values())
+    stock_model_load = component_run_modes["stock_model"] == "load"
+    load_components = {component for component, mode in component_run_modes.items() if mode == "load"}
     load_fe_mode = str(getattr(cfg.model_run, "load_fe_mode", "refit")).strip().lower()
     if load_fe_mode not in {"strict", "refit", "off"}:
         load_fe_mode = "refit"
-    if model_run_mode == "load" and bool(getattr(cfg.factors, "enable_factor_engineering", False)):
+    if stock_model_load and bool(getattr(cfg.factors, "enable_factor_engineering", False)):
         if load_fe_mode == "strict":
             log_progress(
-                "load+FE 策略：strict（将尝试严格按 summary 中 FE 结果回放）。",
+                "stock load + FE 策略：strict（将尝试严格按 summary 中 FE 结果回放）。",
                 module="pipeline",
             )
         elif load_fe_mode == "refit":
             log_progress(
-                "load+FE 策略：refit（将按当前样本重新拟合 FE）。",
+                "stock load + FE 策略：refit（将按当前样本重新拟合 FE）。",
                 module="pipeline",
             )
         else:
             log_progress(
-                "load+FE 策略：off（将跳过 FE，即使 enable_factor_engineering=true）。",
+                "stock load + FE 策略：off（将跳过 FE，即使 enable_factor_engineering=true）。",
                 module="pipeline",
             )
-    if model_run_mode != "load":
+    if not any_component_load:
         ignored_load_args: List[str] = []
         if getattr(cfg.model_run, "model_summary_json", None):
             ignored_load_args.append("model_summary_json")
@@ -666,8 +678,24 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             ignored_load_args.append("execution_model_path")
         if ignored_load_args:
             log_progress(
-                "train 模式下检测到 load 专用参数，将忽略："
+                "四类模型均为 train 模式，检测到 load 专用参数，将忽略："
                 + ", ".join(ignored_load_args),
+                module="pipeline",
+            )
+    else:
+        ignored_by_component: List[str] = []
+        if component_run_modes["stock_model"] != "load" and getattr(cfg.model_run, "stock_model_path", None):
+            ignored_by_component.append("stock_model_path")
+        if component_run_modes["timing_model"] != "load" and getattr(cfg.model_run, "timing_model_path", None):
+            ignored_by_component.append("timing_model_path")
+        if component_run_modes["portfolio_model"] != "load" and getattr(cfg.model_run, "portfolio_model_path", None):
+            ignored_by_component.append("portfolio_model_path")
+        if component_run_modes["execution_model"] != "load" and getattr(cfg.model_run, "execution_model_path", None):
+            ignored_by_component.append("execution_model_path")
+        if ignored_by_component:
+            log_progress(
+                "部分组件为 train 模式，对应 load 路径参数将不参与该组件加载："
+                + ", ".join(ignored_by_component),
                 module="pipeline",
             )
     explicit_factor_names = _parse_factor_names_expr(cfg.factors.factor_list)
@@ -678,30 +706,47 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     model_paths = None
     model_component_source: Dict[str, str] = {}
     load_hint_factor_cols: List[str] = []
-    if model_run_mode == "load":
-        if cfg.timing_model.model_type == "none" and getattr(cfg.model_run, "timing_model_path", None):
+    if any_component_load:
+        if (
+            component_run_modes["timing_model"] == "load"
+            and cfg.timing_model.model_type == "none"
+            and getattr(cfg.model_run, "timing_model_path", None)
+        ):
             log_progress(
                 "timing_model_type=none 时 timing_model_path 不参与加载，将按配置构建 NoTimingModel。",
                 module="pipeline",
             )
-        if cfg.portfolio_opt.mode == "equal_weight" and getattr(cfg.model_run, "portfolio_model_path", None):
+        if (
+            component_run_modes["portfolio_model"] == "load"
+            and cfg.portfolio_opt.mode == "equal_weight"
+            and getattr(cfg.model_run, "portfolio_model_path", None)
+        ):
             log_progress(
                 "portfolio_model_type=equal_weight 时 portfolio_model_path 不参与加载，将按配置构建 EqualWeightPortfolioModel。",
                 module="pipeline",
             )
-        if cfg.execution_model.model_type == "ideal_fill" and getattr(cfg.model_run, "execution_model_path", None):
+        if (
+            component_run_modes["execution_model"] == "load"
+            and cfg.execution_model.model_type == "ideal_fill"
+            and getattr(cfg.model_run, "execution_model_path", None)
+        ):
             log_progress(
                 "execution_model_type=ideal_fill 时 execution_model_path 不参与加载，将按配置构建 IdealFillExecutionModel。",
                 module="pipeline",
             )
-        model_paths = resolve_model_artifact_paths(cfg)
+        model_paths = resolve_model_artifact_paths(cfg, components=load_components)
         model_component_source = dict(model_paths.source)
-        load_hint_factor_cols = peek_stock_model_factor_cols(cfg.stock_model, model_paths.stock_model)
+        load_hint_factor_cols = (
+            peek_stock_model_factor_cols(cfg.stock_model, model_paths.stock_model)
+            if stock_model_load
+            else []
+        )
         log_progress(
-            "检测到 load 模式：将跳过模型训练，直接加载已有模型文件。",
+            "模型组件运行模式："
+            + ", ".join(f"{k}={v}" for k, v in component_run_modes.items()),
             module="pipeline",
         )
-        if model_paths.stock_model:
+        if stock_model_load and model_paths.stock_model:
             log_progress(f"load stock model path: {model_paths.stock_model}", module="pipeline")
     log_progress(
         f"主流水线启动：factor_freq={cfg.factors.factor_freq}, "
@@ -925,7 +970,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         factor_freq=factor_freq,
         factor_packages=str(getattr(cfg.factors, "factor_packages", "")),
         factor_list_arg=str(getattr(cfg.factors, "factor_list", "")),
-        load_hint_factor_cols=list(load_hint_factor_cols) if model_run_mode == "load" else [],
+        load_hint_factor_cols=list(load_hint_factor_cols) if stock_model_load else [],
         factor_store_build_all=factor_store_build_all,
         has_custom_factor_module=bool(getattr(cfg.factors, "custom_factor_py", None)),
     )
@@ -1042,7 +1087,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         factor_list_arg=cfg.factors.factor_list,
         default_set=default_set,
     )
-    if model_run_mode == "load" and load_hint_factor_cols:
+    if stock_model_load and load_hint_factor_cols:
         missing_hint = [c for c in load_hint_factor_cols if c not in set(factor_lib.names(factor_freq))]
         if missing_hint:
             raise RuntimeError(
@@ -1225,11 +1270,11 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         "orth_method": "none",
         "mode": "disabled",
     }
-    if fe_requested and model_run_mode == "load" and load_fe_mode == "off":
-        log_progress("步骤 8.5/13：load-fe-mode=off，跳过因子特征工程。", module="pipeline")
+    if fe_requested and stock_model_load and load_fe_mode == "off":
+        log_progress("步骤 8.5/13：stock load 且 load-fe-mode=off，跳过因子特征工程。", module="pipeline")
         fe_report["mode"] = "skipped_by_load_fe_mode_off"
-    elif fe_requested and model_run_mode == "load" and load_fe_mode == "strict":
-        log_progress("步骤 8.5/13：执行 load+FE strict 回放。", module="pipeline")
+    elif fe_requested and stock_model_load and load_fe_mode == "strict":
+        log_progress("步骤 8.5/13：执行 stock load + FE strict 回放。", module="pipeline")
         if not getattr(cfg.model_run, "model_summary_json", None):
             raise RuntimeError("load-fe-mode=strict requires --model-summary-json for FE replay.")
         summary_path = Path(str(cfg.model_run.model_summary_json)).expanduser()
@@ -1278,8 +1323,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             module="pipeline",
         )
     elif fe_requested:
-        if model_run_mode == "load" and load_fe_mode == "refit":
-            log_progress("步骤 8.5/13：执行 load+FE refit（按当前样本重新拟合）。", module="pipeline")
+        if stock_model_load and load_fe_mode == "refit":
+            log_progress("步骤 8.5/13：执行 stock load + FE refit（按当前样本重新拟合）。", module="pipeline")
         else:
             log_progress("步骤 8.5/13：执行因子特征工程（覆盖率/相关性/正交化）。", module="pipeline")
         fe_opts = FactorEngineeringOptions(
@@ -1324,7 +1369,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
                 module="pipeline",
                 level="debug",
             )
-        fe_report["mode"] = "refit_current_run" if model_run_mode == "load" and load_fe_mode == "refit" else "train_fit"
+        fe_report["mode"] = "refit_current_run" if stock_model_load and load_fe_mode == "refit" else "train_fit"
         log_progress(
             "因子特征工程完成："
             f"input={int(fe_report.get('input_factor_count', len(selected_factors_before_fe)))}, "
@@ -1360,11 +1405,19 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             module="pipeline",
         )
 
-    # 9) Train models or load existing artifacts.
-    if model_run_mode == "load":
-        log_progress("步骤 9/13：加载模型（选股/择时/组合/执行）。", module="pipeline")
+    # 9) Train/build models or load existing artifacts, independently per component.
+    log_progress(
+        "步骤 9/13：按组件运行模式准备模型（"
+        + ", ".join(f"{k}={v}" for k, v in component_run_modes.items())
+        + "）。",
+        module="pipeline",
+    )
+    if any_component_load and model_paths is None:
+        model_paths = resolve_model_artifact_paths(cfg, components=load_components)
+
+    if component_run_modes["stock_model"] == "load":
         if model_paths is None:
-            model_paths = resolve_model_artifact_paths(cfg)
+            model_paths = resolve_model_artifact_paths(cfg, components=load_components)
         stock_model, stock_source = load_stock_model(cfg.stock_model, model_paths.stock_model)
         model_component_source["stock_model"] = stock_source
 
@@ -1402,33 +1455,44 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             )
 
         bootstrap_stock_model_history(stock_model, history_df=train_df, factor_cols=selected_factors)
-
-        timing_model, timing_source = load_timing_model(cfg.timing_model, model_paths.timing_model)
-        portfolio_model, portfolio_source = load_portfolio_model(cfg.portfolio_opt, model_paths.portfolio_model)
-        execution_model, execution_source = load_execution_model(cfg.execution_model, model_paths.execution_model)
-        model_component_source["timing_model"] = timing_source
-        model_component_source["portfolio_model"] = portfolio_source
-        model_component_source["execution_model"] = execution_source
-        log_progress(
-            "模型加载完成："
-            f"stock={stock_source}, timing={timing_source}, "
-            f"portfolio={portfolio_source}, execution={execution_source}。",
-            module="pipeline",
-        )
     else:
-        log_progress("步骤 9/13：开始训练模型（选股/择时/组合/执行）。", module="pipeline")
         stock_model = build_stock_model(cfg.stock_model)
         stock_model.fit(train_df=train_df, factor_cols=selected_factors, target_col=target_col)
+        model_component_source["stock_model"] = "trained"
+
+    if component_run_modes["timing_model"] == "load":
+        if model_paths is None:
+            model_paths = resolve_model_artifact_paths(cfg, components=load_components)
+        timing_model, timing_source = load_timing_model(cfg.timing_model, model_paths.timing_model)
+        model_component_source["timing_model"] = timing_source
+    else:
         timing_model = build_timing_model(cfg.timing_model).fit(train_df)
+        model_component_source["timing_model"] = "trained"
+
+    if component_run_modes["portfolio_model"] == "load":
+        if model_paths is None:
+            model_paths = resolve_model_artifact_paths(cfg, components=load_components)
+        portfolio_model, portfolio_source = load_portfolio_model(cfg.portfolio_opt, model_paths.portfolio_model)
+        model_component_source["portfolio_model"] = portfolio_source
+    else:
         portfolio_model = build_portfolio_model(cfg.portfolio_opt)
+        model_component_source["portfolio_model"] = "built_from_config"
+
+    if component_run_modes["execution_model"] == "load":
+        if model_paths is None:
+            model_paths = resolve_model_artifact_paths(cfg, components=load_components)
+        execution_model, execution_source = load_execution_model(cfg.execution_model, model_paths.execution_model)
+        model_component_source["execution_model"] = execution_source
+    else:
         execution_model = build_execution_model(cfg.execution_model)
-        model_component_source = {
-            "stock_model": "trained",
-            "timing_model": "trained",
-            "portfolio_model": "built_from_config",
-            "execution_model": "built_from_config",
-        }
-        log_progress("模型训练与构建完成。", module="pipeline")
+        model_component_source["execution_model"] = "built_from_config"
+
+    log_progress(
+        "模型准备完成："
+        + ", ".join(f"{k}={model_component_source.get(k, '')}" for k in component_run_modes.keys())
+        + "。",
+        module="pipeline",
+    )
 
     # 10) Generate predictions and model-level metrics.
     log_progress("步骤 10/13：生成测试集预测并计算模型指标。", module="pipeline")
@@ -1683,7 +1747,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "feature_engineering_summary": fe_report,
             "selected_factor_count_before_fe": int(len(selected_factors_before_fe)),
             "selected_factor_count_after_fe": int(len(selected_factors)),
-            "load_fe_mode": load_fe_mode if model_run_mode == "load" else "n/a",
+            "load_fe_mode": load_fe_mode if stock_model_load else "n/a",
             "factor_value_store_enabled": bool(factor_store_enabled),
             "factor_value_store_root": str(factor_store_root) if factor_store_enabled else "",
             "factor_value_store_format": str(factor_store_fmt) if factor_store_enabled else "",
@@ -1705,6 +1769,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "factor_snapshot_dir": str(snapshot_paths.get("snapshot_dir", "")),
             "factor_snapshot_summary_path": str(snapshot_paths.get("summary_path", "")),
             "model_run_mode": model_run_mode,
+            "model_component_modes": dict(component_run_modes),
             "model_load_sources": model_component_source,
             "ic_eval_mode": eval_mode,
             "ic_eval_stride": int(eval_stride),

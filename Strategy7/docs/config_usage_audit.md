@@ -205,3 +205,12 @@
 2. `run_factor_mining_v2_01..07` 全部可跑通。
 3. 产物统一落盘到 `Strategy7/outputs/smoke_v2/...`，可直接复核 summary/metrics/模型文件/因子导出。
 
+## 9. 四类模型独立 train/load 模式
+
+2026-05-26 更新：`RunConfig.model_run` 已从单一全局模式扩展为“全局默认 + 组件覆盖”。
+
+1. `--model-run-mode train|load` 仍作为四类模型默认运行模式。
+2. `--stock-model-run-mode/--timing-model-run-mode/--portfolio-model-run-mode/--execution-model-run-mode` 支持 `inherit/train/load`，默认 `inherit`。
+3. `pipeline/runner.py` 第 9 步按组件分别执行 `build_*/fit` 或 `load_*_model`，支持 train/load 任意组合。
+4. `load-fe-mode` 只在选股模型为 `load` 时生效，因为 FE 状态影响的是选股模型输入列与填充值。
+5. `models/loading.py::resolve_model_artifact_paths` 支持只解析处于 `load` 状态的组件，避免训练组件的旧路径参数误触发文件检查。
