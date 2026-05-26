@@ -684,7 +684,7 @@ bash Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.s
 7. 回测：
    `--horizon --top-k --long-threshold --execution-scheme --fee-bps --slippage-bps`
 8. 模型运行模式与推理：
-   `--model-run-mode --stock-model-run-mode --timing-model-run-mode --portfolio-model-run-mode --execution-model-run-mode --load-fe-mode --model-summary-json --models-load-dir --models-load-run-tag --stock-model-path --timing-model-path --portfolio-model-path --execution-model-path --enable-next-bar-inference --inference-top-k`
+   `--model-run-mode --stock-model-run-mode --timing-model-run-mode --portfolio-model-run-mode --execution-model-run-mode --load-fe-mode --model-summary-json --models-load-dir --models-load-run-tag --stock-model-path --timing-model-path --portfolio-model-path --execution-model-path --enable-next-bar-inference --inference-signal-ts --inference-top-k`
 9. 产物：
    `--output-dir --save-models`
 

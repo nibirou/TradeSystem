@@ -309,6 +309,7 @@ class ModelRunConfig:
     portfolio_model_path: str | None
     execution_model_path: str | None
     enable_next_bar_inference: bool
+    inference_signal_ts: str | None
     inference_top_k: int
 
 
@@ -1361,6 +1362,12 @@ def parse_args() -> argparse.Namespace:
         help="是否额外输出最新信号时点（next bar）四类模型联动推理结果",
     )
     g_mode.add_argument(
+        "--inference-signal-ts",
+        type=str,
+        default=None,
+        help="next-bar/快速推理指定信号日或时间；为空时使用当前加载面板中的最新时点",
+    )
+    g_mode.add_argument(
         "--inference-top-k",
         type=int,
         default=20,
@@ -2242,6 +2249,11 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
             else None
         ),
         enable_next_bar_inference=bool(getattr(args, "enable_next_bar_inference", False)),
+        inference_signal_ts=(
+            str(getattr(args, "inference_signal_ts")).strip()
+            if getattr(args, "inference_signal_ts", None) and str(getattr(args, "inference_signal_ts")).strip()
+            else None
+        ),
         inference_top_k=int(getattr(args, "inference_top_k", 20)),
     )
     return RunConfig(

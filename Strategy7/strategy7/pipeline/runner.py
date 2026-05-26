@@ -542,10 +542,39 @@ def _build_next_bar_inference(
     if scoped.empty:
         return pd.DataFrame(), {"enabled": True, "status": "no_valid_signal_rows"}
 
-    latest_signal = pd.Timestamp(scoped["_signal_time"].max())
-    latest_df = scoped.loc[scoped["_signal_time"] == latest_signal].copy()
+    requested_raw = str(getattr(cfg.model_run, "inference_signal_ts", "") or "").strip()
+    if requested_raw:
+        requested_signal = pd.to_datetime(requested_raw, errors="coerce")
+        if pd.isna(requested_signal):
+            return pd.DataFrame(), {"enabled": True, "status": "invalid_inference_signal_ts", "requested": requested_raw}
+        requested_signal = pd.Timestamp(requested_signal)
+        if factor_freq in {"D", "W", "M"}:
+            latest_signal = requested_signal.normalize()
+            signal_cmp = scoped["_signal_time"].dt.normalize()
+            latest_df = scoped.loc[signal_cmp == latest_signal].copy()
+        else:
+            if requested_signal == requested_signal.normalize():
+                day_mask = scoped["_signal_time"].dt.normalize() == requested_signal.normalize()
+                day_df = scoped.loc[day_mask].copy()
+                if day_df.empty:
+                    latest_signal = requested_signal
+                    latest_df = day_df
+                else:
+                    latest_signal = pd.Timestamp(day_df["_signal_time"].max())
+                    latest_df = day_df.loc[day_df["_signal_time"] == latest_signal].copy()
+            else:
+                latest_signal = requested_signal
+                latest_df = scoped.loc[scoped["_signal_time"] == latest_signal].copy()
+    else:
+        latest_signal = pd.Timestamp(scoped["_signal_time"].max())
+        latest_df = scoped.loc[scoped["_signal_time"] == latest_signal].copy()
     if latest_df.empty:
-        return pd.DataFrame(), {"enabled": True, "status": "latest_slice_empty"}
+        return pd.DataFrame(), {
+            "enabled": True,
+            "status": "requested_slice_empty" if requested_raw else "latest_slice_empty",
+            "requested_signal_ts": requested_raw,
+            "signal_ts": str(latest_signal),
+        }
 
     missing = [c for c in factor_cols if c not in latest_df.columns]
     if missing:
@@ -616,6 +645,7 @@ def _build_next_bar_inference(
         "enabled": True,
         "status": "ok",
         "signal_ts": str(latest_signal),
+        "requested_signal_ts": requested_raw,
         "candidate_count": int(len(latest_df)),
         "selected_count": int(len(pick_codes)),
         "timing_exposure": float(timing_exposure),
