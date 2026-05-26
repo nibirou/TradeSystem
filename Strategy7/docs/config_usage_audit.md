@@ -73,7 +73,7 @@
 生效模块：`models/stock_selection/factory.py` -> 各模型实现。
 
 4. 择时参数（`timing-model-type/timing-*`）  
-生效模块：`models/timing/factory.py`、`models/timing/models.py`。
+生效模块：`models/timing/factory.py`、`models/timing/models.py`、`models/timing/lstm_madl.py`。
 
 5. 组合参数（`portfolio-model-type/opt-*`）  
 生效模块：`models/portfolio/factory.py`、`models/portfolio/weighting.py`。

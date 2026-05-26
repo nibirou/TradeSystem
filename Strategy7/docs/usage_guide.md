@@ -317,6 +317,40 @@ python Strategy7/run_strategy7.py `
   --save-models true
 ```
 
+### 5.6.1 LSTM+MADL 择时融合示例
+
+该模型复现华福证券《基于 LSTM 神经网络的择时融合多因子选股策略》的核心口径：`[LSTM + BatchNorm] x N -> Linear -> Tanh`，默认隐层为 `512,256,128`，并支持 MADL 方向损失。框架会先将股票面板按信号时点聚合为市场代理序列，再把预测信号映射到 A 股多头仓位。
+
+```powershell
+python Strategy7/run_strategy7.py `
+  --train-start 2020-01-01 --train-end 2024-12-31 `
+  --test-start 2025-01-01 --test-end 2025-12-31 `
+  --universe hs300 `
+  --factor-freq D `
+  --factor-packages trend,reversal,liquidity,volatility,flow,price_action `
+  --label-task return `
+  --horizon 1 `
+  --stock-model-type decision_tree `
+  --timing-model-type lstm_madl `
+  --timing-lstm-seq-len 20 `
+  --timing-lstm-hidden-sizes 512,256,128 `
+  --timing-lstm-feature-mode auto `
+  --timing-lstm-loss-mode madl_mse `
+  --timing-lstm-exposure-mode long_only_bands `
+  --portfolio-model-type dynamic_opt `
+  --execution-model-type realistic_fill `
+  --execution-scheme open5_open5 `
+  --save-models true
+```
+
+常用变体：
+
+1. 日频更贴近研报阈值：`--timing-lstm-loss-mode madl --timing-lstm-exposure-mode report_daily_long --timing-lstm-long-threshold -0.3`
+2. 当前日内频率最低为 5min，默认一日约 48 根：`--factor-freq 5min --timing-lstm-intraday-seq-len 48 --timing-lstm-feature-mode technical`；若未来接入 1min，可把序列长度设为 240。
+3. 融合基本面、文本、catalog 或自定义因子：`--timing-lstm-feature-mode hybrid --timing-lstm-extra-feature-limit 48`
+
+若手动覆盖分段阈值且首项为负数，请用等号形式：`--timing-lstm-band-thresholds=-0.1,0.1,0.6,0.999999`。
+
 ### 5.7 主流程“全功能组合”示例（catalog + 因子缓存 + 快照）
 
 ```powershell
@@ -363,6 +397,7 @@ python Strategy7/run_strategy7.py `
    - `decision_tree`：`.pkl/.pickle`
    - `factor_gcl/dafat/dfq_timesnet`：`.pt/.pth`
    - `volatility_regime`：`.pkl/.json`
+   - `lstm_madl`：`.pt/.json`
    - `dynamic_opt/realistic_fill`：`.pkl/.json`
 5. 当对应模型类型为默认无文件实现时，会忽略其路径参数：
    - `timing_model_type=none` 时忽略 `--timing-model-path`
@@ -618,7 +653,8 @@ bash Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.s
    `--stock-model-type`（`decision_tree`/`launch_boost`/`factor_gcl`/`dafat`/`dfq_timesnet`）
    `launch_boost` 超参：`--launch-boost-max-depth --launch-boost-learning-rate --launch-boost-max-iter --launch-boost-l2 --launch-boost-return-head-weight`
 4. 择时模型：
-   `--timing-model-type`（`none`/`volatility_regime`）
+   `--timing-model-type`（`none`/`volatility_regime`/`lstm_madl`）
+   `lstm_madl` 超参：`--timing-lstm-seq-len --timing-lstm-intraday-seq-len --timing-lstm-hidden-sizes --timing-lstm-dropout --timing-lstm-epochs --timing-lstm-lr --timing-lstm-feature-mode --timing-lstm-loss-mode --timing-lstm-exposure-mode`
 5. 组合模型：
    `--portfolio-model-type`（`equal_weight`/`dynamic_opt`）
 6. 执行模型：

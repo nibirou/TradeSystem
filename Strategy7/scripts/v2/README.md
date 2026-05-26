@@ -46,6 +46,7 @@
 | `run_strategy7_v2_27_train_stockformer.ps1` | StockFormer 研究型训练模板 | 研报参数风格、日频滚动研究配置 |
 | `run_strategy7_v2_28_train_dtlc_rl_smoke.ps1` | DTLC_RL 轻量训练回测 | TCN/多尺度 Transformer/GRN + 对比学习 + PPO |
 | `run_strategy7_v2_29_train_dtlc_rl.ps1` | DTLC_RL 研究型训练模板 | 西南证券解耦时序对比强化学习模型、20 日标签/月频调仓风格 |
+| `run_strategy7_v2_30_train_lstm_madl_timing.ps1` | LSTM+MADL 择时融合训练模板 | 华福证券 LSTM 择时、MADL 损失、动态组合、真实执行 |
 
 ## 2) 挖掘入口模板（run_factor_mining.py）
 
@@ -78,6 +79,7 @@
 | 复现已有模型（显式四路径） | `run_strategy7_v2_17_load_explicit_paths_off.ps1` |
 | 深度模型轻量冒烟（选股） | `run_strategy7_v2_08_train_factor_gcl_smoke.ps1`、`run_strategy7_v2_09_train_dafat_smoke.ps1`、`run_strategy7_v2_24_train_dfq_timesnet_smoke.ps1`、`run_strategy7_v2_26_train_stockformer_smoke.ps1`、`run_strategy7_v2_28_train_dtlc_rl_smoke.ps1` |
 | StockFormer 强化学习交易状态实验 | `run_strategy7_v2_26_train_stockformer_smoke.ps1`、`run_strategy7_v2_27_train_stockformer.ps1` |
+| LSTM+MADL 择时叠加选股 | `run_strategy7_v2_30_train_lstm_madl_timing.ps1` |
 | DTLC_RL 解耦时序对比强化学习选股 | `run_strategy7_v2_28_train_dtlc_rl_smoke.ps1`、`run_strategy7_v2_29_train_dtlc_rl.ps1` |
 | 频率扩展验证（30min/W/M） | `run_strategy7_v2_13_train_30min_intraday_realistic.ps1`、`run_strategy7_v2_12_train_weekly_volatility.ps1`、`run_strategy7_v2_18_train_monthly_multitask_catalog_off.ps1` |
 | 数据裁剪实验（price-only / 主板） | `run_strategy7_v2_14_train_price_only_mainboard.ps1`、`run_factor_mining_v2_11_price_only_mainboard_all.ps1` |

@@ -37,7 +37,11 @@ def _add_daily_label(
 
     # realized volatility label from next horizon daily close path
     out["fwd_vol_label"] = (
-        g["ret_1d"].shift(-1).rolling(horizon, min_periods=max(2, min(5, horizon))).std().reset_index(level=0, drop=True)
+        g["ret_1d"]
+        .shift(-1)
+        .rolling(horizon, min_periods=max(1, min(5, horizon)))
+        .std(ddof=0)
+        .reset_index(level=0, drop=True)
     )
     out["target_volatility"] = out["fwd_vol_label"]
     out["target_date"] = out["exit_date"]
@@ -63,7 +67,11 @@ def _add_generic_bar_label(panel: pd.DataFrame, horizon: int, time_col: str, fre
 
     out["ret_1_bar"] = g["close"].pct_change(1)
     out["target_volatility"] = (
-        g["ret_1_bar"].shift(-1).rolling(horizon, min_periods=max(2, min(5, horizon))).std().reset_index(level=0, drop=True)
+        g["ret_1_bar"]
+        .shift(-1)
+        .rolling(horizon, min_periods=max(1, min(5, horizon)))
+        .std(ddof=0)
+        .reset_index(level=0, drop=True)
     )
     out["signal_ts"] = out[time_col]
     out["target_date"] = out["exit_ts"]

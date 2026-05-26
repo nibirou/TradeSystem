@@ -29,6 +29,7 @@ from .stock_selection.dtlc_rl_model import DTLCRLStockModel
 from .stock_selection.stockformer_model import StockFormerStockModel
 from .stock_selection.launch_boost_model import LaunchBoostStockModel
 from .stock_selection.tree_model import TreeStockModel
+from .timing.lstm_madl import LSTMMADLTimingModel
 from .timing.models import NoTimingModel, VolatilityRegimeTimingModel
 
 
@@ -59,7 +60,10 @@ def _normalize_stock_model_type(model_type: str) -> str:
 
 
 def _normalize_timing_model_type(model_type: str) -> str:
-    return str(model_type).strip().lower()
+    t = str(model_type).strip().lower()
+    if t in {"lstm", "madl_lstm", "lstm-madl", "lstm_madl_timing"}:
+        return "lstm_madl"
+    return t
 
 
 def _normalize_portfolio_mode(mode: str) -> str:
@@ -138,6 +142,8 @@ def _candidate_name(component: str, model_type: str, run_tag: str | None) -> str
             return f"timing_none{suffix}.json"
         if m == "volatility_regime":
             return f"timing_vol_regime{suffix}.pkl"
+        if m == "lstm_madl":
+            return f"timing_lstm_madl{suffix}.pt"
     if component == "portfolio_model":
         m = _normalize_portfolio_mode(model_type)
         if m == "equal_weight":
@@ -776,6 +782,16 @@ def load_timing_model(cfg: TimingModelConfig, model_path: str | None) -> Tuple[T
     canonical = _normalize_timing_model_type(cfg.model_type)
     if canonical == "none":
         return NoTimingModel(), "config_default"
+
+    if canonical == "lstm_madl":
+        if not model_path:
+            raise ValueError("lstm_madl timing load mode requires timing_model_path, model_summary_json, or models_load_dir.")
+        p = Path(model_path).expanduser()
+        if not p.exists():
+            raise FileNotFoundError(f"timing LSTM model file not found: {p}")
+        if p.suffix.lower() not in {".pt", ".json"}:
+            raise ValueError(f"lstm_madl supports .pt/.json model files, got: {p.suffix}")
+        return LSTMMADLTimingModel.load(p, cfg_obj=cfg), "artifact_file"
 
     if canonical == "volatility_regime":
         if model_path:

@@ -58,6 +58,19 @@ python Strategy7/run_strategy7.py --stock-model-type dtlc_rl --label-task return
 python Strategy7/run_strategy7.py --stock-model-type stockformer --label-task return --horizon 5
 ```
 
+运行 LSTM+MADL 择时叠加选股、组合优化与真实执行：
+
+```bash
+python Strategy7/run_strategy7.py \
+  --stock-model-type decision_tree \
+  --timing-model-type lstm_madl \
+  --timing-lstm-feature-mode auto \
+  --timing-lstm-loss-mode madl_mse \
+  --portfolio-model-type dynamic_opt \
+  --execution-model-type realistic_fill \
+  --label-task return --horizon 1
+```
+
 运行因子挖掘：
 
 ```bash

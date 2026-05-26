@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import os
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -223,6 +224,32 @@ class TimingModelConfig:
     model_type: str
     vol_threshold: float
     momentum_threshold: float
+    lstm_seq_len: int
+    lstm_intraday_seq_len: int
+    lstm_hidden_sizes: str
+    lstm_dropout: float
+    lstm_epochs: int
+    lstm_lr: float
+    lstm_weight_decay: float
+    lstm_early_stop: int
+    lstm_batch_size: int
+    lstm_min_train_samples: int
+    lstm_feature_mode: str
+    lstm_max_features: int
+    lstm_input_clip: float
+    lstm_target_clip: float
+    lstm_loss_mode: str
+    lstm_mse_weight: float
+    lstm_exposure_mode: str
+    lstm_long_threshold: float
+    lstm_band_thresholds: str
+    lstm_band_exposures: str
+    lstm_signal_scale: float
+    lstm_calibrate_sign: bool
+    lstm_market_agg: str
+    lstm_extra_feature_limit: int
+    lstm_device: str
+    random_state: int
     custom_model_py: str | None
 
 
@@ -1155,9 +1182,9 @@ def parse_args() -> argparse.Namespace:
     g_timing.add_argument(
         "--timing-model-type",
         type=str,
-        choices=["none", "volatility_regime"],
+        choices=["none", "volatility_regime", "lstm_madl"],
         default="none",
-        help="择时模型类型：none=不择时；volatility_regime=波动/拥挤/动量状态择时",
+        help="择时模型类型：none=不择时；volatility_regime=波动/拥挤/动量状态择时；lstm_madl=LSTM+MADL 序列择时",
     )
     g_timing.add_argument(
         "--custom-timing-model-py",
@@ -1167,6 +1194,67 @@ def parse_args() -> argparse.Namespace:
     )
     g_timing.add_argument("--timing-vol-threshold", type=float, default=0.0, help="波动阈值（0 表示训练期自动估计）")
     g_timing.add_argument("--timing-momentum-threshold", type=float, default=0.0, help="动量阈值（0 表示训练期自动估计）")
+    g_timing.add_argument("--timing-lstm-seq-len", type=int, default=20, help="LSTM 日/周/月序列长度；研报日频为 20")
+    g_timing.add_argument(
+        "--timing-lstm-intraday-seq-len",
+        type=int,
+        default=48,
+        help="LSTM 分钟/小时等日内频率序列长度；1min 复现研报可设 240",
+    )
+    g_timing.add_argument("--timing-lstm-hidden-sizes", type=str, default="512,256,128", help="LSTM 隐层宽度列表")
+    g_timing.add_argument("--timing-lstm-dropout", type=float, default=0.20, help="LSTM dropout")
+    g_timing.add_argument("--timing-lstm-epochs", type=int, default=120, help="LSTM 最大训练轮数")
+    g_timing.add_argument("--timing-lstm-lr", type=float, default=1e-3, help="LSTM Adam 学习率")
+    g_timing.add_argument("--timing-lstm-weight-decay", type=float, default=1e-4, help="LSTM Adam weight decay")
+    g_timing.add_argument("--timing-lstm-early-stop", type=int, default=15, help="LSTM 验证集早停 patience")
+    g_timing.add_argument("--timing-lstm-batch-size", type=int, default=128, help="LSTM batch size")
+    g_timing.add_argument("--timing-lstm-min-train-samples", type=int, default=80, help="训练样本少于该值时退化为动量 fallback")
+    g_timing.add_argument(
+        "--timing-lstm-feature-mode",
+        type=str,
+        choices=["auto", "daily_bar", "technical", "hybrid", "all_numeric"],
+        default="auto",
+        help="auto=日频7个量价/日内7+44技术指标；hybrid/all_numeric 可纳入因子列",
+    )
+    g_timing.add_argument("--timing-lstm-max-features", type=int, default=96, help="LSTM 最大输入特征数")
+    g_timing.add_argument("--timing-lstm-input-clip", type=float, default=5.0, help="标准化输入 clip 绝对值，<=0 关闭")
+    g_timing.add_argument("--timing-lstm-target-clip", type=float, default=0.20, help="收益标签 clip 绝对值，<=0 关闭")
+    g_timing.add_argument(
+        "--timing-lstm-loss-mode",
+        type=str,
+        choices=["madl", "madl_mse", "mse"],
+        default="madl_mse",
+        help="LSTM 损失：madl 贴近研报，madl_mse 更稳健",
+    )
+    g_timing.add_argument("--timing-lstm-mse-weight", type=float, default=0.05, help="madl_mse 中 MSE 辅助项权重")
+    g_timing.add_argument(
+        "--timing-lstm-exposure-mode",
+        type=str,
+        choices=["long_only_bands", "long_only_threshold", "report_daily_long", "raw_clip"],
+        default="long_only_bands",
+        help="LSTM 信号到 A 股多头仓位映射方式",
+    )
+    g_timing.add_argument("--timing-lstm-long-threshold", type=float, default=-0.3, help="阈值模式下信号大于该值满仓")
+    g_timing.add_argument("--timing-lstm-band-thresholds", type=str, default="-0.1,0.1,0.6,0.999999", help="分段仓位阈值")
+    g_timing.add_argument("--timing-lstm-band-exposures", type=str, default="0.0,0.3,0.5,0.8,1.0", help="分段仓位，数量需为阈值数+1")
+    g_timing.add_argument("--timing-lstm-signal-scale", type=float, default=1.0, help="Tanh 信号缩放后再映射仓位")
+    g_timing.add_argument(
+        "--timing-lstm-calibrate-sign",
+        type=_parse_bool,
+        nargs="?",
+        const=True,
+        default=True,
+        help="若训练集预测与标签负相关，自动翻转信号方向",
+    )
+    g_timing.add_argument(
+        "--timing-lstm-market-agg",
+        type=str,
+        choices=["amount_weighted", "mean", "median"],
+        default="amount_weighted",
+        help="由股票面板聚合市场代理序列的方式",
+    )
+    g_timing.add_argument("--timing-lstm-extra-feature-limit", type=int, default=48, help="hybrid/all_numeric 模式最多额外纳入的因子列")
+    g_timing.add_argument("--timing-lstm-device", type=str, choices=["auto", "cpu", "cuda"], default="auto", help="LSTM 训练设备")
 
     # =========================
     # 执行模型参数
@@ -1229,7 +1317,7 @@ def parse_args() -> argparse.Namespace:
         help="与模型文件名匹配的 run_tag；为空时自动选择目录下最新匹配文件",
     )
     g_mode.add_argument("--stock-model-path", type=str, default=None, help="选股模型文件路径（pkl/pt/json）")
-    g_mode.add_argument("--timing-model-path", type=str, default=None, help="择时模型文件路径（pkl/json）")
+    g_mode.add_argument("--timing-model-path", type=str, default=None, help="择时模型文件路径（pkl/pt/json）")
     g_mode.add_argument("--portfolio-model-path", type=str, default=None, help="组合模型文件路径（pkl/json）")
     g_mode.add_argument("--execution-model-path", type=str, default=None, help="执行模型文件路径（pkl/json）")
     g_mode.add_argument(
@@ -1679,6 +1767,65 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         raise ValueError("stockformer_tracking_penalty must be non-negative.")
     if int(args.stockformer_min_cross_section) <= 1:
         raise ValueError("stockformer_min_cross_section must be greater than 1.")
+    if int(args.timing_lstm_seq_len) <= 1:
+        raise ValueError("timing_lstm_seq_len must be greater than 1.")
+    if int(args.timing_lstm_intraday_seq_len) <= 1:
+        raise ValueError("timing_lstm_intraday_seq_len must be greater than 1.")
+    try:
+        timing_lstm_hidden_sizes = [
+            int(float(x.strip()))
+            for x in str(args.timing_lstm_hidden_sizes).replace("，", ",").replace(";", ",").split(",")
+            if x.strip()
+        ]
+    except Exception as exc:
+        raise ValueError("timing_lstm_hidden_sizes must be a comma-separated positive integer list.") from exc
+    if not timing_lstm_hidden_sizes or any(v <= 0 for v in timing_lstm_hidden_sizes):
+        raise ValueError("timing_lstm_hidden_sizes must contain at least one positive integer.")
+    if not (0.0 <= float(args.timing_lstm_dropout) < 1.0):
+        raise ValueError("timing_lstm_dropout must be in [0, 1).")
+    if int(args.timing_lstm_epochs) <= 0:
+        raise ValueError("timing_lstm_epochs must be positive.")
+    if float(args.timing_lstm_lr) <= 0.0:
+        raise ValueError("timing_lstm_lr must be positive.")
+    if float(args.timing_lstm_weight_decay) < 0.0:
+        raise ValueError("timing_lstm_weight_decay must be non-negative.")
+    if int(args.timing_lstm_early_stop) <= 0:
+        raise ValueError("timing_lstm_early_stop must be positive.")
+    if int(args.timing_lstm_batch_size) <= 0:
+        raise ValueError("timing_lstm_batch_size must be positive.")
+    if int(args.timing_lstm_min_train_samples) < 0:
+        raise ValueError("timing_lstm_min_train_samples must be non-negative.")
+    if int(args.timing_lstm_max_features) <= 0:
+        raise ValueError("timing_lstm_max_features must be positive.")
+    if float(args.timing_lstm_input_clip) < 0.0:
+        raise ValueError("timing_lstm_input_clip must be non-negative.")
+    if float(args.timing_lstm_target_clip) < 0.0:
+        raise ValueError("timing_lstm_target_clip must be non-negative.")
+    if float(args.timing_lstm_mse_weight) < 0.0:
+        raise ValueError("timing_lstm_mse_weight must be non-negative.")
+    if float(args.timing_lstm_signal_scale) <= 0.0:
+        raise ValueError("timing_lstm_signal_scale must be positive.")
+    if int(args.timing_lstm_extra_feature_limit) < 0:
+        raise ValueError("timing_lstm_extra_feature_limit must be non-negative.")
+    try:
+        timing_band_thresholds = [
+            float(x.strip())
+            for x in str(args.timing_lstm_band_thresholds).replace("，", ",").replace(";", ",").split(",")
+            if x.strip()
+        ]
+        timing_band_exposures = [
+            float(x.strip())
+            for x in str(args.timing_lstm_band_exposures).replace("，", ",").replace(";", ",").split(",")
+            if x.strip()
+        ]
+    except Exception as exc:
+        raise ValueError("timing_lstm_band_thresholds/exposures must be comma-separated numeric lists.") from exc
+    if len(timing_band_exposures) != len(timing_band_thresholds) + 1:
+        raise ValueError("timing_lstm_band_exposures length must equal thresholds length + 1.")
+    if any((not math.isfinite(x)) for x in timing_band_thresholds + timing_band_exposures):
+        raise ValueError("timing_lstm_band_thresholds/exposures must be finite.")
+    if any(x < 0.0 or x > 1.0 for x in timing_band_exposures):
+        raise ValueError("timing_lstm_band_exposures must be in [0, 1].")
     if not (0.0 < float(args.max_participation_rate) <= 1.0):
         raise ValueError("max_participation_rate must be in (0,1].")
     if not (0.0 <= float(args.base_fill_rate) <= 1.0):
@@ -1946,6 +2093,32 @@ def build_run_config(args: argparse.Namespace) -> RunConfig:
         model_type=args.timing_model_type,
         vol_threshold=float(args.timing_vol_threshold),
         momentum_threshold=float(args.timing_momentum_threshold),
+        lstm_seq_len=int(args.timing_lstm_seq_len),
+        lstm_intraday_seq_len=int(args.timing_lstm_intraday_seq_len),
+        lstm_hidden_sizes=str(args.timing_lstm_hidden_sizes),
+        lstm_dropout=float(args.timing_lstm_dropout),
+        lstm_epochs=int(args.timing_lstm_epochs),
+        lstm_lr=float(args.timing_lstm_lr),
+        lstm_weight_decay=float(args.timing_lstm_weight_decay),
+        lstm_early_stop=int(args.timing_lstm_early_stop),
+        lstm_batch_size=int(args.timing_lstm_batch_size),
+        lstm_min_train_samples=int(args.timing_lstm_min_train_samples),
+        lstm_feature_mode=str(args.timing_lstm_feature_mode),
+        lstm_max_features=int(args.timing_lstm_max_features),
+        lstm_input_clip=float(args.timing_lstm_input_clip),
+        lstm_target_clip=float(args.timing_lstm_target_clip),
+        lstm_loss_mode=str(args.timing_lstm_loss_mode),
+        lstm_mse_weight=float(args.timing_lstm_mse_weight),
+        lstm_exposure_mode=str(args.timing_lstm_exposure_mode),
+        lstm_long_threshold=float(args.timing_lstm_long_threshold),
+        lstm_band_thresholds=str(args.timing_lstm_band_thresholds),
+        lstm_band_exposures=str(args.timing_lstm_band_exposures),
+        lstm_signal_scale=float(args.timing_lstm_signal_scale),
+        lstm_calibrate_sign=bool(args.timing_lstm_calibrate_sign),
+        lstm_market_agg=str(args.timing_lstm_market_agg),
+        lstm_extra_feature_limit=int(args.timing_lstm_extra_feature_limit),
+        lstm_device=str(args.timing_lstm_device),
+        random_state=int(args.random_state),
         custom_model_py=_resolve_path(args.custom_timing_model_py) if args.custom_timing_model_py else None,
     )
     port = PortfolioOptConfig(
