@@ -65,6 +65,7 @@ from ..models.loading import (
     load_stock_model,
     load_timing_model,
     peek_stock_model_factor_cols,
+    peek_timing_model_required_factor_cols,
     resolve_component_summary_path,
     resolve_model_artifact_paths,
     stock_model_factor_cols,
@@ -193,6 +194,142 @@ def _safe_read_json_dict(path: Path) -> Dict[str, object]:
 
 def _parse_factor_names_expr(expr: str) -> List[str]:
     return [x.strip() for x in str(expr).split(",") if x.strip()]
+
+
+def _unique_str_list(values: List[str]) -> List[str]:
+    out: List[str] = []
+    seen: set[str] = set()
+    for v in values:
+        s = str(v).strip()
+        if s and s not in seen:
+            seen.add(s)
+            out.append(s)
+    return out
+
+
+def _summary_nested(payload: Dict[str, object], *keys: str) -> object | None:
+    cur: object = payload
+    for key in keys:
+        if not isinstance(cur, dict):
+            return None
+        cur = cur.get(key)
+    return cur
+
+
+def _load_component_source_summaries(cfg: RunConfig, components: set[str]) -> Dict[str, Dict[str, object]]:
+    out: Dict[str, Dict[str, object]] = {}
+    for component in sorted(components):
+        path = resolve_component_summary_path(cfg.model_run, component)
+        if path is None:
+            continue
+        try:
+            payload = _safe_read_json_dict(path)
+        except Exception as exc:
+            log_progress(
+                f"加载 {component} 来源 summary 失败，将跳过配置一致性诊断：{path} ({exc})",
+                module="pipeline",
+            )
+            continue
+        out[component] = {"path": str(path), "payload": payload}
+    return out
+
+
+def _source_config_value(payload: Dict[str, object], section: str, key: str) -> object | None:
+    return _summary_nested(payload, "config", section, key)
+
+
+def _optional_int_value(value: object) -> int | None:
+    if value is None:
+        return None
+    try:
+        return int(float(str(value)))
+    except Exception:
+        return None
+
+
+def _validate_load_source_configs(
+    *,
+    cfg: RunConfig,
+    component_run_modes: Dict[str, str],
+    source_summaries: Dict[str, Dict[str, object]],
+    stock_factor_cols: List[str],
+) -> Dict[str, object]:
+    report: Dict[str, object] = {}
+    current = {
+        "factor_freq": str(cfg.factors.factor_freq),
+        "label_task": str(cfg.factors.label_task),
+        "horizon": int(cfg.backtest.horizon),
+        "factor_packages": str(getattr(cfg.factors, "factor_packages", "")),
+        "enable_factor_engineering": bool(getattr(cfg.factors, "enable_factor_engineering", False)),
+        "load_fe_mode": str(getattr(cfg.model_run, "load_fe_mode", "refit")),
+    }
+
+    for component, item in source_summaries.items():
+        payload = item.get("payload")
+        if not isinstance(payload, dict):
+            continue
+        source = {
+            "summary_path": item.get("path", ""),
+            "factor_freq": _source_config_value(payload, "factors", "factor_freq"),
+            "label_task": _source_config_value(payload, "factors", "label_task"),
+            "factor_packages": _source_config_value(payload, "factors", "factor_packages"),
+            "enable_factor_engineering": _source_config_value(payload, "factors", "enable_factor_engineering"),
+            "horizon": _source_config_value(payload, "backtest", "horizon"),
+        }
+        messages: List[str] = []
+        report[component] = {"source": source, "current": current, "messages": messages}
+
+        source_freq = source.get("factor_freq")
+        if source_freq is not None and str(source_freq) != current["factor_freq"]:
+            raise RuntimeError(
+                f"{component} 来源 summary 的 factor_freq={source_freq} 与当前 factor_freq={current['factor_freq']} 不一致。"
+            )
+
+        if component == "stock_model" and component_run_modes.get(component) == "load":
+            source_label = source.get("label_task")
+            if source_label is not None and str(source_label) != current["label_task"]:
+                raise RuntimeError(
+                    f"stock_model 来源 summary 的 label_task={source_label} 与当前 label_task={current['label_task']} 不一致；"
+                    "请按选股模型训练语义设置 --label-task。"
+                )
+            source_horizon = source.get("horizon")
+            source_horizon_int = _optional_int_value(source_horizon)
+            if source_horizon_int is not None and source_horizon_int != int(current["horizon"]):
+                raise RuntimeError(
+                    f"stock_model 来源 summary 的 horizon={source_horizon} 与当前 horizon={current['horizon']} 不一致；"
+                    "请按选股模型训练目标设置 --horizon。"
+                )
+            fe_summary = dict(_summary_nested(payload, "notes", "feature_engineering_summary") or {})
+            if bool(fe_summary.get("enabled", False)):
+                orth = str(fe_summary.get("orth_method", "none")).strip().lower()
+                if orth == "pca" or any(str(c).startswith("fe_pca_") for c in stock_factor_cols):
+                    raise RuntimeError(
+                        "加载的选股模型来源启用了 PCA 特征工程，但当前框架尚未持久化 PCA 投影状态，"
+                        "无法严格复现推理特征。请用非 PCA FE 重训，或扩展保存/加载 PCA 状态后再 load。"
+                    )
+                if not current["enable_factor_engineering"] or current["load_fe_mode"] == "off":
+                    messages.append(
+                        "source_fe_enabled_non_pca: 使用模型 artifact 中保存的最终 factor_cols，不重新执行 FE。"
+                    )
+
+        if component == "timing_model" and component_run_modes.get(component) == "load":
+            for key in ("label_task", "horizon", "factor_packages", "enable_factor_engineering"):
+                src = source.get(key)
+                if src is not None and str(src) != str(current.get(key)):
+                    messages.append(
+                        f"timing_source_{key}_differs: source={src}, current={current.get(key)}; "
+                        "择时 checkpoint 会使用自身保存的网络参数/特征标准化/历史状态，当前配置仅用于构建当期推理面板。"
+                    )
+
+        if source.get("factor_packages") is not None and str(source.get("factor_packages")) != current["factor_packages"]:
+            messages.append(
+                f"source_factor_packages_differs: source={source.get('factor_packages')}, current={current['factor_packages']}; "
+                "load 模式优先按 artifact 记录的必需因子列构建面板。"
+            )
+
+        for msg in messages:
+            log_progress(f"{component} load 配置诊断：{msg}", module="pipeline")
+    return report
 
 
 def _resolve_used_factors_for_snapshot(
@@ -767,6 +904,9 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     )
     model_paths = None
     model_component_source: Dict[str, str] = {}
+    load_source_config_report: Dict[str, object] = {}
+    stock_load_hint_factor_cols: List[str] = []
+    timing_load_hint_factor_cols: List[str] = []
     load_hint_factor_cols: List[str] = []
     if any_component_load:
         if (
@@ -798,11 +938,27 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             )
         model_paths = resolve_model_artifact_paths(cfg, components=load_components)
         model_component_source = dict(model_paths.source)
-        load_hint_factor_cols = (
-            peek_stock_model_factor_cols(cfg.stock_model, model_paths.stock_model)
-            if stock_model_load
+        stock_load_hint_factor_cols = (
+            peek_stock_model_factor_cols(cfg.stock_model, model_paths.stock_model) if stock_model_load else []
+        )
+        timing_load_hint_factor_cols = (
+            peek_timing_model_required_factor_cols(cfg.timing_model, model_paths.timing_model)
+            if component_run_modes["timing_model"] == "load"
             else []
         )
+        load_hint_factor_cols = _unique_str_list([*stock_load_hint_factor_cols, *timing_load_hint_factor_cols])
+        source_summaries = _load_component_source_summaries(cfg, load_components)
+        load_source_config_report = _validate_load_source_configs(
+            cfg=cfg,
+            component_run_modes=component_run_modes,
+            source_summaries=source_summaries,
+            stock_factor_cols=stock_load_hint_factor_cols,
+        )
+        if timing_load_hint_factor_cols:
+            log_progress(
+                f"timing load 模式下将额外构建择时模型所需因子列：factor_count={len(timing_load_hint_factor_cols)}。",
+                module="pipeline",
+            )
         log_progress(
             "模型组件运行模式："
             + ", ".join(f"{k}={v}" for k, v in component_run_modes.items()),
@@ -1070,15 +1226,27 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     catalog_rows: Dict[str, int] = {}
     catalog_entries: List[Dict[str, object]] = []
     should_load_catalog = bool(cfg.data.auto_load_catalog_factors and cfg.data.factor_catalog_path)
-    if should_load_catalog and str(getattr(cfg.factors, "factor_packages", "")).strip() and not catalog_pkg_expr and not explicit_factor_names:
+    catalog_factor_names_hint = list(load_hint_factor_cols) if any_component_load and load_hint_factor_cols else []
+    if (
+        should_load_catalog
+        and str(getattr(cfg.factors, "factor_packages", "")).strip()
+        and not catalog_pkg_expr
+        and not explicit_factor_names
+        and not catalog_factor_names_hint
+    ):
         should_load_catalog = False
     if should_load_catalog:
-        catalog_pkg_for_merge = "all" if not str(getattr(cfg.factors, "factor_packages", "")).strip() else catalog_pkg_expr
+        catalog_names_for_merge = explicit_factor_names or catalog_factor_names_hint or None
+        catalog_pkg_for_merge = (
+            ""
+            if catalog_factor_names_hint and not explicit_factor_names
+            else ("all" if not str(getattr(cfg.factors, "factor_packages", "")).strip() else catalog_pkg_expr)
+        )
         base_df, catalog_rows, catalog_entries = merge_catalog_factors(
             base_panel=base_df,
             catalog_path=cfg.data.factor_catalog_path,
             factor_freq=factor_freq,
-            factor_names=explicit_factor_names or None,
+            factor_names=catalog_names_for_merge,
             package_expr=catalog_pkg_for_merge,
         )
     log_progress(
@@ -1809,6 +1977,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "feature_engineering_requested": bool(getattr(cfg.factors, "enable_factor_engineering", False)),
             "feature_engineering_enabled": bool(fe_report.get("enabled", False)),
             "feature_engineering_summary": fe_report,
+            "load_source_config_report": load_source_config_report,
             "selected_factor_count_before_fe": int(len(selected_factors_before_fe)),
             "selected_factor_count_after_fe": int(len(selected_factors)),
             "load_fe_mode": load_fe_mode if stock_model_load else "n/a",

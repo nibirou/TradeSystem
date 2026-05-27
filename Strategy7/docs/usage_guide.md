@@ -393,19 +393,25 @@ python Strategy7/run_strategy7.py `
 
 `load` 模式参数冲突与约束：
 
-1. 只有选股模型处于 `load` 时，`load + FE` 才由 `--load-fe-mode strict|refit|off` 控制：
+1. 选股模型 `load` 会优先读取 artifact 中保存的 `factor_cols`，并用这些列覆盖当前 `--factor-packages/--factor-list` 解析出的选股特征；择时 LSTM `load` 会提前读取 checkpoint 中的 `extra_cols`，并把这些额外因子加入当期面板构建。
+2. 来源 summary 可解析时会做配置一致性诊断：
+   - `stock_model` 的 `factor_freq/label_task/horizon` 必须与当前运行一致，否则阻断，避免用错训练语义。
+   - `timing_model` 的 `factor_freq` 必须一致；`horizon/label_task/factor_packages/FE` 不一致时会记录告警，因为择时 checkpoint 自带网络参数、特征标准化和历史状态，当前配置主要用于构建当期推理面板。
+   - 诊断结果会写入 `summary_*.json -> notes.load_source_config_report`。
+3. 只有选股模型处于 `load` 时，`load + FE` 才由 `--load-fe-mode strict|refit|off` 控制：
    - `strict`：按选股模型来源 summary 中记录的 FE 结果回放（要求 `notes.feature_engineering_summary` 存在且启用；当前不支持 `pca` 回放）。
    - `refit`：按当前样本重新拟合 FE（默认）。
    - `off`：即使 `--enable-factor-engineering true` 也跳过 FE。
-2. 选股模型 `load` 且 `strict` 模式必须能解析到选股来源 summary：优先 `--stock-model-summary-json`，兼容 `--model-summary-json`，或由 `--stock-models-load-dir` 的上一级目录自动匹配 `summary_*.json`。
-3. 某个组件是 `train` 时，对应该组件的 load 参数不参与该组件加载；四个组件全是 `train` 时，所有 load 专用参数会提示并忽略。
-4. 文件后缀建议：
+4. 选股模型 `load` 且 `strict` 模式必须能解析到选股来源 summary：优先 `--stock-model-summary-json`，兼容 `--model-summary-json`，或由 `--stock-models-load-dir` 的上一级目录自动匹配 `summary_*.json`。
+5. 若来源选股模型启用了 `pca` 特征工程，当前版本会显式阻断；原因是历史 PCA 投影矩阵尚未作为模型状态持久化，不能安全复现推理特征。
+6. 某个组件是 `train` 时，对应该组件的 load 参数不参与该组件加载；四个组件全是 `train` 时，所有 load 专用参数会提示并忽略。
+7. 文件后缀建议：
    - `decision_tree`：`.pkl/.pickle`
    - `factor_gcl/dafat/dfq_timesnet/dtlc_rl/stockformer`：`.pt/.pth`（同名 `.json` 是元数据/配置摘要）
    - `volatility_regime`：`.pkl/.json`
    - `lstm_madl`：`.pt/.json`
    - `dynamic_opt/realistic_fill`：`.pkl/.json`
-5. 当对应模型类型为默认无文件实现时，会忽略其路径参数：
+8. 当对应模型类型为默认无文件实现时，会忽略其路径参数：
    - `timing_model_type=none` 时不需要择时模型 artifact
    - `portfolio_model_type=equal_weight` 时不需要组合模型 artifact
    - `execution_model_type=ideal_fill` 时不需要执行模型 artifact

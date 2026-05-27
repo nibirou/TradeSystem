@@ -609,6 +609,41 @@ def peek_stock_model_factor_cols(cfg: StockModelConfig, model_path: str | None) 
     return []
 
 
+def peek_timing_model_required_factor_cols(cfg: TimingModelConfig, model_path: str | None) -> List[str]:
+    if not model_path:
+        return []
+    if cfg.custom_model_py:
+        mod = import_module_from_file(cfg.custom_model_py, module_name="strategy7_custom_timing_model")
+        peek_fn = getattr(mod, "peek_factor_cols", None)
+        if callable(peek_fn):
+            cols = peek_fn(cfg, model_path)
+            if isinstance(cols, (list, tuple)):
+                return [str(x) for x in cols if str(x).strip()]
+        return []
+
+    canonical = _normalize_timing_model_type(cfg.model_type)
+    if canonical != "lstm_madl":
+        return []
+
+    p = Path(model_path).expanduser()
+    if not p.exists():
+        raise FileNotFoundError(f"timing model file not found: {p}")
+    if p.suffix.lower() == ".json":
+        p = _resolve_artifact_from_model_meta(meta_path=p, component="timing_model", model_type=canonical)
+    if p.suffix.lower() not in {".pt", ".pth"}:
+        return []
+
+    torch, _nn, _F = LSTMMADLTimingModel._require_torch()
+    try:
+        ckpt = torch.load(str(p), map_location="cpu", weights_only=False)
+    except TypeError:
+        ckpt = torch.load(str(p), map_location="cpu")
+    cols = ckpt.get("extra_cols", [])
+    if isinstance(cols, list):
+        return [str(x) for x in cols if str(x).strip()]
+    return []
+
+
 def load_stock_model(cfg: StockModelConfig, model_path: str | None) -> Tuple[StockSelectionModel, str]:
     if cfg.custom_model_py:
         mod = import_module_from_file(cfg.custom_model_py, module_name="strategy7_custom_stock_model")

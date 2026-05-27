@@ -72,7 +72,6 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python
   --index-root "${quant_root}/data_baostock/ak_index" \
   --factor-freq "${STRATEGY7_FACTOR_FREQ:-D}" \
   --disable-text-data \
-  --factor-packages "trend,reversal,liquidity,volatility,flow,price_action" \
   --label-task return \
   --data-load-workers "${STRATEGY7_DATA_LOAD_WORKERS:-8}" \
   --enable-factor-value-store true \
@@ -89,6 +88,7 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python
   --timing-model-run-mode load \
   --portfolio-model-run-mode train \
   --execution-model-run-mode train \
+  --load-fe-mode off \
   --enable-next-bar-inference true \
   --inference-signal-ts "${infer_date}" \
   --inference-top-k "${STRATEGY7_INFERENCE_TOP_K:-50}" \
