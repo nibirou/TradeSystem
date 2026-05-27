@@ -42,6 +42,33 @@ class ResolvedModelPaths:
     source: Dict[str, str]
 
 
+COMPONENTS = ("stock_model", "timing_model", "portfolio_model", "execution_model")
+COMPONENT_SUMMARY_ATTR = {
+    "stock_model": "stock_model_summary_json",
+    "timing_model": "timing_model_summary_json",
+    "portfolio_model": "portfolio_model_summary_json",
+    "execution_model": "execution_model_summary_json",
+}
+COMPONENT_DIR_ATTR = {
+    "stock_model": "stock_models_load_dir",
+    "timing_model": "timing_models_load_dir",
+    "portfolio_model": "portfolio_models_load_dir",
+    "execution_model": "execution_models_load_dir",
+}
+COMPONENT_RUN_TAG_ATTR = {
+    "stock_model": "stock_models_load_run_tag",
+    "timing_model": "timing_models_load_run_tag",
+    "portfolio_model": "portfolio_models_load_run_tag",
+    "execution_model": "execution_models_load_run_tag",
+}
+COMPONENT_EXPLICIT_PATH_ATTR = {
+    "stock_model": "stock_model_path",
+    "timing_model": "timing_model_path",
+    "portfolio_model": "portfolio_model_path",
+    "execution_model": "execution_model_path",
+}
+
+
 def _normalize_stock_model_type(model_type: str) -> str:
     t = str(model_type).strip().lower()
     if t in {"factor_gcl", "factorgcl", "dfq_factorgcl"}:
@@ -98,9 +125,16 @@ def _resolve_path_from_candidates(raw_path: str, *, base_dir: Path | None = None
     candidates: List[Path] = []
     if raw.is_absolute():
         candidates.append(raw)
+        # Saved summaries may contain absolute paths from another machine/container.
+        # When the copied output folder keeps the same filenames, recover relative to
+        # the summary folder or its sibling models/ directory.
+        if base_dir is not None:
+            candidates.append((base_dir / raw.name).expanduser())
+            candidates.append((base_dir / "models" / raw.name).expanduser())
     else:
         if base_dir is not None:
             candidates.append((base_dir / raw).expanduser())
+            candidates.append((base_dir / "models" / raw.name).expanduser())
         candidates.append(raw)
     for p in candidates:
         if p.exists():
@@ -199,6 +233,133 @@ def _resolve_from_dir(models_dir: Path, component: str, model_type: str, run_tag
     return _latest_matching_file(models_dir=models_dir, component=component, model_type=model_type)
 
 
+def _clean_optional_path(raw: object) -> str | None:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    return s or None
+
+
+def _component_summary_raw(model_run: object, component: str) -> Tuple[str | None, str]:
+    component_raw = _clean_optional_path(getattr(model_run, COMPONENT_SUMMARY_ATTR[component], None))
+    if component_raw:
+        return component_raw, COMPONENT_SUMMARY_ATTR[component]
+    return None, "none"
+
+
+def _legacy_summary_raw(model_run: object) -> Tuple[str | None, str]:
+    legacy_raw = _clean_optional_path(getattr(model_run, "model_summary_json", None))
+    if legacy_raw:
+        return legacy_raw, "model_summary_json"
+    return None, "none"
+
+
+def _component_models_dir_raw(model_run: object, component: str) -> Tuple[str | None, str]:
+    component_raw = _clean_optional_path(getattr(model_run, COMPONENT_DIR_ATTR[component], None))
+    if component_raw:
+        return component_raw, COMPONENT_DIR_ATTR[component]
+    return None, "none"
+
+
+def _legacy_models_dir_raw(model_run: object) -> Tuple[str | None, str]:
+    legacy_raw = _clean_optional_path(getattr(model_run, "models_load_dir", None))
+    if legacy_raw:
+        return legacy_raw, "models_load_dir"
+    return None, "none"
+
+
+def _component_run_tag(model_run: object, component: str) -> str | None:
+    component_raw = _clean_optional_path(getattr(model_run, COMPONENT_RUN_TAG_ATTR[component], None))
+    if component_raw:
+        return component_raw
+    return _clean_optional_path(getattr(model_run, "models_load_run_tag", None))
+
+
+def _find_summary_near_models_dir(models_dir: Path, run_tag: str | None) -> Path | None:
+    parent = models_dir.parent
+    if not parent.exists():
+        return None
+    matches: List[Path] = []
+    if run_tag:
+        exact = parent / f"summary_{run_tag}.json"
+        if exact.exists() and exact.is_file():
+            return exact.resolve()
+        matches.extend([p for p in parent.glob(f"summary*{run_tag}*.json") if p.is_file()])
+    if not matches:
+        matches.extend([p for p in parent.glob("summary_*.json") if p.is_file()])
+    if not matches:
+        matches.extend([p for p in parent.glob("summary*.json") if p.is_file()])
+    if not matches:
+        return None
+    return max(matches, key=lambda p: p.stat().st_mtime).resolve()
+
+
+def resolve_component_summary_path(model_run: object, component: str) -> Path | None:
+    if component not in COMPONENTS:
+        raise ValueError(f"unknown model component: {component}")
+    summary_raw, _source = _component_summary_raw(model_run, component)
+    if summary_raw:
+        p = Path(summary_raw).expanduser()
+        if not p.exists():
+            raise FileNotFoundError(f"{component} summary json not found: {p}")
+        return p.resolve()
+
+    models_dir_raw, _dir_source = _component_models_dir_raw(model_run, component)
+    if models_dir_raw:
+        models_dir = Path(models_dir_raw).expanduser()
+        if not models_dir.exists():
+            raise FileNotFoundError(f"{component} models_load_dir not found: {models_dir}")
+        found = _find_summary_near_models_dir(models_dir=models_dir, run_tag=_component_run_tag(model_run, component))
+        if found is not None:
+            return found
+
+    summary_raw, _source = _legacy_summary_raw(model_run)
+    if summary_raw:
+        p = Path(summary_raw).expanduser()
+        if not p.exists():
+            raise FileNotFoundError(f"{component} summary json not found: {p}")
+        return p.resolve()
+
+    models_dir_raw, _dir_source = _legacy_models_dir_raw(model_run)
+    if models_dir_raw:
+        models_dir = Path(models_dir_raw).expanduser()
+        if not models_dir.exists():
+            raise FileNotFoundError(f"{component} models_load_dir not found: {models_dir}")
+        found = _find_summary_near_models_dir(models_dir=models_dir, run_tag=_component_run_tag(model_run, component))
+        if found is not None:
+            return found
+    return None
+
+
+def _read_model_files_from_summary(summary_path: Path) -> Dict[str, object]:
+    payload = _safe_read_json(summary_path)
+    return dict(
+        payload.get("outputs", {}).get("model_files", {})
+        or payload.get("model_files", {})
+        or {}
+    )
+
+
+def _resolve_artifact_from_model_meta(meta_path: Path, component: str, model_type: str) -> Path:
+    meta = _safe_read_json(meta_path)
+    meta_dir = meta_path.parent
+    for key in ("model_pt", "model_pkl", "model_file"):
+        raw = meta.get(key)
+        if raw:
+            resolved = _resolve_path_from_candidates(str(raw), base_dir=meta_dir)
+            if resolved is not None:
+                return resolved
+    candidate_filename = _candidate_name(component=component, model_type=model_type, run_tag=None)
+    if candidate_filename:
+        expected_suffix = Path(candidate_filename).suffix
+        if expected_suffix.lower() == ".json":
+            return meta_path.resolve()
+        companion = meta_path.with_suffix(expected_suffix)
+        if companion.exists() and companion.is_file():
+            return companion.resolve()
+    return meta_path.resolve()
+
+
 def resolve_model_artifact_paths(cfg: RunConfig, components: set[str] | None = None) -> ResolvedModelPaths:
     requested_components = set(components) if components is not None else {
         "stock_model",
@@ -207,25 +368,7 @@ def resolve_model_artifact_paths(cfg: RunConfig, components: set[str] | None = N
         "execution_model",
     }
     model_run = cfg.model_run
-    summary_entries: Dict[str, object] = {}
-    summary_base_dir: Path | None = None
-    if model_run.model_summary_json:
-        summary_path = Path(model_run.model_summary_json).expanduser()
-        if not summary_path.exists():
-            raise FileNotFoundError(f"model_summary_json not found: {summary_path}")
-        summary = _safe_read_json(summary_path)
-        summary_entries = dict(
-            summary.get("outputs", {}).get("model_files", {})
-            or summary.get("model_files", {})
-            or {}
-        )
-        summary_base_dir = summary_path.parent
-
-    models_dir = Path(model_run.models_load_dir).expanduser() if model_run.models_load_dir else None
-    if models_dir is not None and not models_dir.exists():
-        raise FileNotFoundError(f"models_load_dir not found: {models_dir}")
-
-    run_tag = model_run.models_load_run_tag
+    summary_cache: Dict[Path, Dict[str, object]] = {}
     source: Dict[str, str] = {
         "stock_model": "none",
         "timing_model": "none",
@@ -250,30 +393,101 @@ def resolve_model_artifact_paths(cfg: RunConfig, components: set[str] | None = N
         explicit_path: str | None,
         model_type: str,
     ) -> str | None:
-        if explicit_path:
-            p = Path(explicit_path).expanduser()
-            if not p.exists():
-                raise FileNotFoundError(f"{component} path not found: {p}")
-            source[component] = "explicit_path"
-            return str(p.resolve())
+        def _resolve_from_summary_raw(summary_raw: str | None, summary_source: str) -> str | None:
+            if not summary_raw:
+                return None
+            summary_path_obj = Path(summary_raw).expanduser()
+            if not summary_path_obj.exists():
+                raise FileNotFoundError(f"{component} summary json not found: {summary_path_obj}")
+            summary_path_obj = summary_path_obj.resolve()
+            if summary_path_obj.parent.name == "models":
+                artifact = _resolve_artifact_from_model_meta(
+                    meta_path=summary_path_obj,
+                    component=component,
+                    model_type=model_type,
+                )
+                source[component] = summary_source
+                return str(artifact)
+            if summary_path_obj not in summary_cache:
+                summary_cache[summary_path_obj] = _read_model_files_from_summary(summary_path_obj)
+            summary_entry = _pick_component_file(summary_cache[summary_path_obj].get(component))
+            if summary_entry:
+                p = _resolve_path_from_candidates(summary_entry, base_dir=summary_path_obj.parent)
+                if p is not None:
+                    if p.suffix.lower() == ".json" and p.parent.name == "models":
+                        p = _resolve_artifact_from_model_meta(
+                            meta_path=p,
+                            component=component,
+                            model_type=model_type,
+                        )
+                    source[component] = summary_source
+                    return str(p)
+            return None
 
-        summary_path = _pick_component_file(summary_entries.get(component))
-        if summary_path:
-            p = _resolve_path_from_candidates(summary_path, base_dir=summary_base_dir)
-            if p is not None:
-                source[component] = "summary_json"
-                return str(p)
-
-        if models_dir is not None:
+        def _resolve_from_models_dir_raw(models_dir_raw: str | None, dir_source: str) -> str | None:
+            if models_dir_raw is None:
+                return None
+            models_dir = Path(models_dir_raw).expanduser()
+            if not models_dir.exists():
+                raise FileNotFoundError(f"{component} models_load_dir not found: {models_dir}")
+            near_summary = _find_summary_near_models_dir(
+                models_dir=models_dir,
+                run_tag=_component_run_tag(model_run, component),
+            )
+            if near_summary is not None:
+                if near_summary not in summary_cache:
+                    summary_cache[near_summary] = _read_model_files_from_summary(near_summary)
+                summary_entry = _pick_component_file(summary_cache[near_summary].get(component))
+                if summary_entry:
+                    p_from_summary = _resolve_path_from_candidates(summary_entry, base_dir=near_summary.parent)
+                    if p_from_summary is not None:
+                        if p_from_summary.suffix.lower() == ".json" and p_from_summary.parent.name == "models":
+                            p_from_summary = _resolve_artifact_from_model_meta(
+                                meta_path=p_from_summary,
+                                component=component,
+                                model_type=model_type,
+                            )
+                        source[component] = f"{dir_source}:parent_summary"
+                        return str(p_from_summary)
             p = _resolve_from_dir(
                 models_dir=models_dir,
                 component=component,
                 model_type=model_type,
-                run_tag=run_tag,
+                run_tag=_component_run_tag(model_run, component),
             )
             if p:
-                source[component] = "models_load_dir"
+                p_obj = Path(p)
+                if p_obj.suffix.lower() == ".json" and p_obj.parent.name == "models":
+                    p_obj = _resolve_artifact_from_model_meta(
+                        meta_path=p_obj,
+                        component=component,
+                        model_type=model_type,
+                    )
+                    p = str(p_obj)
+                source[component] = dir_source
                 return p
+            return None
+
+        for resolver, args in (
+            (_resolve_from_summary_raw, _component_summary_raw(model_run, component)),
+            (_resolve_from_models_dir_raw, _component_models_dir_raw(model_run, component)),
+            (_resolve_from_summary_raw, _legacy_summary_raw(model_run)),
+            (_resolve_from_models_dir_raw, _legacy_models_dir_raw(model_run)),
+        ):
+            resolved = resolver(*args)
+            if resolved:
+                return resolved
+
+        # Deprecated compatibility path. Prefer summary/models-dir sources because they
+        # keep model artifacts and companion metadata together.
+        if explicit_path:
+            p = Path(explicit_path).expanduser()
+            if not p.exists():
+                raise FileNotFoundError(f"{component} path not found: {p}")
+            if p.suffix.lower() == ".json" and p.parent.name == "models":
+                p = _resolve_artifact_from_model_meta(meta_path=p, component=component, model_type=model_type)
+            source[component] = COMPONENT_EXPLICIT_PATH_ATTR[component]
+            return str(p.resolve())
         return None
 
     if "stock_model" in requested_components:
@@ -805,7 +1019,10 @@ def load_timing_model(cfg: TimingModelConfig, model_path: str | None) -> Tuple[T
 
     if canonical == "lstm_madl":
         if not model_path:
-            raise ValueError("lstm_madl timing load mode requires timing_model_path, model_summary_json, or models_load_dir.")
+            raise ValueError(
+                "lstm_madl timing load mode requires a timing model source "
+                "(--timing-model-summary-json or --timing-models-load-dir; compatible legacy args also work)."
+            )
         p = Path(model_path).expanduser()
         if not p.exists():
             raise FileNotFoundError(f"timing LSTM model file not found: {p}")

@@ -84,7 +84,7 @@
 7. 回测参数（`horizon/top-k/long-threshold/execution-scheme/fee-bps/slippage-bps/rebalance-stride/ic-eval-mode`）  
 生效模块：`pipeline/runner.py`、`backtest/engine.py`、`backtest/metrics.py`。
 
-8. 模型运行与推理参数（`model-run-mode/load-fe-mode/model-summary-json/models-load-dir/models-load-run-tag/*-model-path/enable-next-bar-inference/inference-top-k`）  
+8. 模型运行与推理参数（`model-run-mode/load-fe-mode/model-summary-json/*-model-summary-json/models-load-dir/*-models-load-dir/models-load-run-tag/*-models-load-run-tag/*-model-path/enable-next-bar-inference/inference-signal-ts/inference-top-k`）
 生效模块：`strategy7/config.py`、`pipeline/runner.py`、`models/loading.py`。
 
 9. 输出参数（`output-dir/save-models`）  
@@ -149,12 +149,13 @@
 
 1. `--model-run-mode train|load`
 2. `--load-fe-mode strict|refit|off`
-3. `--model-summary-json`
-4. `--models-load-dir`
-5. `--models-load-run-tag`
-6. `--stock-model-path --timing-model-path --portfolio-model-path --execution-model-path`
+3. `--model-summary-json` 与组件级 `--stock/timing/portfolio/execution-model-summary-json`
+4. `--models-load-dir` 与组件级 `--stock/timing/portfolio/execution-models-load-dir`
+5. `--models-load-run-tag` 与组件级 `--stock/timing/portfolio/execution-models-load-run-tag`
+6. 兼容但不推荐的 `--stock-model-path --timing-model-path --portfolio-model-path --execution-model-path`
 7. `--enable-next-bar-inference`
-8. `--inference-top-k`
+8. `--inference-signal-ts`
+9. `--inference-top-k`
 
 生效链路：
 
@@ -179,7 +180,7 @@
 1. 新增参数已完成“可配置即可生效”闭环接入。
 2. 默认参数不变时，仍保持原有 `train` 模式行为。
 3. `load` 模式下若因子列与模型文件不一致，会显式报错阻断（避免静默错误回测）。
-4. `timing=none / portfolio=equal_weight / execution=ideal_fill` 时，对应 `--*-model-path` 将被忽略，不再触发“路径不存在”误报。
+4. `timing=none / portfolio=equal_weight / execution=ideal_fill` 时，对应组件不需要 artifact，不再触发“路径不存在”误报。
 5. `load + custom_stock_model` 已修复 JSON/非 pickle 产物误按 `pickle.load` 解析导致的潜在崩溃问题。
 
 ## 8. 2026-04-23 模板覆盖与回归闭环（scripts/v2）

@@ -384,30 +384,33 @@ python Strategy7/run_strategy7.py `
 
 任一组件处于 `load` 模式时，该组件模型路径解析优先级：
 
-1. 显式传入单模型路径（`--stock-model-path/--timing-model-path/...`）
-2. `--model-summary-json` 自动读取 `summary_*.json` 里的 `outputs.model_files`
-3. `--models-load-dir` + 可选 `--models-load-run-tag` 自动匹配模型文件
+1. 组件级 summary：`--stock-model-summary-json/--timing-model-summary-json/--portfolio-model-summary-json/--execution-model-summary-json`
+2. 组件级模型目录：`--stock-models-load-dir/--timing-models-load-dir/--portfolio-models-load-dir/--execution-models-load-dir` + 可选对应 `--*-models-load-run-tag`
+3. 兼容旧参数：`--model-summary-json`、`--models-load-dir`、`--models-load-run-tag`
+4. 兼容但不推荐的单 artifact 路径：`--stock-model-path/--timing-model-path/...`
+
+推荐优先使用组件级 summary 或组件级 models 目录。`models` 目录方式会按模型类型与 run_tag 匹配 artifact，并自动尝试读取上一级 `summary_*.json`；summary 中保存的跨机器绝对路径如果失效，会回退到当前 summary 所在目录的 `models/同名文件`。
 
 `load` 模式参数冲突与约束：
 
 1. 只有选股模型处于 `load` 时，`load + FE` 才由 `--load-fe-mode strict|refit|off` 控制：
-   - `strict`：按 `--model-summary-json` 中记录的 FE 结果回放（要求 `notes.feature_engineering_summary` 存在且启用；当前不支持 `pca` 回放）。
+   - `strict`：按选股模型来源 summary 中记录的 FE 结果回放（要求 `notes.feature_engineering_summary` 存在且启用；当前不支持 `pca` 回放）。
    - `refit`：按当前样本重新拟合 FE（默认）。
    - `off`：即使 `--enable-factor-engineering true` 也跳过 FE。
-2. 选股模型 `load` 且 `strict` 模式必须提供 `--model-summary-json`，否则会显式报错阻断（避免语义错位）。
-3. 某个组件是 `train` 时，对应 `--*-model-path` 不参与该组件加载；四个组件全是 `train` 时，`--model-summary-json/--models-load-dir/--*-model-path` 会提示并忽略。
+2. 选股模型 `load` 且 `strict` 模式必须能解析到选股来源 summary：优先 `--stock-model-summary-json`，兼容 `--model-summary-json`，或由 `--stock-models-load-dir` 的上一级目录自动匹配 `summary_*.json`。
+3. 某个组件是 `train` 时，对应该组件的 load 参数不参与该组件加载；四个组件全是 `train` 时，所有 load 专用参数会提示并忽略。
 4. 文件后缀建议：
    - `decision_tree`：`.pkl/.pickle`
-   - `factor_gcl/dafat/dfq_timesnet`：`.pt/.pth`
+   - `factor_gcl/dafat/dfq_timesnet/dtlc_rl/stockformer`：`.pt/.pth`（同名 `.json` 是元数据/配置摘要）
    - `volatility_regime`：`.pkl/.json`
    - `lstm_madl`：`.pt/.json`
    - `dynamic_opt/realistic_fill`：`.pkl/.json`
 5. 当对应模型类型为默认无文件实现时，会忽略其路径参数：
-   - `timing_model_type=none` 时忽略 `--timing-model-path`
-   - `portfolio_model_type=equal_weight` 时忽略 `--portfolio-model-path`
-   - `execution_model_type=ideal_fill` 时忽略 `--execution-model-path`
+   - `timing_model_type=none` 时不需要择时模型 artifact
+   - `portfolio_model_type=equal_weight` 时不需要组合模型 artifact
+   - `execution_model_type=ideal_fill` 时不需要执行模型 artifact
 
-推荐方式（最稳）：直接用历史运行的 `summary_*.json` 回放：
+推荐方式一：来自同一次实验时，直接用历史运行的 `summary_*.json` 回放：
 
 ```powershell
 python Strategy7/run_strategy7.py `
@@ -424,37 +427,39 @@ python Strategy7/run_strategy7.py `
   --save-models false
 ```
 
-显式指定四类模型文件（适合做消融实验/控制变量）：
+推荐方式二：四类模型来自不同实验时，分别指定组件级 summary：
 
 ```powershell
 python Strategy7/run_strategy7.py `
   --model-run-mode load `
-  --load-fe-mode off `
-  --stock-model-type decision_tree `
-  --timing-model-type volatility_regime `
+  --load-fe-mode refit `
+  --stock-model-type stockformer `
+  --timing-model-type lstm_madl `
   --portfolio-model-type dynamic_opt `
   --execution-model-type realistic_fill `
-  --stock-model-path D:/.../models/stock_model_tree_XXX.pkl `
-  --timing-model-path D:/.../models/timing_vol_regime_XXX.pkl `
-  --portfolio-model-path D:/.../models/portfolio_dynamic_XXX.pkl `
-  --execution-model-path D:/.../models/execution_realistic_XXX.pkl `
+  --stock-model-summary-json D:/.../run_stockformer/summary_XXX.json `
+  --timing-model-summary-json D:/.../run_lstm_madl/summary_YYY.json `
+  --portfolio-model-summary-json D:/.../run_dynamic_opt/summary_ZZZ.json `
+  --execution-model-summary-json D:/.../run_realistic_fill/summary_AAA.json `
   --factor-freq D --horizon 5 --top-k 10 `
   --save-models false
 ```
 
-仅提供模型目录自动匹配（run_tag 可选）：
+推荐方式三：分别提供各组件 models 目录自动匹配（run_tag 可选）：
 
 ```powershell
 python Strategy7/run_strategy7.py `
   --model-run-mode load `
   --load-fe-mode off `
-  --stock-model-type decision_tree `
-  --timing-model-type none `
+  --stock-model-type stockformer `
+  --timing-model-type lstm_madl `
   --portfolio-model-type equal_weight `
   --execution-model-type ideal_fill `
-  --models-load-dir D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/_tmp_freq_guard/pipeline_W/models `
-  --models-load-run-tag W_h3_allboards_equal_weight_edb61102ec `
-  --factor-freq W --horizon 3 --top-k 10
+  --stock-models-load-dir D:/.../run_stockformer/models `
+  --timing-models-load-dir D:/.../run_lstm_madl/models `
+  --stock-models-load-run-tag D_h5_allboards_equal_weight_XXX `
+  --timing-models-load-run-tag D_h5_allboards_equal_weight_YYY `
+  --factor-freq D --horizon 5 --top-k 50
 ```
 
 混合 train/load 示例：
@@ -470,8 +475,8 @@ python Strategy7/run_strategy7.py `
   --timing-model-type lstm_madl `
   --portfolio-model-type dynamic_opt `
   --execution-model-type realistic_fill `
-  --timing-model-path D:/.../models/timing_lstm_madl_XXX.pt `
-  --execution-model-path D:/.../models/execution_realistic_XXX.pkl `
+  --timing-models-load-dir D:/.../run_lstm_madl/models `
+  --execution-models-load-dir D:/.../run_realistic_fill/models `
   --factor-freq D --horizon 1 --top-k 50 `
   --save-models true
 ```
@@ -481,15 +486,20 @@ python Strategy7/run_strategy7.py `
 主入口支持在回测同时额外输出“最新信号时点”的组合推理结果（选股分数 + 择时暴露 + 组合权重 + 执行填单）：
 
 1. `--enable-next-bar-inference true`：开启
-2. `--inference-top-k`：输出候选数量（按 `pred_score` 排序）
+2. `--inference-signal-ts`：指定推理信号日/时间；为空时使用当前加载面板中的最新时点
+3. `--inference-top-k`：输出候选数量（按 `pred_score` 排序）
 
 示例：
 
 ```powershell
 python Strategy7/run_strategy7.py `
   --model-run-mode load `
-  --model-summary-json D:/.../summary_XXX.json `
+  --stock-model-summary-json D:/.../run_stockformer/summary_XXX.json `
+  --timing-model-summary-json D:/.../run_lstm_madl/summary_YYY.json `
+  --portfolio-model-type equal_weight `
+  --execution-model-type ideal_fill `
   --enable-next-bar-inference true `
+  --inference-signal-ts 2025-06-30 `
   --inference-top-k 20 `
   --save-models false
 ```
@@ -571,6 +581,12 @@ bash Strategy7/scripts/v2/run_strategy7_v2_02_train_tree_fe_dynamic.sh
 bash Strategy7/scripts/v2/run_strategy7_v2_06_load_from_models_dir_off.sh \
   --models-load-dir /workspace/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_01_train_tree/models \
   --models-load-run-tag 510c1cd320
+
+# 四类模型来自不同实验时，直接在 run_strategy7.py 使用组件级目录参数
+bash Strategy7/scripts/v2/run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh \
+  --infer-date 2025-06-30 \
+  --stock-models-load-dir /workspace/Quant/TradeSystem/Strategy7/outputs/run_strategy7_27_train_stockformer/models \
+  --timing-models-load-dir /workspace/Quant/TradeSystem/Strategy7/outputs/run_strategy7_30_train_lstm_madl_timing/models
 
 # 核心 smoke 套件
 bash Strategy7/scripts/v2/run_smoke_suite_v2.sh
@@ -684,7 +700,7 @@ bash Strategy7/scripts/v2/run_strategy7_v2_21_load_allmarket_bottom_launch_10d.s
 7. 回测：
    `--horizon --top-k --long-threshold --execution-scheme --fee-bps --slippage-bps`
 8. 模型运行模式与推理：
-   `--model-run-mode --stock-model-run-mode --timing-model-run-mode --portfolio-model-run-mode --execution-model-run-mode --load-fe-mode --model-summary-json --models-load-dir --models-load-run-tag --stock-model-path --timing-model-path --portfolio-model-path --execution-model-path --enable-next-bar-inference --inference-signal-ts --inference-top-k`
+   `--model-run-mode --stock-model-run-mode --timing-model-run-mode --portfolio-model-run-mode --execution-model-run-mode --load-fe-mode --model-summary-json --stock-model-summary-json --timing-model-summary-json --portfolio-model-summary-json --execution-model-summary-json --models-load-dir --stock-models-load-dir --timing-models-load-dir --portfolio-models-load-dir --execution-models-load-dir --models-load-run-tag --stock-models-load-run-tag --timing-models-load-run-tag --portfolio-models-load-run-tag --execution-models-load-run-tag --enable-next-bar-inference --inference-signal-ts --inference-top-k`
 9. 产物：
    `--output-dir --save-models`
 
@@ -1182,7 +1198,8 @@ python Strategy7/run_strategy7.py `
 说明：
 
 1. 工程内四个自定义模型模板文件都已提供 `build_model(cfg)` 和 `load_model(cfg, model_path)` 双接口示例。
-2. 若你只想替换其中一个模块做消融，其余三个模块可继续使用内置模型类型。
+2. 自定义插件没有统一文件命名约定时，仍可使用兼容的 `--*-model-path` 把路径传给插件的 `load_model`。
+3. 若你只想替换其中一个模块做消融，其余三个模块可继续使用内置模型类型。
 
 ## 12. 常见问题排查
 
@@ -1201,7 +1218,7 @@ python Strategy7/run_strategy7.py `
 7. next bar 推理文件未生成
    检查 `--enable-next-bar-inference true`，并确认最新信号时点存在可用样本（`code/time/factor` 不为空）。
 8. `model_run_mode=load` 且 `enable_factor_engineering=true` 的 FE 行为不符合预期
-   显式设置 `--load-fe-mode`：`strict`（按 summary 回放）、`refit`（当前样本重拟合）、`off`（跳过 FE）。若用 `strict`，必须传 `--model-summary-json` 且源实验 FE 非 PCA。
+   显式设置 `--load-fe-mode`：`strict`（按选股来源 summary 回放）、`refit`（当前样本重拟合）、`off`（跳过 FE）。若用 `strict`，必须能解析到选股模型来源 summary（`--stock-model-summary-json`、兼容 `--model-summary-json`，或 `--stock-models-load-dir` 上一级目录的 `summary_*.json`）且源实验 FE 非 PCA。
 9. Linux 运行出现 `Segmentation fault`
    优先用 `run_strategy7_v2_22` 或 `run_strategy7_v2_23` 的 `--diagnose-lite` 重跑，先缩样本并切到 `csv` 路径定位是否为 parquet/native 引擎问题；脚本已默认开启 `PYTHONFAULTHANDLER=1`。
    若崩溃栈在 `pandas/io/parsers/c_parser_wrapper.py`，可显式强制文本读取走更稳解析器：`export STRATEGY7_TEXT_CSV_ENGINE=python`（当前版本默认即 python）。

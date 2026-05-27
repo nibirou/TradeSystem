@@ -65,6 +65,7 @@ from ..models.loading import (
     load_stock_model,
     load_timing_model,
     peek_stock_model_factor_cols,
+    resolve_component_summary_path,
     resolve_model_artifact_paths,
     stock_model_factor_cols,
 )
@@ -674,6 +675,27 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     load_fe_mode = str(getattr(cfg.model_run, "load_fe_mode", "refit")).strip().lower()
     if load_fe_mode not in {"strict", "refit", "off"}:
         load_fe_mode = "refit"
+    load_source_args = [
+        "model_summary_json",
+        "models_load_dir",
+        "models_load_run_tag",
+        "stock_model_summary_json",
+        "timing_model_summary_json",
+        "portfolio_model_summary_json",
+        "execution_model_summary_json",
+        "stock_models_load_dir",
+        "timing_models_load_dir",
+        "portfolio_models_load_dir",
+        "execution_models_load_dir",
+        "stock_models_load_run_tag",
+        "timing_models_load_run_tag",
+        "portfolio_models_load_run_tag",
+        "execution_models_load_run_tag",
+        "stock_model_path",
+        "timing_model_path",
+        "portfolio_model_path",
+        "execution_model_path",
+    ]
     if stock_model_load and bool(getattr(cfg.factors, "enable_factor_engineering", False)):
         if load_fe_mode == "strict":
             log_progress(
@@ -692,20 +714,9 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             )
     if not any_component_load:
         ignored_load_args: List[str] = []
-        if getattr(cfg.model_run, "model_summary_json", None):
-            ignored_load_args.append("model_summary_json")
-        if getattr(cfg.model_run, "models_load_dir", None):
-            ignored_load_args.append("models_load_dir")
-        if getattr(cfg.model_run, "models_load_run_tag", None):
-            ignored_load_args.append("models_load_run_tag")
-        if getattr(cfg.model_run, "stock_model_path", None):
-            ignored_load_args.append("stock_model_path")
-        if getattr(cfg.model_run, "timing_model_path", None):
-            ignored_load_args.append("timing_model_path")
-        if getattr(cfg.model_run, "portfolio_model_path", None):
-            ignored_load_args.append("portfolio_model_path")
-        if getattr(cfg.model_run, "execution_model_path", None):
-            ignored_load_args.append("execution_model_path")
+        for arg_name in load_source_args:
+            if getattr(cfg.model_run, arg_name, None):
+                ignored_load_args.append(arg_name)
         if ignored_load_args:
             log_progress(
                 "四类模型均为 train 模式，检测到 load 专用参数，将忽略："
@@ -714,14 +725,35 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             )
     else:
         ignored_by_component: List[str] = []
-        if component_run_modes["stock_model"] != "load" and getattr(cfg.model_run, "stock_model_path", None):
-            ignored_by_component.append("stock_model_path")
-        if component_run_modes["timing_model"] != "load" and getattr(cfg.model_run, "timing_model_path", None):
-            ignored_by_component.append("timing_model_path")
-        if component_run_modes["portfolio_model"] != "load" and getattr(cfg.model_run, "portfolio_model_path", None):
-            ignored_by_component.append("portfolio_model_path")
-        if component_run_modes["execution_model"] != "load" and getattr(cfg.model_run, "execution_model_path", None):
-            ignored_by_component.append("execution_model_path")
+        component_arg_map = {
+            "stock_model": [
+                "stock_model_summary_json",
+                "stock_models_load_dir",
+                "stock_models_load_run_tag",
+                "stock_model_path",
+            ],
+            "timing_model": [
+                "timing_model_summary_json",
+                "timing_models_load_dir",
+                "timing_models_load_run_tag",
+                "timing_model_path",
+            ],
+            "portfolio_model": [
+                "portfolio_model_summary_json",
+                "portfolio_models_load_dir",
+                "portfolio_models_load_run_tag",
+                "portfolio_model_path",
+            ],
+            "execution_model": [
+                "execution_model_summary_json",
+                "execution_models_load_dir",
+                "execution_models_load_run_tag",
+                "execution_model_path",
+            ],
+        }
+        for component, arg_names in component_arg_map.items():
+            if component_run_modes[component] != "load":
+                ignored_by_component.extend([x for x in arg_names if getattr(cfg.model_run, x, None)])
         if ignored_by_component:
             log_progress(
                 "部分组件为 train 模式，对应 load 路径参数将不参与该组件加载："
@@ -1305,11 +1337,13 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         fe_report["mode"] = "skipped_by_load_fe_mode_off"
     elif fe_requested and stock_model_load and load_fe_mode == "strict":
         log_progress("步骤 8.5/13：执行 stock load + FE strict 回放。", module="pipeline")
-        if not getattr(cfg.model_run, "model_summary_json", None):
-            raise RuntimeError("load-fe-mode=strict requires --model-summary-json for FE replay.")
-        summary_path = Path(str(cfg.model_run.model_summary_json)).expanduser()
-        if not summary_path.exists():
-            raise FileNotFoundError(f"model_summary_json not found for strict FE replay: {summary_path}")
+        summary_path = resolve_component_summary_path(cfg.model_run, "stock_model")
+        if summary_path is None:
+            raise RuntimeError(
+                "load-fe-mode=strict requires stock model summary for FE replay: "
+                "use --stock-model-summary-json (or compatible --model-summary-json), "
+                "or provide --stock-models-load-dir with a sibling summary_*.json."
+            )
         summary_payload = _safe_read_json_dict(summary_path)
         strict_fe = dict(summary_payload.get("notes", {}).get("feature_engineering_summary", {}) or {})
         if not strict_fe:

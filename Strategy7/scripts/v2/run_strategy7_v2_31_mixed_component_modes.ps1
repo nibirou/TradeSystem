@@ -1,8 +1,10 @@
 param(
   [Parameter(Mandatory = $true)]
-  [string]$TimingModelPath,
+  [string]$TimingModelsLoadDir,
   [Parameter(Mandatory = $true)]
-  [string]$ExecutionModelPath
+  [string]$ExecutionModelsLoadDir,
+  [string]$TimingModelsLoadRunTag = "",
+  [string]$ExecutionModelsLoadRunTag = ""
 )
 
 $ErrorActionPreference = "Stop"
@@ -27,39 +29,50 @@ $TopK = if ($env:STRATEGY7_TOP_K) { $env:STRATEGY7_TOP_K } else { "20" }
 $MaxFiles = if ($env:STRATEGY7_MAX_FILES) { $env:STRATEGY7_MAX_FILES } else { "40" }
 New-Item -ItemType Directory -Force -Path $OutputDir | Out-Null
 
-conda run -n $CondaEnv --no-capture-output python `
-  .\Strategy7\run_strategy7.py `
-  --data-root $DataRoot `
-  --hs300-list-path $Hs300List `
-  --index-root $IndexRoot `
-  --train-start $TrainStart `
-  --train-end $TrainEnd `
-  --test-start $TestStart `
-  --test-end $TestEnd `
-  --factor-freq $FactorFreq `
-  --factor-packages "trend,reversal,liquidity,volatility,flow,price_action" `
-  --label-task return `
-  --max-files $MaxFiles `
-  --disable-text-data `
-  --enable-factor-engineering true `
-  --fe-corr-threshold 0.90 `
-  --fe-preselect-top-n 160 `
-  --stock-model-type decision_tree `
-  --timing-model-type lstm_madl `
-  --portfolio-model-type dynamic_opt `
-  --execution-model-type realistic_fill `
-  --model-run-mode train `
-  --stock-model-run-mode train `
-  --timing-model-run-mode load `
-  --portfolio-model-run-mode train `
-  --execution-model-run-mode load `
-  --timing-model-path $TimingModelPath `
-  --execution-model-path $ExecutionModelPath `
-  --horizon $Horizon `
-  --top-k $TopK `
-  --long-threshold 0.5 `
-  --execution-scheme open5_open5 `
-  --fee-bps 1.5 `
-  --slippage-bps 1.5 `
-  --save-models true `
-  --output-dir $OutputDir
+$cmd = @(
+  "run", "-n", $CondaEnv, "--no-capture-output", "python",
+  ".\Strategy7\run_strategy7.py",
+  "--data-root", $DataRoot,
+  "--hs300-list-path", $Hs300List,
+  "--index-root", $IndexRoot,
+  "--train-start", $TrainStart,
+  "--train-end", $TrainEnd,
+  "--test-start", $TestStart,
+  "--test-end", $TestEnd,
+  "--factor-freq", $FactorFreq,
+  "--factor-packages", "trend,reversal,liquidity,volatility,flow,price_action",
+  "--label-task", "return",
+  "--max-files", $MaxFiles,
+  "--disable-text-data",
+  "--enable-factor-engineering", "true",
+  "--fe-corr-threshold", "0.90",
+  "--fe-preselect-top-n", "160",
+  "--stock-model-type", "decision_tree",
+  "--timing-model-type", "lstm_madl",
+  "--portfolio-model-type", "dynamic_opt",
+  "--execution-model-type", "realistic_fill",
+  "--model-run-mode", "train",
+  "--stock-model-run-mode", "train",
+  "--timing-model-run-mode", "load",
+  "--portfolio-model-run-mode", "train",
+  "--execution-model-run-mode", "load",
+  "--timing-models-load-dir", $TimingModelsLoadDir,
+  "--execution-models-load-dir", $ExecutionModelsLoadDir,
+  "--horizon", $Horizon,
+  "--top-k", $TopK,
+  "--long-threshold", "0.5",
+  "--execution-scheme", "open5_open5",
+  "--fee-bps", "1.5",
+  "--slippage-bps", "1.5",
+  "--save-models", "true",
+  "--output-dir", $OutputDir
+)
+
+if ($TimingModelsLoadRunTag) {
+  $cmd += @("--timing-models-load-run-tag", $TimingModelsLoadRunTag)
+}
+if ($ExecutionModelsLoadRunTag) {
+  $cmd += @("--execution-models-load-run-tag", $ExecutionModelsLoadRunTag)
+}
+
+conda @cmd

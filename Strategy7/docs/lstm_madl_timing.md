@@ -84,4 +84,4 @@ python Strategy7/run_strategy7.py `
 1. `models/timing_lstm_madl_<run_tag>.pt`：PyTorch checkpoint。
 2. `models/timing_lstm_madl_<run_tag>.json`：元信息，包含特征数、训练摘要和 checkpoint 路径。
 
-`load` 模式可通过 `--timing-model-path`、`--model-summary-json` 或 `--models-load-dir` 重新加载该模型。
+`load` 模式推荐通过 `--timing-model-summary-json` 或 `--timing-models-load-dir` 重新加载该模型；兼容旧的 `--model-summary-json`、`--models-load-dir`，以及不推荐的 `--timing-model-path`。

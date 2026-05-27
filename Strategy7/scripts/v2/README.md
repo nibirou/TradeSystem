@@ -33,7 +33,7 @@
 | `run_strategy7_v2_14_train_price_only_mainboard.ps1` | 价格因子主板子集训练回测 | `universe=all` + `main_board_only` + 关闭基本面/文本 |
 | `run_strategy7_v2_15_train_custom_factor_plugin.ps1` | 自定义因子插件训练回测 | `--custom-factor-py` |
 | `run_strategy7_v2_16_train_factor_value_store_hydrate.ps1` | 因子值仓库“水合”回测 | `enable-factor-value-store=true` + 非 build-only |
-| `run_strategy7_v2_17_load_explicit_paths_off.ps1` | 显式四路径 load 回测 | `--stock/timing/portfolio/execution-model-path` |
+| `run_strategy7_v2_17_load_explicit_paths_off.ps1` | 兼容旧式显式四路径 load 回测 | `--stock/timing/portfolio/execution-model-path`（不推荐作为新模板） |
 | `run_strategy7_v2_18_train_monthly_multitask_catalog_off.ps1` | 月频多任务训练回测 | `factor_freq=M`、`label_task=multi_task`、`enable_factor_catalog=false` |
 | `run_strategy7_v2_19_list_factors_30min_json_export.ps1` | 30min 因子清单 JSON 导出 | `--list-factors` + `factor_freq=30min` + JSON export |
 | `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1` | 全市场低位启动10日训练回测 | `factor_freq=D`、`horizon=10`、`stock_model_type=launch_boost`、`factor_packages` 含 `bottom_launch` |
@@ -47,8 +47,8 @@
 | `run_strategy7_v2_28_train_dtlc_rl_smoke.ps1` | DTLC_RL 轻量训练回测 | TCN/多尺度 Transformer/GRN + 对比学习 + PPO |
 | `run_strategy7_v2_29_train_dtlc_rl.ps1` | DTLC_RL 研究型训练模板 | 西南证券解耦时序对比强化学习模型、20 日标签/月频调仓风格 |
 | `run_strategy7_v2_30_train_lstm_madl_timing.ps1` | LSTM+MADL 择时融合训练模板 | 华福证券 LSTM 择时、MADL 损失、动态组合、真实执行 |
-| `run_strategy7_v2_31_mixed_component_modes.ps1` | 四类模型混合 train/load 模板 | 选股 train、择时 load、组合 train、执行 load |
-| `run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh` | StockFormer+LSTM 择时指定日快速推理 | 加载 v2_27 选股模型、v2_30 择时模型，输出指定日候选股 |
+| `run_strategy7_v2_31_mixed_component_modes.ps1` | 四类模型混合 train/load 模板 | 选股 train、择时从组件 models 目录 load、组合 train、执行从组件 models 目录 load |
+| `run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh` | StockFormer+LSTM 择时指定日快速推理 | 通过组件 models 目录/summary 加载 v2_27 选股模型、v2_30 择时模型 |
 
 ## 2) 挖掘入口模板（run_factor_mining.py）
 
@@ -78,7 +78,7 @@
 | 自定义四模型训练 / load 验证 | `run_strategy7_v2_03_train_custom_all_models.ps1`、`run_strategy7_v2_07_load_custom_from_summary.ps1` |
 | 复现已有模型（summary 引导） | `run_strategy7_v2_04_load_from_summary_refit.ps1`、`run_strategy7_v2_05_load_from_summary_strict.ps1` |
 | 复现已有模型（models 目录） | `run_strategy7_v2_06_load_from_models_dir_off.ps1` |
-| 复现已有模型（显式四路径） | `run_strategy7_v2_17_load_explicit_paths_off.ps1` |
+| 复现已有模型（兼容旧式显式四路径） | `run_strategy7_v2_17_load_explicit_paths_off.ps1` |
 | 深度模型轻量冒烟（选股） | `run_strategy7_v2_08_train_factor_gcl_smoke.ps1`、`run_strategy7_v2_09_train_dafat_smoke.ps1`、`run_strategy7_v2_24_train_dfq_timesnet_smoke.ps1`、`run_strategy7_v2_26_train_stockformer_smoke.ps1`、`run_strategy7_v2_28_train_dtlc_rl_smoke.ps1` |
 | StockFormer 强化学习交易状态实验 | `run_strategy7_v2_26_train_stockformer_smoke.ps1`、`run_strategy7_v2_27_train_stockformer.ps1` |
 | LSTM+MADL 择时叠加选股 | `run_strategy7_v2_30_train_lstm_madl_timing.ps1` |
@@ -143,10 +143,14 @@ bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
   - `powershell -ExecutionPolicy Bypass -File Strategy7/scripts/v2/run_strategy7_v2_06_load_from_models_dir_off.ps1 -ModelsLoadDir D:/PythonProject/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_01_train_tree/models -ModelsLoadRunTag 510c1cd320`
 - `run_strategy7_v2_06_load_from_models_dir_off.sh` 参数等价为 `--models-load-dir`（可选 `--models-load-run-tag`），示例：
   - `bash Strategy7/scripts/v2/run_strategy7_v2_06_load_from_models_dir_off.sh --models-load-dir /workspace/Quant/TradeSystem/Strategy7/outputs/smoke_v2/run_strategy7_01_train_tree/models --models-load-run-tag 510c1cd320`
-- `run_strategy7_v2_17_load_explicit_paths_off.ps1` 需要显式传四类模型路径：
+- `run_strategy7_v2_17_load_explicit_paths_off.ps1` 是兼容旧式显式 artifact 路径的模板；新模板优先使用组件级 summary 或 models 目录：
   - `-StockModelPath -TimingModelPath -PortfolioModelPath -ExecutionModelPath`
 - `run_strategy7_v2_17_load_explicit_paths_off.sh` 参数等价为：
   - `--stock-model-path --timing-model-path --portfolio-model-path --execution-model-path`
+- 组件级加载参数可让四类模型来自不同实验：
+  - `--stock-model-summary-json / --timing-model-summary-json / --portfolio-model-summary-json / --execution-model-summary-json`
+  - `--stock-models-load-dir / --timing-models-load-dir / --portfolio-models-load-dir / --execution-models-load-dir`
+  - `--stock-models-load-run-tag / --timing-models-load-run-tag / --portfolio-models-load-run-tag / --execution-models-load-run-tag`
 - `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1` / `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1` 支持：
   - `-DataRoot`（默认 `auto`，按主入口自动解析全市场数据目录）
   - `-IndexRoot`（默认空，留空则走主入口默认）

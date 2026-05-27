@@ -7,55 +7,50 @@ quant_root="${QUANT_ROOT:-$(cd "${repo_root}/.." && pwd)}"
 cd "${repo_root}"
 
 infer_date=""
-stock_model_path=""
-timing_model_path=""
+stock_model_summary_json=""
+timing_model_summary_json=""
 stock_models_dir="${repo_root}/Strategy7/outputs/run_strategy7_27_train_stockformer/models"
 timing_models_dir="${repo_root}/Strategy7/outputs/run_strategy7_30_train_lstm_madl_timing/models"
+stock_models_run_tag=""
+timing_models_run_tag=""
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --infer-date)
       infer_date="$2"; shift 2 ;;
-    --stock-model-path)
-      stock_model_path="$2"; shift 2 ;;
-    --timing-model-path)
-      timing_model_path="$2"; shift 2 ;;
+    --stock-model-summary-json)
+      stock_model_summary_json="$2"; shift 2 ;;
+    --timing-model-summary-json)
+      timing_model_summary_json="$2"; shift 2 ;;
     --stock-models-dir)
       stock_models_dir="$2"; shift 2 ;;
     --timing-models-dir)
       timing_models_dir="$2"; shift 2 ;;
+    --stock-models-load-dir)
+      stock_models_dir="$2"; shift 2 ;;
+    --timing-models-load-dir)
+      timing_models_dir="$2"; shift 2 ;;
+    --stock-models-load-run-tag)
+      stock_models_run_tag="$2"; shift 2 ;;
+    --timing-models-load-run-tag)
+      timing_models_run_tag="$2"; shift 2 ;;
     *)
       echo "Unknown argument: $1" >&2; exit 2 ;;
   esac
 done
 
 if [[ -z "${infer_date}" ]]; then
-  echo "Usage: bash Strategy7/scripts/v2/run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh --infer-date YYYY-MM-DD [--stock-model-path <pt>] [--timing-model-path <pt|json>]" >&2
+  echo "Usage: bash Strategy7/scripts/v2/run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh --infer-date YYYY-MM-DD [--stock-models-load-dir <models_dir>] [--timing-models-load-dir <models_dir>]" >&2
   exit 2
 fi
 
-latest_match() {
-  local dir="$1"
-  local pattern="$2"
-  if [[ ! -d "${dir}" ]]; then
-    echo "Model directory not found: ${dir}" >&2
-    exit 2
-  fi
-  shopt -s nullglob
-  local files=("${dir}"/${pattern})
-  shopt -u nullglob
-  if [[ ${#files[@]} -eq 0 ]]; then
-    echo "No model file matched ${dir}/${pattern}" >&2
-    exit 2
-  fi
-  ls -t "${files[@]}" | head -n 1
-}
-
-if [[ -z "${stock_model_path}" ]]; then
-  stock_model_path="$(latest_match "${stock_models_dir}" "stock_model_stockformer_*.pt")"
+if [[ -z "${stock_model_summary_json}" && ! -d "${stock_models_dir}" ]]; then
+  echo "Stock model directory not found: ${stock_models_dir}" >&2
+  exit 2
 fi
-if [[ -z "${timing_model_path}" ]]; then
-  timing_model_path="$(latest_match "${timing_models_dir}" "timing_lstm_madl_*.pt")"
+if [[ -z "${timing_model_summary_json}" && ! -d "${timing_models_dir}" ]]; then
+  echo "Timing model directory not found: ${timing_models_dir}" >&2
+  exit 2
 fi
 
 output_dir="${repo_root}/Strategy7/outputs/run_strategy7_32_load_stockformer_lstm_infer_${infer_date//[^0-9]/}"
@@ -65,7 +60,8 @@ test_end="${STRATEGY7_TEST_END:-2025-12-31}"
 train_start="${STRATEGY7_TRAIN_START:-2024-01-01}"
 train_end="${STRATEGY7_TRAIN_END:-2024-12-31}"
 
-conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python \
+cmd=(
+conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python
   ./Strategy7/run_strategy7.py \
   --train-start "${train_start}" \
   --train-end "${train_end}" \
@@ -93,8 +89,6 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python \
   --timing-model-run-mode load \
   --portfolio-model-run-mode train \
   --execution-model-run-mode train \
-  --stock-model-path "${stock_model_path}" \
-  --timing-model-path "${timing_model_path}" \
   --enable-next-bar-inference true \
   --inference-signal-ts "${infer_date}" \
   --inference-top-k "${STRATEGY7_INFERENCE_TOP_K:-50}" \
@@ -106,10 +100,30 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python \
   --slippage-bps "${STRATEGY7_SLIPPAGE_BPS:-1.5}" \
   --save-models false \
   --output-dir "${output_dir}"
+)
+
+if [[ -n "${stock_model_summary_json}" ]]; then
+  cmd+=(--stock-model-summary-json "${stock_model_summary_json}")
+else
+  cmd+=(--stock-models-load-dir "${stock_models_dir}")
+fi
+if [[ -n "${timing_model_summary_json}" ]]; then
+  cmd+=(--timing-model-summary-json "${timing_model_summary_json}")
+else
+  cmd+=(--timing-models-load-dir "${timing_models_dir}")
+fi
+if [[ -n "${stock_models_run_tag}" ]]; then
+  cmd+=(--stock-models-load-run-tag "${stock_models_run_tag}")
+fi
+if [[ -n "${timing_models_run_tag}" ]]; then
+  cmd+=(--timing-models-load-run-tag "${timing_models_run_tag}")
+fi
+
+"${cmd[@]}"
 
 echo
-echo "StockFormer model : ${stock_model_path}"
-echo "Timing model      : ${timing_model_path}"
+echo "Stock source      : ${stock_model_summary_json:-${stock_models_dir}}"
+echo "Timing source     : ${timing_model_summary_json:-${timing_models_dir}}"
 echo "Output directory  : ${output_dir}"
 
 latest_output() {
