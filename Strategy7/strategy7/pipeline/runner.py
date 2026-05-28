@@ -1188,7 +1188,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         factor_freq=factor_freq,
         factor_packages=str(getattr(cfg.factors, "factor_packages", "")),
         factor_list_arg=str(getattr(cfg.factors, "factor_list", "")),
-        load_hint_factor_cols=list(load_hint_factor_cols) if stock_model_load else [],
+        load_hint_factor_cols=list(load_hint_factor_cols) if any_component_load else [],
         factor_store_build_all=factor_store_build_all,
         has_custom_factor_module=bool(getattr(cfg.factors, "custom_factor_py", None)),
     )
@@ -1317,20 +1317,41 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         factor_list_arg=cfg.factors.factor_list,
         default_set=default_set,
     )
-    if stock_model_load and load_hint_factor_cols:
-        missing_hint = [c for c in load_hint_factor_cols if c not in set(factor_lib.names(factor_freq))]
+    factor_panel_cols = list(selected_factors)
+    factor_names_available = set(factor_lib.names(factor_freq))
+    if timing_load_hint_factor_cols:
+        missing_timing_hint = [c for c in timing_load_hint_factor_cols if c not in factor_names_available]
+        if missing_timing_hint:
+            raise RuntimeError(
+                "loaded timing model requires factors not available in current factor library: "
+                + ", ".join(missing_timing_hint[:20])
+                + (" ..." if len(missing_timing_hint) > 20 else "")
+            )
+    if stock_model_load and stock_load_hint_factor_cols:
+        missing_hint = [c for c in stock_load_hint_factor_cols if c not in factor_names_available]
         if missing_hint:
             raise RuntimeError(
                 "loaded stock model requires factors not available in current factor library: "
                 + ", ".join(missing_hint[:20])
                 + (" ..." if len(missing_hint) > 20 else "")
             )
-        selected_factors = list(load_hint_factor_cols)
+        selected_factors = list(stock_load_hint_factor_cols)
+        factor_panel_cols = _unique_str_list([*selected_factors, *timing_load_hint_factor_cols])
         log_progress(
             f"load 模式下按模型文件覆盖因子清单：factor_count={len(selected_factors)}。",
             module="pipeline",
         )
+    elif timing_load_hint_factor_cols:
+        factor_panel_cols = _unique_str_list([*selected_factors, *timing_load_hint_factor_cols])
+        if len(factor_panel_cols) > len(selected_factors):
+            log_progress(
+                "timing load 模式下已补充择时模型所需因子到面板计算清单："
+                f"extra_count={len(factor_panel_cols) - len(selected_factors)}。",
+                module="pipeline",
+            )
     log_progress(f"已选因子数量：{len(selected_factors)}。", module="pipeline")
+    if len(factor_panel_cols) != len(selected_factors):
+        log_progress(f"本次因子面板计算数量：{len(factor_panel_cols)}。", module="pipeline")
 
     run_meta_df = factor_lib.metadata(freq=factor_freq)
     run_meta_df, _ = _ensure_fundamental_factor_coverage(
@@ -1364,7 +1385,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         # "Build all" means every factor admitted by the current CLI filters
         # (`--factor-packages` / `--factor-list`). With no filters it still
         # expands to the full default list, preserving the original full-build use case.
-        all_factors = sorted(set([str(x) for x in selected_factors if str(x).strip()]))
+        all_factors = sorted(set([str(x) for x in factor_panel_cols if str(x).strip()]))
         log_progress(
             f"开始构建因子值缓存仓库（当前筛选清单）：freq={factor_freq}, factor_count={len(all_factors)}。",
             module="pipeline",
@@ -1400,7 +1421,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             base_df=base_df,
             library=factor_lib,
             freq=factor_freq,
-            selected_factors=selected_factors,
+            selected_factors=factor_panel_cols,
             store_root=factor_store_root,
             file_format=factor_store_fmt,
             factor_package_map=factor_package_map,
@@ -1409,7 +1430,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             io_workers=factor_store_workers,
         )
     else:
-        panel = compute_factor_panel(base_df=base_df, library=factor_lib, freq=factor_freq, selected_factors=selected_factors)
+        panel = compute_factor_panel(base_df=base_df, library=factor_lib, freq=factor_freq, selected_factors=factor_panel_cols)
     log_progress(f"因子面板计算完成：rows={len(panel)}, cols={len(panel.columns)}。", module="pipeline")
 
     # 6) Cross-sectional preprocessing (winsorize / zscore / optional neutralize).
@@ -1418,7 +1439,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     group_col = "date" if factor_freq in {"D", "W", "M"} else "datetime"
     if factor_freq in INTRADAY_FREQS and "datetime" in panel.columns:
         panel["datetime"] = pd.to_datetime(panel["datetime"], errors="coerce")
-    panel = apply_cross_section_pipeline(panel, selected_factors, pp_opt, group_col=group_col)
+    panel = apply_cross_section_pipeline(panel, factor_panel_cols, pp_opt, group_col=group_col)
     log_progress("截面预处理完成。", module="pipeline")
 
     # 7) Labeling and strict time-split.

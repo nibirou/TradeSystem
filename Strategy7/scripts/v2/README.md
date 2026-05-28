@@ -49,6 +49,7 @@
 | `run_strategy7_v2_30_train_lstm_madl_timing.ps1` | LSTM+MADL 择时融合训练模板 | 华福证券 LSTM 择时、MADL 损失、动态组合、真实执行 |
 | `run_strategy7_v2_31_mixed_component_modes.ps1` | 四类模型混合 train/load 模板 | 选股 train、择时从组件 models 目录 load、组合 train、执行从组件 models 目录 load |
 | `run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh` | StockFormer+LSTM 择时指定日快速推理 | 通过组件 models 目录/summary 加载 v2_27 选股模型、v2_30 择时模型；因子列按 artifact 需求自动构建 |
+| `run_strategy7_v2_33_load_stockformer_infer_day.sh` | StockFormer 指定日快速推理 | 单独加载 v2_27 StockFormer；默认使用长历史上下文和未来标签缓冲，避免短窗口空样本 |
 
 ## 2) 挖掘入口模板（run_factor_mining.py）
 
@@ -84,6 +85,7 @@
 | LSTM+MADL 择时叠加选股 | `run_strategy7_v2_30_train_lstm_madl_timing.ps1` |
 | 四类模型独立 train/load 控制 | `run_strategy7_v2_31_mixed_component_modes.ps1` |
 | 加载 StockFormer + LSTM 择时做指定日选股推理 | `run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh` |
+| 单独加载 StockFormer 做指定日选股推理 | `run_strategy7_v2_33_load_stockformer_infer_day.sh` |
 | DTLC_RL 解耦时序对比强化学习选股 | `run_strategy7_v2_28_train_dtlc_rl_smoke.ps1`、`run_strategy7_v2_29_train_dtlc_rl.ps1` |
 | 频率扩展验证（30min/W/M） | `run_strategy7_v2_13_train_30min_intraday_realistic.ps1`、`run_strategy7_v2_12_train_weekly_volatility.ps1`、`run_strategy7_v2_18_train_monthly_multitask_catalog_off.ps1` |
 | 数据裁剪实验（price-only / 主板） | `run_strategy7_v2_14_train_price_only_mainboard.ps1`、`run_factor_mining_v2_11_price_only_mainboard_all.ps1` |

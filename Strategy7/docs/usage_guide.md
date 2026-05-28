@@ -393,7 +393,7 @@ python Strategy7/run_strategy7.py `
 
 `load` 模式参数冲突与约束：
 
-1. 选股模型 `load` 会优先读取 artifact 中保存的 `factor_cols`，并用这些列覆盖当前 `--factor-packages/--factor-list` 解析出的选股特征；择时 LSTM `load` 会提前读取 checkpoint 中的 `extra_cols`，并把这些额外因子加入当期面板构建。
+1. 内置选股模型 `load` 会优先读取 artifact 中保存的 `factor_cols`，并用这些列覆盖当前 `--factor-packages/--factor-list` 解析出的选股特征；择时 LSTM `load` 会提前读取 checkpoint 中的 `extra_cols/feature_cols`，并把这些额外因子加入当期面板构建。组合优化/交易执行模型不直接消费横截面 `factor_cols`；自定义模型若依赖固定特征列，需要在 artifact 或插件 `peek_factor_cols()` 中显式暴露。
 2. 来源 summary 可解析时会做配置一致性诊断：
    - `stock_model` 的 `factor_freq/label_task/horizon` 必须与当前运行一致，否则阻断，避免用错训练语义。
    - `timing_model` 的 `factor_freq` 必须一致；`horizon/label_task/factor_packages/FE` 不一致时会记录告警，因为择时 checkpoint 自带网络参数、特征标准化和历史状态，当前配置主要用于构建当期推理面板。
@@ -494,6 +494,15 @@ python Strategy7/run_strategy7.py `
 1. `--enable-next-bar-inference true`：开启
 2. `--inference-signal-ts`：指定推理信号日/时间；为空时使用当前加载面板中的最新时点
 3. `--inference-top-k`：输出候选数量（按 `pred_score` 排序）
+
+注意：即使四类模型处于 `load` 模式，`--train-start/--train-end/--test-start/--test-end` 仍然定义“本次运行加载和切分的数据窗口”，不会被模型来源 summary 的训练/测试日期覆盖。当前主入口仍会执行标签生成和测试集切分，因此历史指定日推理时，`test_end` 需要比 `inference-signal-ts` 至少多覆盖 `horizon + 1` 个可交易 bar；`train_start~train_end` 建议作为模型历史上下文窗口保留足够长（StockFormer 日频建议数百个自然日），否则会出现 `train set is empty` / `test set is empty`，或导致序列模型历史 bootstrap 不充分。
+
+同一天同一因子的处理稳定性：
+
+1. 截面 winsor/zscore 是按当日截面计算，通常不受训练起止日期影响，但会受当日股票池/数据缺失影响。
+2. 滚动因子依赖加载窗口前置历史，`lookback-days` 太短会改变同日滚动值或产生 NaN。
+3. `load` 选股模型会使用 artifact 中保存的最终 `factor_cols` 和模型侧缺失值填充值；不要在快速推理中用短窗口 `refit` FE。
+4. 若需要严格复现来源 FE，使用 `--load-fe-mode strict`；非 PCA FE 会按来源 selected_factors 回放，PCA FE 当前会阻断。
 
 示例：
 
