@@ -93,6 +93,86 @@ def _safe_trade_dates_from_panel(panel: pd.DataFrame, factor_freq: str) -> pd.Da
     return pd.DatetimeIndex([])
 
 
+def _slice_next_bar_only_frames(
+    *,
+    panel: pd.DataFrame,
+    factor_freq: str,
+    cfg: RunConfig,
+) -> tuple[pd.DataFrame, pd.DataFrame, Dict[str, object]]:
+    """Split load-mode specified-signal inference without requiring future labels."""
+
+    if panel.empty:
+        return pd.DataFrame(), pd.DataFrame(), {"mode": "next_bar_only", "status": "empty_panel"}
+
+    time_col = "date" if factor_freq in {"D", "W", "M"} else "datetime"
+    if time_col not in panel.columns:
+        raise RuntimeError(f"next-bar only inference requires time column: {time_col}")
+    if "code" not in panel.columns:
+        raise RuntimeError("next-bar only inference requires code column.")
+
+    scoped = panel.copy()
+    scoped["_signal_time"] = pd.to_datetime(scoped[time_col], errors="coerce")
+    scoped = scoped.dropna(subset=["_signal_time", "code"]).copy()
+    if scoped.empty:
+        return pd.DataFrame(), pd.DataFrame(), {"mode": "next_bar_only", "status": "no_valid_signal_rows"}
+
+    train_start = pd.Timestamp(cfg.dates.train_start)
+    train_end = pd.Timestamp(cfg.dates.train_end)
+    signal_time = scoped["_signal_time"]
+    if factor_freq in {"D", "W", "M"} or train_end == train_end.normalize():
+        train_cmp = signal_time.dt.normalize()
+        train_mask = (train_cmp >= train_start.normalize()) & (train_cmp <= train_end.normalize())
+    else:
+        train_mask = (signal_time >= train_start) & (signal_time <= train_end)
+    train_df = scoped.loc[train_mask].drop(columns=["_signal_time"]).copy()
+
+    requested_raw = str(getattr(cfg.model_run, "inference_signal_ts", "") or "").strip()
+    requested_signal = pd.to_datetime(requested_raw, errors="coerce")
+    if requested_raw and pd.isna(requested_signal):
+        raise RuntimeError(f"invalid inference_signal_ts: {requested_raw}")
+    if not requested_raw:
+        requested_signal = pd.Timestamp(signal_time.max())
+    requested_signal = pd.Timestamp(requested_signal)
+
+    if factor_freq in {"D", "W", "M"}:
+        selected_signal = requested_signal.normalize()
+        inference_mask = signal_time.dt.normalize() == selected_signal
+    else:
+        if requested_signal == requested_signal.normalize():
+            day_mask = signal_time.dt.normalize() == requested_signal.normalize()
+            day_df = scoped.loc[day_mask].copy()
+            if day_df.empty:
+                selected_signal = requested_signal
+                inference_mask = day_mask
+            else:
+                selected_signal = pd.Timestamp(day_df["_signal_time"].max())
+                inference_mask = signal_time == selected_signal
+        else:
+            selected_signal = requested_signal
+            inference_mask = signal_time == selected_signal
+
+    test_df = scoped.loc[inference_mask].drop(columns=["_signal_time"]).copy()
+    if factor_freq in {"D", "W", "M"}:
+        train_time = pd.to_datetime(train_df[time_col], errors="coerce").dt.normalize()
+        train_df = train_df.loc[train_time < selected_signal.normalize()].copy()
+    else:
+        train_time = pd.to_datetime(train_df[time_col], errors="coerce")
+        train_df = train_df.loc[train_time < selected_signal].copy()
+    meta: Dict[str, object] = {
+        "mode": "next_bar_only",
+        "status": "ok" if not train_df.empty and not test_df.empty else "empty_slice",
+        "requested_signal_ts": requested_raw,
+        "resolved_signal_ts": str(selected_signal),
+        "train_start": str(train_start),
+        "train_end": str(train_end),
+        "history_strictly_before_signal": True,
+        "train_rows": int(len(train_df)),
+        "inference_rows": int(len(test_df)),
+        "labels_required": False,
+    }
+    return train_df, test_df, meta
+
+
 def _profile_market_frame(
     frame: pd.DataFrame,
     *,
@@ -854,6 +934,17 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     load_fe_mode = str(getattr(cfg.model_run, "load_fe_mode", "refit")).strip().lower()
     if load_fe_mode not in {"strict", "refit", "off"}:
         load_fe_mode = "refit"
+    next_bar_only_mode = bool(
+        stock_model_load
+        and bool(getattr(cfg.model_run, "enable_next_bar_inference", False))
+        and str(getattr(cfg.model_run, "inference_signal_ts", "") or "").strip()
+    )
+    if next_bar_only_mode:
+        log_progress(
+            "检测到 stock load + 指定 inference_signal_ts：启用指定日纯推理模式，"
+            "将跳过未来标签、历史回测和 IC 诊断。",
+            module="pipeline",
+        )
     load_source_args = [
         "model_summary_json",
         "models_load_dir",
@@ -1517,49 +1608,68 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     panel = apply_cross_section_pipeline(panel, factor_panel_cols, pp_opt, group_col=group_col)
     log_progress("截面预处理完成。", module="pipeline")
 
+    target_col = pick_target_column(cfg.factors.label_task)
     # 7) Labeling and strict time-split.
     # split_train_test enforces target-date boundaries to avoid look-ahead leakage.
-    log_progress("步骤 7/13：生成标签并按时间严格切分训练/测试集。", module="pipeline")
-    panel = add_labels(
-        panel=panel,
-        horizon=cfg.backtest.horizon,
-        execution_scheme=cfg.backtest.execution_scheme,
-        price_table_daily=feat_bundle.price_table_daily,
-        factor_freq=factor_freq,
-    )
-    label_align = validate_label_frequency_alignment(
-        panel=panel,
-        factor_freq=factor_freq,
-        horizon=int(cfg.backtest.horizon),
-        strict=True,
-    )
-    log_progress(
-        (
-            "标签频率/持有期对齐校验通过："
-            f"bad_signal_time={int(label_align.get('bad_signal_time', 0))}, "
-            f"bad_time_order={int(label_align.get('bad_time_order', 0))}, "
-            f"bad_entry_shift={int(label_align.get('bad_entry_shift', 0))}, "
-            f"bad_exit_shift={int(label_align.get('bad_exit_shift', 0))}。"
-        ),
-        module="pipeline",
-        level="debug",
-    )
+    if next_bar_only_mode:
+        log_progress("步骤 7/13：指定日纯推理模式，跳过未来标签并切出历史上下文/推理截面。", module="pipeline")
+        train_df, test_df, label_align = _slice_next_bar_only_frames(panel=panel, factor_freq=factor_freq, cfg=cfg)
+        if train_df.empty:
+            raise RuntimeError(
+                "training context is empty for next-bar only inference; "
+                "please extend --train-start/--train-end or --lookback-days."
+            )
+        if test_df.empty:
+            raise RuntimeError(
+                "inference slice is empty for --inference-signal-ts; "
+                "please check the requested date/time and loaded data window."
+            )
+        log_progress(
+            f"指定日纯推理切片完成：history_rows={len(train_df)}, inference_rows={len(test_df)}, "
+            f"signal_ts={label_align.get('resolved_signal_ts', '')}。",
+            module="pipeline",
+        )
+    else:
+        log_progress("步骤 7/13：生成标签并按时间严格切分训练/测试集。", module="pipeline")
+        panel = add_labels(
+            panel=panel,
+            horizon=cfg.backtest.horizon,
+            execution_scheme=cfg.backtest.execution_scheme,
+            price_table_daily=feat_bundle.price_table_daily,
+            factor_freq=factor_freq,
+        )
+        label_align = validate_label_frequency_alignment(
+            panel=panel,
+            factor_freq=factor_freq,
+            horizon=int(cfg.backtest.horizon),
+            strict=True,
+        )
+        log_progress(
+            (
+                "标签频率/持有期对齐校验通过："
+                f"bad_signal_time={int(label_align.get('bad_signal_time', 0))}, "
+                f"bad_time_order={int(label_align.get('bad_time_order', 0))}, "
+                f"bad_entry_shift={int(label_align.get('bad_entry_shift', 0))}, "
+                f"bad_exit_shift={int(label_align.get('bad_exit_shift', 0))}。"
+            ),
+            module="pipeline",
+            level="debug",
+        )
 
-    train_df, test_df = split_train_test(
-        panel=panel,
-        train_start=cfg.dates.train_start,
-        train_end=cfg.dates.train_end,
-        test_start=cfg.dates.test_start,
-        test_end=cfg.dates.test_end,
-        factor_freq=factor_freq,
-        label_task=cfg.factors.label_task,
-    )
-    if train_df.empty:
-        raise RuntimeError("training set is empty.")
-    if test_df.empty:
-        raise RuntimeError("test set is empty.")
-    log_progress(f"样本切分完成：train_rows={len(train_df)}, test_rows={len(test_df)}。", module="pipeline")
-    target_col = pick_target_column(cfg.factors.label_task)
+        train_df, test_df = split_train_test(
+            panel=panel,
+            train_start=cfg.dates.train_start,
+            train_end=cfg.dates.train_end,
+            test_start=cfg.dates.test_start,
+            test_end=cfg.dates.test_end,
+            factor_freq=factor_freq,
+            label_task=cfg.factors.label_task,
+        )
+        if train_df.empty:
+            raise RuntimeError("training set is empty.")
+        if test_df.empty:
+            raise RuntimeError("test set is empty.")
+        log_progress(f"样本切分完成：train_rows={len(train_df)}, test_rows={len(test_df)}。", module="pipeline")
     raw_train_df = train_df[[c for c in selected_factors if c in train_df.columns]].copy()
     panel_for_scoring = panel.copy()
 
@@ -1836,11 +1946,15 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     )
 
     # 10) Generate predictions and model-level metrics.
-    log_progress("步骤 10/13：生成测试集预测并计算模型指标。", module="pipeline")
+    log_progress("步骤 10/13：生成测试/推理截面预测并计算模型指标。", module="pipeline")
     test_df = test_df.copy()
+    if next_bar_only_mode and "signal_ts" not in test_df.columns:
+        time_col = "date" if factor_freq in {"D", "W", "M"} else "datetime"
+        if time_col in test_df.columns:
+            test_df["signal_ts"] = pd.to_datetime(test_df[time_col], errors="coerce")
     test_df["pred_score"] = stock_model.predict_score(test_df, selected_factors)
     test_df["pred_up"] = (test_df["pred_score"] >= cfg.backtest.long_threshold).astype(int)
-    if "entry_price" in test_df.columns and "exit_price" in test_df.columns:
+    if not next_bar_only_mode and "entry_price" in test_df.columns and "exit_price" in test_df.columns:
         test_df["gross_trade_ret"] = test_df["exit_price"] / (test_df["entry_price"] + 1e-12) - 1.0
         test_df["net_trade_ret"] = calc_trade_return(
             test_df["entry_price"],
@@ -1848,42 +1962,59 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             fee_bps=cfg.backtest.fee_bps,
             slippage_bps=cfg.backtest.slippage_bps,
         )
-    model_metrics = evaluate_selection_model(
-        target=test_df[target_col],
-        pred_score=test_df["pred_score"],
-        threshold=cfg.backtest.long_threshold,
-    )
-    log_progress("模型指标计算完成。", module="pipeline")
+    if next_bar_only_mode:
+        model_metrics = {
+            "status": "skipped_next_bar_only",
+            "reason": "specified-date load inference does not generate future labels",
+            "inference_rows": int(len(test_df)),
+        }
+        log_progress("指定日纯推理模式：已生成预测，跳过标签指标。", module="pipeline")
+    else:
+        model_metrics = evaluate_selection_model(
+            target=test_df[target_col],
+            pred_score=test_df["pred_score"],
+            threshold=cfg.backtest.long_threshold,
+        )
+        log_progress("模型指标计算完成。", module="pipeline")
     next_bar_candidates_df = pd.DataFrame()
     next_bar_summary: Dict[str, object] = {"enabled": bool(getattr(cfg.model_run, "enable_next_bar_inference", False))}
 
-    log_progress("加载指数基准数据。", module="pipeline")
-    index_benchmarks = load_index_benchmark_data(
-        index_root=Path(cfg.data.index_root),
-        start_date=market_bundle.start_date,
-        end_date=market_bundle.end_date,
-        file_format=cfg.data.file_format,
-    )
-    log_progress("指数基准加载完成。", module="pipeline")
-
     # 11) Run backtest engine (timing + portfolio + execution).
-    log_progress("步骤 11/13：执行回测引擎。", module="pipeline")
-    trades_df, positions_df, curve_df, bt_summary = run_backtest(
-        pred_df=test_df,
-        backtest_cfg=cfg.backtest,
-        factor_freq=factor_freq,
-        timing_model=timing_model,
-        portfolio_model=portfolio_model,
-        execution_model=execution_model,
-        index_benchmarks=index_benchmarks,
-    )
-    log_progress(
-        f"回测完成：trades={len(trades_df)}, positions={len(positions_df)}, curve_rows={len(curve_df)}。",
-        module="pipeline",
-    )
-    if bool(getattr(cfg.model_run, "enable_next_bar_inference", False)):
-        log_progress("执行 next bar 快速推理。", module="pipeline")
-        prev_weights_for_infer: Dict[str, float] = {}
+    prev_weights_for_infer: Dict[str, float] = {}
+    if next_bar_only_mode:
+        log_progress("步骤 11/13：指定日纯推理模式，跳过历史回测引擎。", module="pipeline")
+        index_benchmarks = {}
+        trades_df = pd.DataFrame()
+        positions_df = pd.DataFrame()
+        curve_df = pd.DataFrame()
+        bt_summary = {
+            "status": "skipped_next_bar_only",
+            "reason": "specified-date load inference does not require future entry/exit labels",
+        }
+    else:
+        log_progress("加载指数基准数据。", module="pipeline")
+        index_benchmarks = load_index_benchmark_data(
+            index_root=Path(cfg.data.index_root),
+            start_date=market_bundle.start_date,
+            end_date=market_bundle.end_date,
+            file_format=cfg.data.file_format,
+        )
+        log_progress("指数基准加载完成。", module="pipeline")
+
+        log_progress("步骤 11/13：执行回测引擎。", module="pipeline")
+        trades_df, positions_df, curve_df, bt_summary = run_backtest(
+            pred_df=test_df,
+            backtest_cfg=cfg.backtest,
+            factor_freq=factor_freq,
+            timing_model=timing_model,
+            portfolio_model=portfolio_model,
+            execution_model=execution_model,
+            index_benchmarks=index_benchmarks,
+        )
+        log_progress(
+            f"回测完成：trades={len(trades_df)}, positions={len(positions_df)}, curve_rows={len(curve_df)}。",
+            module="pipeline",
+        )
         if not positions_df.empty and "signal_ts" in positions_df.columns and "executed_weight" in positions_df.columns:
             last_signal = pd.to_datetime(positions_df["signal_ts"], errors="coerce").max()
             if pd.notna(last_signal):
@@ -1894,6 +2025,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
                         for code, w in tail_pos[["code", "executed_weight"]].itertuples(index=False, name=None)
                         if float(w) > 1e-8
                     }
+    if bool(getattr(cfg.model_run, "enable_next_bar_inference", False)):
+        log_progress("执行 next bar 快速推理。", module="pipeline")
         next_bar_candidates_df, next_bar_summary = _build_next_bar_inference(
             panel_df=panel_for_scoring,
             factor_freq=factor_freq,
@@ -1929,42 +2062,62 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     max_cs = int(cs_counts.max()) if not cs_counts.empty else 0
     effective_min_cs = max(2, min(requested_min_cs, max_cs)) if max_cs >= 2 else requested_min_cs
 
-    factor_ic_summary_df, factor_ic_series_df = compute_factor_ic_statistics(
-        pred_df=test_df,
-        factor_cols=selected_factors,
-        ret_col="future_ret_n",
-        min_cross_section=effective_min_cs,
-        group_col=ic_group_col,
-        periods_per_year=ic_periods_per_year,
-        eval_stride=eval_stride,
-        constant_as_zero=True,
-    )
-    model_ic_series_df = calc_ic_for_column(
-        test_df,
-        score_col="pred_score",
-        ret_col="future_ret_n",
-        min_cross_section=effective_min_cs,
-        group_col=ic_group_col,
-        eval_stride=eval_stride,
-        constant_as_zero=True,
-    )
-    model_ic_summary = summarize_ic(model_ic_series_df, periods_per_year=ic_periods_per_year)
-    model_ic_summary["eval_mode"] = eval_mode
-    model_ic_summary["eval_stride"] = float(eval_stride)
-    model_ic_summary["min_cross_section_requested"] = float(requested_min_cs)
-    model_ic_summary["min_cross_section_effective"] = float(effective_min_cs)
-    model_ic_summary["group_count_total"] = float(len(cs_counts))
-    model_ic_summary["group_count_used"] = float(len(model_ic_series_df))
-    score_spread = compute_score_spread(
-        test_df,
-        score_col="pred_score",
-        ret_col="future_ret_n",
-        quantiles=5,
-        group_col=ic_group_col,
-        periods_per_year=ic_periods_per_year,
-        eval_stride=eval_stride,
-    )
-    log_progress("IC 诊断计算完成。", module="pipeline")
+    if next_bar_only_mode:
+        factor_ic_summary_df = pd.DataFrame()
+        factor_ic_series_df = pd.DataFrame()
+        model_ic_series_df = pd.DataFrame()
+        model_ic_summary = {
+            "status": "skipped_next_bar_only",
+            "reason": "specified-date load inference does not generate future_ret_n",
+            "eval_mode": eval_mode,
+            "eval_stride": float(eval_stride),
+            "min_cross_section_requested": float(requested_min_cs),
+            "min_cross_section_effective": float(effective_min_cs),
+            "group_count_total": float(len(cs_counts)),
+            "group_count_used": 0.0,
+        }
+        score_spread = {
+            "status": "skipped_next_bar_only",
+            "reason": "specified-date load inference does not generate future_ret_n",
+        }
+        log_progress("指定日纯推理模式：跳过 IC 诊断与分层分位统计。", module="pipeline")
+    else:
+        factor_ic_summary_df, factor_ic_series_df = compute_factor_ic_statistics(
+            pred_df=test_df,
+            factor_cols=selected_factors,
+            ret_col="future_ret_n",
+            min_cross_section=effective_min_cs,
+            group_col=ic_group_col,
+            periods_per_year=ic_periods_per_year,
+            eval_stride=eval_stride,
+            constant_as_zero=True,
+        )
+        model_ic_series_df = calc_ic_for_column(
+            test_df,
+            score_col="pred_score",
+            ret_col="future_ret_n",
+            min_cross_section=effective_min_cs,
+            group_col=ic_group_col,
+            eval_stride=eval_stride,
+            constant_as_zero=True,
+        )
+        model_ic_summary = summarize_ic(model_ic_series_df, periods_per_year=ic_periods_per_year)
+        model_ic_summary["eval_mode"] = eval_mode
+        model_ic_summary["eval_stride"] = float(eval_stride)
+        model_ic_summary["min_cross_section_requested"] = float(requested_min_cs)
+        model_ic_summary["min_cross_section_effective"] = float(effective_min_cs)
+        model_ic_summary["group_count_total"] = float(len(cs_counts))
+        model_ic_summary["group_count_used"] = float(len(model_ic_series_df))
+        score_spread = compute_score_spread(
+            test_df,
+            score_col="pred_score",
+            ret_col="future_ret_n",
+            quantiles=5,
+            group_col=ic_group_col,
+            periods_per_year=ic_periods_per_year,
+            eval_stride=eval_stride,
+        )
+        log_progress("IC 诊断计算完成。", module="pipeline")
 
     # 13) Persist artifacts and summarize run.
     log_progress("步骤 13/13：写出产物文件与 summary。", module="pipeline")
@@ -2018,14 +2171,17 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
 
     plot_main_path = output_dir / f"backtest_curve_main_{run_tag}.png"
     plot_excess_path = output_dir / f"backtest_curve_excess_{run_tag}.png"
-    plot_status = plot_backtest_curves(
-        curve_df=curve_df,
-        output_main_png=plot_main_path,
-        output_excess_png=plot_excess_path,
-        title_prefix=f"Strategy7 ({factor_freq}, {cfg.backtest.execution_scheme})",
-    )
-    files["backtest_main_plot_png"] = plot_main_path
-    files["backtest_excess_plot_png"] = plot_excess_path
+    if next_bar_only_mode:
+        plot_status = {"main": False, "excess": False, "skipped_next_bar_only": True}
+    else:
+        plot_status = plot_backtest_curves(
+            curve_df=curve_df,
+            output_main_png=plot_main_path,
+            output_excess_png=plot_excess_path,
+            title_prefix=f"Strategy7 ({factor_freq}, {cfg.backtest.execution_scheme})",
+        )
+        files["backtest_main_plot_png"] = plot_main_path
+        files["backtest_excess_plot_png"] = plot_excess_path
     next_bar_candidates_path: Path | None = None
     if bool(getattr(cfg.model_run, "enable_next_bar_inference", False)) and not next_bar_candidates_df.empty:
         next_bar_candidates_path = output_dir / f"next_bar_candidates_{run_tag}.csv"
@@ -2050,9 +2206,18 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
     top_factors = factor_ic_summary_df.head(10).copy() if not factor_ic_summary_df.empty else pd.DataFrame()
     next_bar_summary_path: Path | None = None
     if bool(getattr(cfg.model_run, "enable_next_bar_inference", False)):
+        next_bar_summary["next_bar_only_mode"] = bool(next_bar_only_mode)
         next_bar_summary_path = output_dir / f"next_bar_summary_{run_tag}.json"
         dump_json(next_bar_summary_path, next_bar_summary)
         files["next_bar_summary_json"] = next_bar_summary_path
+    no_future_note = (
+        "next-bar only load inference skips future labels/backtest/IC; factor features only use current/past information."
+        if next_bar_only_mode
+        else (
+            "factor features only use current/past information; labels use shifted future window;"
+            "train/test split constrained by signal timestamps and target end timestamps."
+        )
+    )
     summary = {
         "config": cfg.to_dict(),
         "sample_count": {
@@ -2083,10 +2248,9 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             "model_files": model_files,
         },
         "notes": {
-            "no_future_leakage": (
-                "factor features only use current/past information; labels use shifted future window;"
-                "train/test split constrained by signal timestamps and target end timestamps."
-            ),
+            "no_future_leakage": no_future_note,
+            "next_bar_only_mode": bool(next_bar_only_mode),
+            "label_alignment_or_inference_slice": dict(label_align),
             "feature_fill_method": pp_opt.fill_method,
             "feature_fill_fit_scope": "train_only",
             "feature_engineering_requested": bool(getattr(cfg.factors, "enable_factor_engineering", False)),

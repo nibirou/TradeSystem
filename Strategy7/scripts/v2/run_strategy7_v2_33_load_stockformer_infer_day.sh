@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${infer_date}" ]]; then
-  echo "Usage: bash Strategy7/scripts/v2/run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh --infer-date YYYY-MM-DD [--stock-models-load-dir <models_dir>] [--timing-models-load-dir <models_dir>]" >&2
+  echo "Usage: bash Strategy7/scripts/v2/run_strategy7_v2_33_load_stockformer_infer_day.sh --infer-date YYYY-MM-DD [--stock-models-load-dir <models_dir>]" >&2
   exit 2
 fi
 
@@ -39,12 +39,12 @@ fi
 output_dir="${repo_root}/Strategy7/outputs/run_strategy7_v2_33_load_stockformer_infer_${infer_date//[^0-9]/}"
 mkdir -p "${output_dir}"
 
-test_end="${STRATEGY7_TEST_END:-2025-01-30}"
-train_start="${STRATEGY7_TRAIN_START:-2025-01-01}"
-train_end="${STRATEGY7_TRAIN_END:-2025-01-15}"
+test_end="${STRATEGY7_TEST_END:-${infer_date}}"
+train_start="${STRATEGY7_TRAIN_START:-2024-01-01}"
+train_end="${STRATEGY7_TRAIN_END:-2024-12-31}"
 
 cmd=(
-python3
+conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python
   ./Strategy7/run_strategy7.py \
   --train-start "${train_start}" \
   --train-end "${train_end}" \
@@ -54,7 +54,7 @@ python3
   --data-root auto \
   --index-root "${quant_root}/data_baostock/ak_index" \
   --factor-freq "${STRATEGY7_FACTOR_FREQ:-D}" \
-  --lookback-days 30 \
+  --lookback-days "${STRATEGY7_LOOKBACK_DAYS:-252}" \
   --disable-text-data \
   --label-task return \
   --data-load-workers "${STRATEGY7_DATA_LOAD_WORKERS:-8}" \
@@ -62,7 +62,7 @@ python3
   --factor-value-store-root auto \
   --factor-value-store-format csv \
   --factor-value-store-workers "${STRATEGY7_FACTOR_STORE_WORKERS:-8}" \
-  --enable-factor-engineering true \
+  --enable-factor-engineering false \
   --stock-model-run-mode load \
   --stock-model-type stockformer \
   --timing-model-type none \
@@ -82,11 +82,13 @@ if [[ -n "${stock_model_summary_json}" ]]; then
 else
   cmd+=(--stock-models-load-dir "${stock_models_dir}")
 fi
+if [[ -n "${stock_models_run_tag}" ]]; then
+  cmd+=(--stock-models-load-run-tag "${stock_models_run_tag}")
+fi
 "${cmd[@]}"
 
 echo
 echo "Stock source      : ${stock_model_summary_json:-${stock_models_dir}}"
-echo "Timing source     : ${timing_model_summary_json:-${timing_models_dir}}"
 echo "Output directory  : ${output_dir}"
 
 latest_output() {

@@ -56,7 +56,7 @@ fi
 output_dir="${repo_root}/Strategy7/outputs/run_strategy7_32_load_stockformer_lstm_infer_${infer_date//[^0-9]/}"
 mkdir -p "${output_dir}"
 
-test_end="${STRATEGY7_TEST_END:-2025-12-31}"
+test_end="${STRATEGY7_TEST_END:-${infer_date}}"
 train_start="${STRATEGY7_TRAIN_START:-2024-01-01}"
 train_end="${STRATEGY7_TRAIN_END:-2024-12-31}"
 

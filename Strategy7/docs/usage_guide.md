@@ -501,7 +501,9 @@ python Strategy7/run_strategy7.py `
 2. `--inference-signal-ts`：指定推理信号日/时间；为空时使用当前加载面板中的最新时点
 3. `--inference-top-k`：输出候选数量（按 `pred_score` 排序）
 
-注意：即使四类模型处于 `load` 模式，`--train-start/--train-end/--test-start/--test-end` 仍然定义“本次运行加载和切分的数据窗口”，不会被模型来源 summary 的训练/测试日期覆盖。当前主入口仍会执行标签生成和测试集切分，因此历史指定日推理时，`test_end` 需要比 `inference-signal-ts` 至少多覆盖 `horizon + 1` 个可交易 bar；`train_start~train_end` 建议作为模型历史上下文窗口保留足够长（StockFormer 日频建议数百个自然日），否则会出现 `train set is empty` / `test set is empty`，或导致序列模型历史 bootstrap 不充分。
+注意：即使四类模型处于 `load` 模式，`--train-start/--train-end/--test-start/--test-end` 仍然定义“本次运行加载的数据窗口”，不会被模型来源 summary 的训练/测试日期覆盖。若满足 `stock_model=load`、`--enable-next-bar-inference true` 且显式设置 `--inference-signal-ts`，主流程会进入“指定日纯推理模式”：只切出 `train_start~train_end` 中严格早于推理信号时点的样本作为当前运行历史上下文，并切出 `inference-signal-ts` 当日/当时点作为推理截面；不会生成未来标签，也不会执行历史回测、IC、分层收益诊断。因此 `test_end` 可以设置为 `inference-signal-ts` 当日或非常接近的日期，不再需要额外覆盖 `horizon + 1` 个未来交易 bar。
+
+如果没有进入指定日纯推理模式（例如训练模式、未指定 `--inference-signal-ts`、或需要完整历史回测），主入口仍会执行标签生成和严格测试集切分，此时 `test_end` 需要比测试信号日多覆盖至少 `horizon + 1` 个可交易 bar。无论哪种模式，`train_start~train_end` 与 `lookback-days` 都建议保留足够长：它们提供滚动因子、序列模型历史 bootstrap、缺失值填充值等当前运行上下文；StockFormer 日频推理通常建议至少数百个自然日。
 
 同一天同一因子的处理稳定性：
 
