@@ -6,15 +6,37 @@ repo_root="$(cd "${script_dir}/../../.." && pwd)"
 quant_root="${QUANT_ROOT:-$(cd "${repo_root}/.." && pwd)}"
 cd "${repo_root}"
 
-infer_date="2025-01-16"
+infer_dates=()
+default_infer_dates="${STRATEGY7_INFER_DATES:-2025-01-16}"
 stock_model_summary_json=""
 stock_models_dir="${repo_root}/Strategy7/outputs/run_strategy7_27_train_stockformer/models"
 stock_models_run_tag=""
 
+append_infer_dates() {
+  local expr="$1"
+  expr="${expr//;/,}"
+  expr="${expr#\[}"
+  expr="${expr%\]}"
+  local parts=()
+  IFS=',' read -r -a parts <<< "${expr}"
+  local raw item
+  for raw in "${parts[@]}"; do
+    item="${raw#"${raw%%[![:space:]]*}"}"
+    item="${item%"${item##*[![:space:]]}"}"
+    item="${item#\"}"; item="${item%\"}"
+    item="${item#\'}"; item="${item%\'}"
+    if [[ -n "${item}" ]]; then
+      infer_dates+=("${item}")
+    fi
+  done
+}
+
 while [[ $# -gt 0 ]]; do
   case "$1" in
     --infer-date)
-      infer_date="$2"; shift 2 ;;
+      append_infer_dates "$2"; shift 2 ;;
+    --infer-dates)
+      append_infer_dates "$2"; shift 2 ;;
     --stock-model-summary-json)
       stock_model_summary_json="$2"; shift 2 ;;
     --stock-models-load-dir)
@@ -26,9 +48,23 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
-if [[ -z "${infer_date}" ]]; then
-  echo "Usage: bash Strategy7/scripts/v2/run_strategy7_v2_33_load_stockformer_infer_day.sh --infer-date YYYY-MM-DD [--stock-models-load-dir <models_dir>]" >&2
+if [[ ${#infer_dates[@]} -eq 0 ]]; then
+  append_infer_dates "${default_infer_dates}"
+fi
+if [[ ${#infer_dates[@]} -eq 0 ]]; then
+  echo "Usage: bash Strategy7/scripts/v2/run_strategy7_v2_33_load_stockformer_infer_day.sh --infer-date YYYY-MM-DD [--infer-dates YYYY-MM-DD,YYYY-MM-DD] [--stock-models-load-dir <models_dir>]" >&2
   exit 2
+fi
+mapfile -t infer_dates < <(printf '%s\n' "${infer_dates[@]}" | awk 'NF && !seen[$0]++')
+mapfile -t sorted_infer_dates < <(printf '%s\n' "${infer_dates[@]}" | sort)
+first_infer_date="${sorted_infer_dates[0]}"
+last_idx=$((${#sorted_infer_dates[@]} - 1))
+last_infer_date="${sorted_infer_dates[$last_idx]}"
+infer_dates_csv="$(IFS=,; echo "${infer_dates[*]}")"
+if [[ ${#infer_dates[@]} -eq 1 ]]; then
+  infer_tag="${first_infer_date//[^0-9A-Za-z]/}"
+else
+  infer_tag="${first_infer_date//[^0-9A-Za-z]/}_${last_infer_date//[^0-9A-Za-z]/}_n${#infer_dates[@]}"
 fi
 
 if [[ -z "${stock_model_summary_json}" && ! -d "${stock_models_dir}" ]]; then
@@ -36,10 +72,11 @@ if [[ -z "${stock_model_summary_json}" && ! -d "${stock_models_dir}" ]]; then
   exit 2
 fi
 
-output_dir="${repo_root}/Strategy7/outputs/run_strategy7_v2_33_load_stockformer_infer_${infer_date//[^0-9]/}"
+output_dir="${repo_root}/Strategy7/outputs/run_strategy7_v2_33_load_stockformer_infer_${infer_tag}"
 mkdir -p "${output_dir}"
 
-test_end="${STRATEGY7_TEST_END:-${infer_date}}"
+test_start="${STRATEGY7_TEST_START:-${first_infer_date}}"
+test_end="${STRATEGY7_TEST_END:-${last_infer_date}}"
 train_start="${STRATEGY7_TRAIN_START:-2024-01-01}"
 train_end="${STRATEGY7_TRAIN_END:-2024-12-31}"
 
@@ -48,7 +85,7 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python
   ./Strategy7/run_strategy7.py \
   --train-start "${train_start}" \
   --train-end "${train_end}" \
-  --test-start "${infer_date}" \
+  --test-start "${test_start}" \
   --test-end "${test_end}" \
   --universe "${STRATEGY7_UNIVERSE:-zz500}" \
   --data-root auto \
@@ -70,7 +107,7 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python
   --execution-model-type ideal_fill \
   --load-fe-mode off \
   --enable-next-bar-inference true \
-  --inference-signal-ts "${infer_date}" \
+  --inference-signal-ts "${infer_dates_csv}" \
   --inference-top-k "${STRATEGY7_INFERENCE_TOP_K:-5}" \
   --horizon "${STRATEGY7_HORIZON:-5}" \
   --top-k "${STRATEGY7_TOP_K:-5}" \
@@ -89,6 +126,7 @@ fi
 
 echo
 echo "Stock source      : ${stock_model_summary_json:-${stock_models_dir}}"
+echo "Infer dates       : ${infer_dates_csv}"
 echo "Output directory  : ${output_dir}"
 
 latest_output() {

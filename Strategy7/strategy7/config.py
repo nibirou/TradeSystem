@@ -1429,7 +1429,7 @@ def parse_args() -> argparse.Namespace:
         "--inference-signal-ts",
         type=str,
         default=None,
-        help="next-bar/快速推理指定信号日或时间；为空时使用当前加载面板中的最新时点",
+        help="next-bar/快速推理指定信号日或时间；可用英文/中文逗号传多个值；为空时使用当前加载面板中的最新时点",
     )
     g_mode.add_argument(
         "--inference-top-k",

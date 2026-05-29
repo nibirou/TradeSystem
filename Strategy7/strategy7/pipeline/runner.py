@@ -93,6 +93,75 @@ def _safe_trade_dates_from_panel(panel: pd.DataFrame, factor_freq: str) -> pd.Da
     return pd.DatetimeIndex([])
 
 
+def _parse_inference_signal_ts_values(value: object) -> List[str]:
+    raw = str(value or "").strip()
+    if not raw:
+        return []
+    cleaned = raw.strip()
+    if cleaned.startswith("[") and cleaned.endswith("]"):
+        cleaned = cleaned[1:-1]
+    for sep in ("，", "；", ";", "\n", "\r"):
+        cleaned = cleaned.replace(sep, ",")
+    out: List[str] = []
+    seen: set[str] = set()
+    for part in cleaned.split(","):
+        item = part.strip().strip("\"'")
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    return out
+
+
+def _select_inference_signal_slice(
+    *,
+    scoped: pd.DataFrame,
+    factor_freq: str,
+    requested_raw: str,
+) -> tuple[pd.Timestamp | None, pd.DataFrame, Dict[str, object]]:
+    signal_time = scoped["_signal_time"]
+    if requested_raw:
+        requested_signal = pd.to_datetime(requested_raw, errors="coerce")
+        if pd.isna(requested_signal):
+            return None, pd.DataFrame(), {
+                "enabled": True,
+                "status": "invalid_inference_signal_ts",
+                "requested_signal_ts": requested_raw,
+            }
+        requested_signal = pd.Timestamp(requested_signal)
+        if factor_freq in {"D", "W", "M"}:
+            selected_signal = requested_signal.normalize()
+            latest_df = scoped.loc[signal_time.dt.normalize() == selected_signal].copy()
+        else:
+            if requested_signal == requested_signal.normalize():
+                day_df = scoped.loc[signal_time.dt.normalize() == requested_signal.normalize()].copy()
+                if day_df.empty:
+                    selected_signal = requested_signal
+                    latest_df = day_df
+                else:
+                    selected_signal = pd.Timestamp(day_df["_signal_time"].max())
+                    latest_df = day_df.loc[day_df["_signal_time"] == selected_signal].copy()
+            else:
+                selected_signal = requested_signal
+                latest_df = scoped.loc[signal_time == selected_signal].copy()
+    else:
+        selected_signal = pd.Timestamp(signal_time.max())
+        latest_df = scoped.loc[signal_time == selected_signal].copy()
+
+    if latest_df.empty:
+        return selected_signal, latest_df, {
+            "enabled": True,
+            "status": "requested_slice_empty" if requested_raw else "latest_slice_empty",
+            "requested_signal_ts": requested_raw,
+            "signal_ts": str(selected_signal),
+        }
+    return selected_signal, latest_df, {
+        "enabled": True,
+        "status": "ok",
+        "requested_signal_ts": requested_raw,
+        "signal_ts": str(selected_signal),
+    }
+
+
 def _slice_next_bar_only_frames(
     *,
     panel: pd.DataFrame,
@@ -126,46 +195,57 @@ def _slice_next_bar_only_frames(
         train_mask = (signal_time >= train_start) & (signal_time <= train_end)
     train_df = scoped.loc[train_mask].drop(columns=["_signal_time"]).copy()
 
-    requested_raw = str(getattr(cfg.model_run, "inference_signal_ts", "") or "").strip()
-    requested_signal = pd.to_datetime(requested_raw, errors="coerce")
-    if requested_raw and pd.isna(requested_signal):
-        raise RuntimeError(f"invalid inference_signal_ts: {requested_raw}")
-    if not requested_raw:
-        requested_signal = pd.Timestamp(signal_time.max())
-    requested_signal = pd.Timestamp(requested_signal)
+    requested_values = _parse_inference_signal_ts_values(getattr(cfg.model_run, "inference_signal_ts", ""))
+    if not requested_values:
+        requested_values = [""]
+    test_slices: List[pd.DataFrame] = []
+    resolved_signals: List[pd.Timestamp] = []
+    missing_signals: List[Dict[str, object]] = []
+    seen_resolved: set[str] = set()
+    for requested_raw in requested_values:
+        selected_signal, signal_df, signal_meta = _select_inference_signal_slice(
+            scoped=scoped,
+            factor_freq=factor_freq,
+            requested_raw=requested_raw,
+        )
+        if signal_meta.get("status") == "invalid_inference_signal_ts":
+            raise RuntimeError(f"invalid inference_signal_ts: {requested_raw}")
+        if signal_df.empty or selected_signal is None:
+            missing_signals.append(signal_meta)
+            continue
+        resolved_key = str(selected_signal)
+        if resolved_key in seen_resolved:
+            continue
+        seen_resolved.add(resolved_key)
+        resolved_signals.append(pd.Timestamp(selected_signal))
+        signal_out = signal_df.drop(columns=["_signal_time"]).copy()
+        signal_out["signal_ts"] = pd.Timestamp(selected_signal)
+        signal_out["requested_signal_ts"] = requested_raw
+        test_slices.append(signal_out)
 
-    if factor_freq in {"D", "W", "M"}:
-        selected_signal = requested_signal.normalize()
-        inference_mask = signal_time.dt.normalize() == selected_signal
-    else:
-        if requested_signal == requested_signal.normalize():
-            day_mask = signal_time.dt.normalize() == requested_signal.normalize()
-            day_df = scoped.loc[day_mask].copy()
-            if day_df.empty:
-                selected_signal = requested_signal
-                inference_mask = day_mask
-            else:
-                selected_signal = pd.Timestamp(day_df["_signal_time"].max())
-                inference_mask = signal_time == selected_signal
+    test_df = pd.concat(test_slices, ignore_index=True) if test_slices else pd.DataFrame()
+    if resolved_signals:
+        first_signal = min(resolved_signals)
+        if factor_freq in {"D", "W", "M"}:
+            train_time = pd.to_datetime(train_df[time_col], errors="coerce").dt.normalize()
+            train_df = train_df.loc[train_time < first_signal.normalize()].copy()
         else:
-            selected_signal = requested_signal
-            inference_mask = signal_time == selected_signal
-
-    test_df = scoped.loc[inference_mask].drop(columns=["_signal_time"]).copy()
-    if factor_freq in {"D", "W", "M"}:
-        train_time = pd.to_datetime(train_df[time_col], errors="coerce").dt.normalize()
-        train_df = train_df.loc[train_time < selected_signal.normalize()].copy()
+            train_time = pd.to_datetime(train_df[time_col], errors="coerce")
+            train_df = train_df.loc[train_time < first_signal].copy()
     else:
-        train_time = pd.to_datetime(train_df[time_col], errors="coerce")
-        train_df = train_df.loc[train_time < selected_signal].copy()
+        first_signal = None
     meta: Dict[str, object] = {
         "mode": "next_bar_only",
         "status": "ok" if not train_df.empty and not test_df.empty else "empty_slice",
-        "requested_signal_ts": requested_raw,
-        "resolved_signal_ts": str(selected_signal),
+        "requested_signal_ts": ",".join(requested_values),
+        "requested_signal_ts_list": list(requested_values),
+        "resolved_signal_ts": str(resolved_signals[0]) if resolved_signals else "",
+        "resolved_signal_ts_list": [str(x) for x in resolved_signals],
+        "missing_signal_slices": missing_signals,
         "train_start": str(train_start),
         "train_end": str(train_end),
         "history_strictly_before_signal": True,
+        "history_cutoff_signal_ts": str(first_signal) if first_signal is not None else "",
         "train_rows": int(len(train_df)),
         "inference_rows": int(len(test_df)),
         "labels_required": False,
@@ -777,10 +857,11 @@ def _build_external_source_registry(cfg: RunConfig) -> DataSourceRegistry:
     return reg
 
 
-def _build_next_bar_inference(
+def _score_next_bar_signal_slice(
     *,
-    panel_df: pd.DataFrame,
-    factor_freq: str,
+    latest_df: pd.DataFrame,
+    latest_signal: pd.Timestamp,
+    requested_raw: str,
     factor_cols: List[str],
     stock_model,
     timing_model,
@@ -788,58 +869,22 @@ def _build_next_bar_inference(
     execution_model,
     cfg: RunConfig,
     prev_weights: Dict[str, float],
-) -> tuple[pd.DataFrame, Dict[str, object]]:
-    if panel_df.empty:
-        return pd.DataFrame(), {"enabled": True, "status": "empty_panel"}
-
-    time_col = "date" if factor_freq in {"D", "W", "M"} else "datetime"
-    if time_col not in panel_df.columns:
-        return pd.DataFrame(), {"enabled": True, "status": "missing_time_col", "time_col": time_col}
-
-    scoped = panel_df.copy()
-    scoped["_signal_time"] = pd.to_datetime(scoped[time_col], errors="coerce")
-    scoped = scoped.dropna(subset=["_signal_time", "code"]).copy()
-    if scoped.empty:
-        return pd.DataFrame(), {"enabled": True, "status": "no_valid_signal_rows"}
-
-    requested_raw = str(getattr(cfg.model_run, "inference_signal_ts", "") or "").strip()
-    if requested_raw:
-        requested_signal = pd.to_datetime(requested_raw, errors="coerce")
-        if pd.isna(requested_signal):
-            return pd.DataFrame(), {"enabled": True, "status": "invalid_inference_signal_ts", "requested": requested_raw}
-        requested_signal = pd.Timestamp(requested_signal)
-        if factor_freq in {"D", "W", "M"}:
-            latest_signal = requested_signal.normalize()
-            signal_cmp = scoped["_signal_time"].dt.normalize()
-            latest_df = scoped.loc[signal_cmp == latest_signal].copy()
-        else:
-            if requested_signal == requested_signal.normalize():
-                day_mask = scoped["_signal_time"].dt.normalize() == requested_signal.normalize()
-                day_df = scoped.loc[day_mask].copy()
-                if day_df.empty:
-                    latest_signal = requested_signal
-                    latest_df = day_df
-                else:
-                    latest_signal = pd.Timestamp(day_df["_signal_time"].max())
-                    latest_df = day_df.loc[day_df["_signal_time"] == latest_signal].copy()
-            else:
-                latest_signal = requested_signal
-                latest_df = scoped.loc[scoped["_signal_time"] == latest_signal].copy()
-    else:
-        latest_signal = pd.Timestamp(scoped["_signal_time"].max())
-        latest_df = scoped.loc[scoped["_signal_time"] == latest_signal].copy()
-    if latest_df.empty:
-        return pd.DataFrame(), {
-            "enabled": True,
-            "status": "requested_slice_empty" if requested_raw else "latest_slice_empty",
-            "requested_signal_ts": requested_raw,
-            "signal_ts": str(latest_signal),
-        }
-
+) -> tuple[pd.DataFrame, Dict[str, object], Dict[str, float]]:
     missing = [c for c in factor_cols if c not in latest_df.columns]
     if missing:
-        return pd.DataFrame(), {"enabled": True, "status": "missing_factor_cols", "missing_factor_cols": missing}
+        return (
+            pd.DataFrame(),
+            {
+                "enabled": True,
+                "status": "missing_factor_cols",
+                "requested_signal_ts": requested_raw,
+                "signal_ts": str(latest_signal),
+                "missing_factor_cols": missing,
+            },
+            dict(prev_weights),
+        )
 
+    latest_df = latest_df.copy()
     latest_df["pred_score"] = stock_model.predict_score(latest_df, factor_cols)
     latest_df["pred_up"] = (latest_df["pred_score"] >= cfg.backtest.long_threshold).astype(int)
 
@@ -900,7 +945,15 @@ def _build_next_bar_inference(
     top_n = int(getattr(cfg.model_run, "inference_top_k", cfg.backtest.top_k))
     latest_df = latest_df.head(max(top_n, 1)).copy()
     latest_df["signal_ts"] = latest_signal
+    latest_df["requested_signal_ts"] = requested_raw
 
+    next_prev_weights: Dict[str, float] = {}
+    if not executed_df.empty and "executed_weight" in executed_df.columns:
+        next_prev_weights = {
+            str(code): float(w)
+            for code, w in executed_df[["code", "executed_weight"]].itertuples(index=False, name=None)
+            if float(w) > 1e-8
+        }
     summary = {
         "enabled": True,
         "status": "ok",
@@ -913,7 +966,97 @@ def _build_next_bar_inference(
         "portfolio_diag": portfolio_diag,
         "execution_diag": execution_diag,
     }
-    return latest_df, summary
+    return latest_df, summary, next_prev_weights
+
+
+def _build_next_bar_inference(
+    *,
+    panel_df: pd.DataFrame,
+    factor_freq: str,
+    factor_cols: List[str],
+    stock_model,
+    timing_model,
+    portfolio_model,
+    execution_model,
+    cfg: RunConfig,
+    prev_weights: Dict[str, float],
+) -> tuple[pd.DataFrame, Dict[str, object]]:
+    if panel_df.empty:
+        return pd.DataFrame(), {"enabled": True, "status": "empty_panel"}
+
+    time_col = "date" if factor_freq in {"D", "W", "M"} else "datetime"
+    if time_col not in panel_df.columns:
+        return pd.DataFrame(), {"enabled": True, "status": "missing_time_col", "time_col": time_col}
+
+    scoped = panel_df.copy()
+    scoped["_signal_time"] = pd.to_datetime(scoped[time_col], errors="coerce")
+    scoped = scoped.dropna(subset=["_signal_time", "code"]).copy()
+    if scoped.empty:
+        return pd.DataFrame(), {"enabled": True, "status": "no_valid_signal_rows"}
+
+    requested_values = _parse_inference_signal_ts_values(getattr(cfg.model_run, "inference_signal_ts", ""))
+    if not requested_values:
+        requested_values = [""]
+
+    candidate_frames: List[pd.DataFrame] = []
+    item_summaries: List[Dict[str, object]] = []
+    local_prev_weights = dict(prev_weights)
+    seen_resolved: set[str] = set()
+    for requested_raw in requested_values:
+        latest_signal, latest_df, select_meta = _select_inference_signal_slice(
+            scoped=scoped,
+            factor_freq=factor_freq,
+            requested_raw=requested_raw,
+        )
+        if latest_df.empty or latest_signal is None:
+            item_summaries.append(select_meta)
+            continue
+        resolved_key = str(latest_signal)
+        if resolved_key in seen_resolved:
+            continue
+        seen_resolved.add(resolved_key)
+        signal_candidates, signal_summary, local_prev_weights = _score_next_bar_signal_slice(
+            latest_df=latest_df,
+            latest_signal=pd.Timestamp(latest_signal),
+            requested_raw=requested_raw,
+            factor_cols=factor_cols,
+            stock_model=stock_model,
+            timing_model=timing_model,
+            portfolio_model=portfolio_model,
+            execution_model=execution_model,
+            cfg=cfg,
+            prev_weights=local_prev_weights,
+        )
+        if not signal_candidates.empty:
+            candidate_frames.append(signal_candidates)
+        item_summaries.append(signal_summary)
+
+    if len(requested_values) == 1:
+        if candidate_frames:
+            return candidate_frames[0], item_summaries[0]
+        return pd.DataFrame(), item_summaries[0] if item_summaries else {"enabled": True, "status": "empty"}
+
+    combined = pd.concat(candidate_frames, ignore_index=True) if candidate_frames else pd.DataFrame()
+    ok_count = sum(1 for item in item_summaries if item.get("status") == "ok")
+    if ok_count == len(item_summaries) and ok_count > 0:
+        status = "ok"
+    elif ok_count > 0:
+        status = "partial"
+    else:
+        status = "all_failed"
+    summary = {
+        "enabled": True,
+        "status": status,
+        "requested_signal_ts": ",".join(requested_values),
+        "requested_signal_ts_list": list(requested_values),
+        "signal_count": int(len(item_summaries)),
+        "ok_signal_count": int(ok_count),
+        "signal_ts_list": [str(item.get("signal_ts", "")) for item in item_summaries if item.get("signal_ts")],
+        "candidate_count": int(len(combined)),
+        "selected_count": int(sum(int(item.get("selected_count", 0) or 0) for item in item_summaries)),
+        "items": item_summaries,
+    }
+    return combined, summary
 
 
 def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
@@ -1626,7 +1769,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             )
         log_progress(
             f"指定日纯推理切片完成：history_rows={len(train_df)}, inference_rows={len(test_df)}, "
-            f"signal_ts={label_align.get('resolved_signal_ts', '')}。",
+            f"signal_count={len(label_align.get('resolved_signal_ts_list', []) or [])}。",
             module="pipeline",
         )
     else:
@@ -2136,6 +2279,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
 
     pred_cols = [
         "signal_ts",
+        "requested_signal_ts",
         "code",
         "entry_ts",
         "exit_ts",

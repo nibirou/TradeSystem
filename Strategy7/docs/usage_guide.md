@@ -498,10 +498,12 @@ python Strategy7/run_strategy7.py `
 主入口支持在回测同时额外输出“最新信号时点”的组合推理结果（选股分数 + 择时暴露 + 组合权重 + 执行填单）：
 
 1. `--enable-next-bar-inference true`：开启
-2. `--inference-signal-ts`：指定推理信号日/时间；为空时使用当前加载面板中的最新时点
-3. `--inference-top-k`：输出候选数量（按 `pred_score` 排序）
+2. `--inference-signal-ts`：指定推理信号日/时间；为空时使用当前加载面板中的最新时点；多个日期/时点可用英文或中文逗号连接，例如 `2025-01-16,2025-01-20`
+3. `--inference-top-k`：每个信号时点最多输出候选数量（按 `pred_score` 排序）
 
-注意：即使四类模型处于 `load` 模式，`--train-start/--train-end/--test-start/--test-end` 仍然定义“本次运行加载的数据窗口”，不会被模型来源 summary 的训练/测试日期覆盖。若满足 `stock_model=load`、`--enable-next-bar-inference true` 且显式设置 `--inference-signal-ts`，主流程会进入“指定日纯推理模式”：只切出 `train_start~train_end` 中严格早于推理信号时点的样本作为当前运行历史上下文，并切出 `inference-signal-ts` 当日/当时点作为推理截面；不会生成未来标签，也不会执行历史回测、IC、分层收益诊断。因此 `test_end` 可以设置为 `inference-signal-ts` 当日或非常接近的日期，不再需要额外覆盖 `horizon + 1` 个未来交易 bar。
+注意：即使四类模型处于 `load` 模式，`--train-start/--train-end/--test-start/--test-end` 仍然定义“本次运行加载的数据窗口”，不会被模型来源 summary 的训练/测试日期覆盖。若满足 `stock_model=load`、`--enable-next-bar-inference true` 且显式设置 `--inference-signal-ts`，主流程会进入“指定日纯推理模式”：只切出 `train_start~train_end` 中严格早于最早推理信号时点的样本作为当前运行历史上下文，并切出 `inference-signal-ts` 所有日期/时点作为推理截面；不会生成未来标签，也不会执行历史回测、IC、分层收益诊断。因此 `test_end` 可以设置为最后一个推理日，不再需要额外覆盖 `horizon + 1` 个未来交易 bar。
+
+多日期推理会在一次运行中合并输出：`predictions_*.csv` 和 `next_bar_candidates_*.csv` 按 `signal_ts/requested_signal_ts` 区分日期；`next_bar_summary_*.json` 的 `items` 字段包含每个日期/时点的择时暴露、组合权重和执行诊断摘要。
 
 如果没有进入指定日纯推理模式（例如训练模式、未指定 `--inference-signal-ts`、或需要完整历史回测），主入口仍会执行标签生成和严格测试集切分，此时 `test_end` 需要比测试信号日多覆盖至少 `horizon + 1` 个可交易 bar。无论哪种模式，`train_start~train_end` 与 `lookback-days` 都建议保留足够长：它们提供滚动因子、序列模型历史 bootstrap、缺失值填充值等当前运行上下文；StockFormer 日频推理通常建议至少数百个自然日。
 

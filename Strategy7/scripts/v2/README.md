@@ -48,8 +48,8 @@
 | `run_strategy7_v2_29_train_dtlc_rl.ps1` | DTLC_RL 研究型训练模板 | 西南证券解耦时序对比强化学习模型、20 日标签/月频调仓风格 |
 | `run_strategy7_v2_30_train_lstm_madl_timing.ps1` | LSTM+MADL 择时融合训练模板 | 华福证券 LSTM 择时、MADL 损失、动态组合、真实执行 |
 | `run_strategy7_v2_31_mixed_component_modes.ps1` | 四类模型混合 train/load 模板 | 选股 train、择时从组件 models 目录 load、组合 train、执行从组件 models 目录 load |
-| `run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh` | StockFormer+LSTM 择时指定日快速推理 | 通过组件 models 目录/summary 加载 v2_27 选股模型、v2_30 择时模型；因子列按 artifact 需求自动构建 |
-| `run_strategy7_v2_33_load_stockformer_infer_day.sh` | StockFormer 指定日快速推理 | 单独加载 v2_27 StockFormer；默认使用长历史上下文，指定日纯推理无需未来标签缓冲 |
+| `run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh` | StockFormer+LSTM 择时指定日快速推理 | 通过组件 models 目录/summary 加载 v2_27 选股模型、v2_30 择时模型；支持 `--infer-dates` 多日期合并推理 |
+| `run_strategy7_v2_33_load_stockformer_infer_day.sh` | StockFormer 指定日快速推理 | 单独加载 v2_27 StockFormer；支持 `--infer-dates` 多日期合并推理，指定日纯推理无需未来标签缓冲 |
 
 ## 2) 挖掘入口模板（run_factor_mining.py）
 
@@ -154,7 +154,7 @@ bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
   - `--stock-models-load-dir / --timing-models-load-dir / --portfolio-models-load-dir / --execution-models-load-dir`
   - `--stock-models-load-run-tag / --timing-models-load-run-tag / --portfolio-models-load-run-tag / --execution-models-load-run-tag`
 - load 模板遵循“artifact 训练态 + 当前数据上下文”原则：内置选股模型按 artifact `factor_cols` 回放输入列，LSTM 择时按 checkpoint 的特征/标准化回放并用当前 `train_start~train_end` bootstrap 运行时历史；`dynamic_opt/realistic_fill/volatility_regime` 在 load 模式下需要对应 artifact，`equal_weight/ideal_fill/none` 可按确定性默认配置构建。
-- 当 `stock_model=load` 且同时设置 `--enable-next-bar-inference true --inference-signal-ts YYYY-MM-DD` 时，主流程进入指定日纯推理模式：跳过未来标签、历史回测、IC 和分层收益诊断，`test_end` 可设为推理日；`train_start~train_end` 会作为历史上下文窗口并强制裁到推理信号之前，`lookback-days` 仍应保留足够长，用于滚动因子、缺失值填充和序列模型历史上下文。
+- 当 `stock_model=load` 且同时设置 `--enable-next-bar-inference true --inference-signal-ts YYYY-MM-DD` 时，主流程进入指定日纯推理模式：跳过未来标签、历史回测、IC 和分层收益诊断，`test_end` 可设为最后一个推理日；`train_start~train_end` 会作为历史上下文窗口并强制裁到最早推理信号之前，`lookback-days` 仍应保留足够长，用于滚动因子、缺失值填充和序列模型历史上下文。多个日期可用 `--inference-signal-ts 2025-01-16,2025-01-20`，或在 v2_32/v2_33 脚本中使用 `--infer-dates 2025-01-16,2025-01-20`，输出会按 `signal_ts/requested_signal_ts` 合并到同一组 CSV/JSON。
 - `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1` / `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1` 支持：
   - `-DataRoot`（默认 `auto`，按主入口自动解析全市场数据目录）
   - `-IndexRoot`（默认空，留空则走主入口默认）
