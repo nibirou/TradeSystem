@@ -153,6 +153,7 @@ bash Strategy7/scripts/v2/run_smoke_suite_v2.sh --include-extended --skip-mining
   - `--stock-model-summary-json / --timing-model-summary-json / --portfolio-model-summary-json / --execution-model-summary-json`
   - `--stock-models-load-dir / --timing-models-load-dir / --portfolio-models-load-dir / --execution-models-load-dir`
   - `--stock-models-load-run-tag / --timing-models-load-run-tag / --portfolio-models-load-run-tag / --execution-models-load-run-tag`
+- load 模板遵循“artifact 训练态 + 当前数据上下文”原则：内置选股模型按 artifact `factor_cols` 回放输入列，LSTM 择时按 checkpoint 的特征/标准化回放并用当前 `train_start~train_end` bootstrap 运行时历史；`dynamic_opt/realistic_fill/volatility_regime` 在 load 模式下需要对应 artifact，`equal_weight/ideal_fill/none` 可按确定性默认配置构建。
 - `run_strategy7_v2_20_train_allmarket_bottom_launch_10d.ps1` / `run_strategy7_v2_21_load_allmarket_bottom_launch_10d.ps1` 支持：
   - `-DataRoot`（默认 `auto`，按主入口自动解析全市场数据目录）
   - `-IndexRoot`（默认空，留空则走主入口默认）

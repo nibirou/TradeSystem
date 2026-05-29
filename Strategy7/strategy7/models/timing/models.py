@@ -110,8 +110,15 @@ class VolatilityRegimeTimingModel(TimingModel):
         folder.mkdir(parents=True, exist_ok=True)
         pkl = folder / f"timing_vol_regime_{run_tag}.pkl"
         meta = folder / f"timing_vol_regime_{run_tag}.json"
+        # history_* is backtest runtime context, not fitted model state. Persist
+        # clean thresholds so a later load run starts from the same state as a
+        # train-then-backtest run.
+        clean_model = VolatilityRegimeTimingModel(
+            vol_threshold=float(self.vol_threshold),
+            momentum_threshold=float(self.momentum_threshold),
+        )
         with open(pkl, "wb") as f:
-            pickle.dump(self, f)
+            pickle.dump(clean_model, f)
         dump_json(
             meta,
             {
@@ -121,4 +128,3 @@ class VolatilityRegimeTimingModel(TimingModel):
             },
         )
         return {"model_pkl": str(pkl), "meta_json": str(meta)}
-

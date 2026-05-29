@@ -390,8 +390,11 @@ python Strategy7/run_strategy7.py `
 4. 兼容但不推荐的单 artifact 路径：`--stock-model-path/--timing-model-path/...`
 
 推荐优先使用组件级 summary 或组件级 models 目录。`models` 目录方式会按模型类型与 run_tag 匹配 artifact，并自动尝试读取上一级 `summary_*.json`；summary 中保存的跨机器绝对路径如果失效，会回退到当前 summary 所在目录的 `models/同名文件`。
+新保存的每个模型 `meta_json` 也会带上 `run_context`，用于在缺少父级 summary 时辅助诊断频率、标签任务、持有期、FE 等训练语义。
 
 `load` 模式参数冲突与约束：
+
+核心原则：四类模型在 `load` 模式下应复用各自训练/拟合得到的模型态，并用当前运行窗口提供同语义的输入数据与足够历史上下文。`load` 推理不要求复用来源实验的训练/测试日期，但要求输入张量语义一致，例如频率、标签目标、最终因子列、模型侧缺失值填充、择时特征标准化、组合/执行模型配置等不能被当前 CLI 悄悄改写。
 
 1. 内置选股模型 `load` 会优先读取 artifact 中保存的 `factor_cols`，并用这些列覆盖当前 `--factor-packages/--factor-list` 解析出的选股特征；择时 LSTM `load` 会提前读取 checkpoint 中的 `extra_cols/feature_cols`，并把这些额外因子加入当期面板构建。组合优化/交易执行模型不直接消费横截面 `factor_cols`；自定义模型若依赖固定特征列，需要在 artifact 或插件 `peek_factor_cols()` 中显式暴露。
 2. 来源 summary 可解析时会做配置一致性诊断：
@@ -402,16 +405,19 @@ python Strategy7/run_strategy7.py `
    - `strict`：按选股模型来源 summary 中记录的 FE 结果回放（要求 `notes.feature_engineering_summary` 存在且启用；当前不支持 `pca` 回放）。
    - `refit`：按当前样本重新拟合 FE（默认）。
    - `off`：即使 `--enable-factor-engineering true` 也跳过 FE。
-4. 选股模型 `load` 且 `strict` 模式必须能解析到选股来源 summary：优先 `--stock-model-summary-json`，兼容 `--model-summary-json`，或由 `--stock-models-load-dir` 的上一级目录自动匹配 `summary_*.json`。
+4. 选股模型 `load` 且 `strict` 模式必须能解析到选股来源 FE 摘要：优先父级 `summary_*.json`，也兼容新模型 `meta_json -> run_context.model_run.feature_engineering_summary`。
 5. 若来源选股模型启用了 `pca` 特征工程，当前版本会显式阻断；原因是历史 PCA 投影矩阵尚未作为模型状态持久化，不能安全复现推理特征。
-6. 某个组件是 `train` 时，对应该组件的 load 参数不参与该组件加载；四个组件全是 `train` 时，所有 load 专用参数会提示并忽略。
-7. 文件后缀建议：
+6. `volatility_regime` 择时、`dynamic_opt` 组合、`realistic_fill` 执行在 `load` 模式下需要对应 artifact 或 summary；只有 `timing_model_type=none`、`portfolio_model_type=equal_weight`、`execution_model_type=ideal_fill` 这类确定性默认组件可以不提供 artifact。
+7. LSTM 择时 load 后会保留 checkpoint 中的网络参数、特征列、填充值、均值/标准差等训练态；运行时历史序列会用本次 `train_start~train_end` 数据窗口重新 bootstrap，以便指定日推理使用当前日期之前的市场上下文。
+8. 动态组合和阈值择时的回测滚动历史属于运行时上下文，不会作为训练态保存；load 回测会从干净运行时状态开始，避免把上一次测试期结束状态带入下一次推理。
+9. 某个组件是 `train` 时，对应该组件的 load 参数不参与该组件加载；四个组件全是 `train` 时，所有 load 专用参数会提示并忽略。
+10. 文件后缀建议：
    - `decision_tree`：`.pkl/.pickle`
    - `factor_gcl/dafat/dfq_timesnet/dtlc_rl/stockformer`：`.pt/.pth`（同名 `.json` 是元数据/配置摘要）
    - `volatility_regime`：`.pkl/.json`
    - `lstm_madl`：`.pt/.json`
    - `dynamic_opt/realistic_fill`：`.pkl/.json`
-8. 当对应模型类型为默认无文件实现时，会忽略其路径参数：
+11. 当对应模型类型为默认无文件实现时，会忽略其路径参数：
    - `timing_model_type=none` 时不需要择时模型 artifact
    - `portfolio_model_type=equal_weight` 时不需要组合模型 artifact
    - `execution_model_type=ideal_fill` 时不需要执行模型 artifact
@@ -1234,12 +1240,16 @@ python Strategy7/run_strategy7.py `
    检查 `--enable-next-bar-inference true`，并确认最新信号时点存在可用样本（`code/time/factor` 不为空）。
 8. `model_run_mode=load` 且 `enable_factor_engineering=true` 的 FE 行为不符合预期
    显式设置 `--load-fe-mode`：`strict`（按选股来源 summary 回放）、`refit`（当前样本重拟合）、`off`（跳过 FE）。若用 `strict`，必须能解析到选股模型来源 summary（`--stock-model-summary-json`、兼容 `--model-summary-json`，或 `--stock-models-load-dir` 上一级目录的 `summary_*.json`）且源实验 FE 非 PCA。
-9. Linux 运行出现 `Segmentation fault`
+9. 非默认组件 `load` 时提示需要模型来源
+   `volatility_regime/dynamic_opt/realistic_fill` 的阈值、配置和运行边界属于模型态，load 模式需要 summary 或 models 目录。若只是想按当前配置构建，请把对应组件 run mode 设为 `train`，或改用 `none/equal_weight/ideal_fill`。
+10. 指定日推理和训练后回测结果对不上
+   先确认 `factor_freq/label_task/horizon/execution_scheme/universe` 一致；再确认 `lookback-days` 和 `train_start~train_end` 足够覆盖滚动因子、StockFormer/TimesNet 等序列模型历史 bootstrap，以及 LSTM 择时的运行时历史上下文。
+11. Linux 运行出现 `Segmentation fault`
    优先用 `run_strategy7_v2_22` 或 `run_strategy7_v2_23` 的 `--diagnose-lite` 重跑，先缩样本并切到 `csv` 路径定位是否为 parquet/native 引擎问题；脚本已默认开启 `PYTHONFAULTHANDLER=1`。
    若崩溃栈在 `pandas/io/parsers/c_parser_wrapper.py`，可显式强制文本读取走更稳解析器：`export STRATEGY7_TEXT_CSV_ENGINE=python`（当前版本默认即 python）。
-10. 日志出现 `DataFrame is highly fragmented` / `DataFrame concat FutureWarning`
+12. 日志出现 `DataFrame is highly fragmented` / `DataFrame concat FutureWarning`
    当前版本已修复基础实现（避免逐列 `insert`、空块拼接 dtype 警告，以及因子值仓库旧/新缓存合并时的 `combine_first` 告警）；若历史环境仍出现，请确认服务器代码已同步到最新。
-11. 想知道到底是哪类数据导致“加载后为空/跳过很多”
+13. 想知道到底是哪类数据导致“加载后为空/跳过很多”
    查看每次运行输出目录中的 `market_data_health.json` 与 `summary_*.json -> notes.market_source_notes`，其中包含 missing/empty/read_error 的计数和样本键值，能直接定位到数据层问题。
 
 ## 13. 性能与复现实务建议

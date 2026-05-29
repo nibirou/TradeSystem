@@ -27,7 +27,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 if [[ -z "${infer_date}" ]]; then
-  echo "Usage: bash Strategy7/scripts/v2/run_strategy7_v2_33_load_stockformer_infer_day.sh --infer-date YYYY-MM-DD [--stock-models-load-dir <models_dir>]" >&2
+  echo "Usage: bash Strategy7/scripts/v2/run_strategy7_v2_32_load_stockformer_lstm_infer_day.sh --infer-date YYYY-MM-DD [--stock-models-load-dir <models_dir>] [--timing-models-load-dir <models_dir>]" >&2
   exit 2
 fi
 
@@ -39,20 +39,9 @@ fi
 output_dir="${repo_root}/Strategy7/outputs/run_strategy7_v2_33_load_stockformer_infer_${infer_date//[^0-9]/}"
 mkdir -p "${output_dir}"
 
-date_shift() {
-  python3 -c "import datetime,sys; print((datetime.date.fromisoformat(sys.argv[1]) + datetime.timedelta(days=int(sys.argv[2]))).isoformat())" "$1" "$2"
-}
-
-# In load/inference mode these dates define the current data window, not the
-# source model's training window. Keep enough history for rolling factors and
-# StockFormer sequence bootstrap, and enough future span for the framework's
-# label-based test split when running historical day inference.
-history_days="${STRATEGY7_INFERENCE_HISTORY_DAYS:-540}"
-forward_days="${STRATEGY7_INFERENCE_FORWARD_DAYS:-90}"
-test_end="${STRATEGY7_TEST_END:-$(date_shift "${infer_date}" "${forward_days}")}"
-train_start="${STRATEGY7_TRAIN_START:-$(date_shift "${infer_date}" "-${history_days}")}"
-train_end="${STRATEGY7_TRAIN_END:-$(date_shift "${infer_date}" "-1")}"
-lookback_days="${STRATEGY7_LOOKBACK_DAYS:-252}"
+test_end="${STRATEGY7_TEST_END:-2025-01-30}"
+train_start="${STRATEGY7_TRAIN_START:-2025-01-01}"
+train_end="${STRATEGY7_TRAIN_END:-2025-01-15}"
 
 cmd=(
 python3
@@ -65,7 +54,7 @@ python3
   --data-root auto \
   --index-root "${quant_root}/data_baostock/ak_index" \
   --factor-freq "${STRATEGY7_FACTOR_FREQ:-D}" \
-  --lookback-days "${lookback_days}" \
+  --lookback-days 30 \
   --disable-text-data \
   --label-task return \
   --data-load-workers "${STRATEGY7_DATA_LOAD_WORKERS:-8}" \
@@ -73,7 +62,7 @@ python3
   --factor-value-store-root auto \
   --factor-value-store-format csv \
   --factor-value-store-workers "${STRATEGY7_FACTOR_STORE_WORKERS:-8}" \
-  --enable-factor-engineering false \
+  --enable-factor-engineering true \
   --stock-model-run-mode load \
   --stock-model-type stockformer \
   --timing-model-type none \
@@ -97,7 +86,7 @@ fi
 
 echo
 echo "Stock source      : ${stock_model_summary_json:-${stock_models_dir}}"
-echo "Data window       : train=${train_start}~${train_end}, test=${infer_date}~${test_end}, lookback_days=${lookback_days}"
+echo "Timing source     : ${timing_model_summary_json:-${timing_models_dir}}"
 echo "Output directory  : ${output_dir}"
 
 latest_output() {

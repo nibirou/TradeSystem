@@ -60,6 +60,7 @@ from ..factors.store import (
 from ..models import build_execution_model, build_portfolio_model, build_stock_model, build_timing_model
 from ..models.loading import (
     bootstrap_stock_model_history,
+    bootstrap_timing_model_history,
     load_execution_model,
     load_portfolio_model,
     load_stock_model,
@@ -235,7 +236,48 @@ def _load_component_source_summaries(cfg: RunConfig, components: set[str]) -> Di
 
 
 def _source_config_value(payload: Dict[str, object], section: str, key: str) -> object | None:
-    return _summary_nested(payload, "config", section, key)
+    value = _summary_nested(payload, "config", section, key)
+    if value is not None:
+        return value
+    return _summary_nested(payload, "run_context", section, key)
+
+
+def _attach_run_context_to_model_meta(
+    *,
+    model_files: Dict[str, Dict[str, str]],
+    cfg: RunConfig,
+    selected_factors: List[str],
+    fe_report: Dict[str, object],
+) -> None:
+    context = {
+        "factors": {
+            "factor_freq": str(cfg.factors.factor_freq),
+            "label_task": str(cfg.factors.label_task),
+            "factor_packages": str(getattr(cfg.factors, "factor_packages", "")),
+            "enable_factor_engineering": bool(getattr(cfg.factors, "enable_factor_engineering", False)),
+        },
+        "backtest": {
+            "horizon": int(cfg.backtest.horizon),
+            "execution_scheme": str(cfg.backtest.execution_scheme),
+        },
+        "model_run": {
+            "selected_factors": list(selected_factors),
+            "feature_engineering_summary": dict(fe_report),
+        },
+    }
+    for files in model_files.values():
+        meta_raw = files.get("meta_json") if isinstance(files, dict) else None
+        if not meta_raw:
+            continue
+        meta_path = Path(str(meta_raw)).expanduser()
+        if not meta_path.exists() or meta_path.suffix.lower() != ".json":
+            continue
+        try:
+            payload = _safe_read_json_dict(meta_path)
+            payload["run_context"] = context
+            dump_json(meta_path, payload)
+        except Exception as exc:
+            log_progress(f"写入模型 run_context 失败，已跳过：{meta_path} ({exc})", module="pipeline")
 
 
 def _optional_int_value(value: object) -> int | None:
@@ -938,6 +980,36 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             )
         model_paths = resolve_model_artifact_paths(cfg, components=load_components)
         model_component_source = dict(model_paths.source)
+        missing_required_sources: List[str] = []
+        if stock_model_load and not cfg.stock_model.custom_model_py and not model_paths.stock_model:
+            missing_required_sources.append("stock_model")
+        if (
+            component_run_modes["timing_model"] == "load"
+            and str(cfg.timing_model.model_type).strip().lower() != "none"
+            and not cfg.timing_model.custom_model_py
+            and not model_paths.timing_model
+        ):
+            missing_required_sources.append("timing_model")
+        if (
+            component_run_modes["portfolio_model"] == "load"
+            and str(cfg.portfolio_opt.mode).strip().lower() != "equal_weight"
+            and not cfg.portfolio_opt.custom_model_py
+            and not model_paths.portfolio_model
+        ):
+            missing_required_sources.append("portfolio_model")
+        if (
+            component_run_modes["execution_model"] == "load"
+            and str(cfg.execution_model.model_type).strip().lower() != "ideal_fill"
+            and not cfg.execution_model.custom_model_py
+            and not model_paths.execution_model
+        ):
+            missing_required_sources.append("execution_model")
+        if missing_required_sources:
+            raise RuntimeError(
+                "load 模式缺少必要模型来源："
+                + ", ".join(missing_required_sources)
+                + "。请提供对应组件 summary/models-load-dir，或将该组件 run mode 设为 train。"
+            )
         stock_load_hint_factor_cols = (
             peek_stock_model_factor_cols(cfg.stock_model, model_paths.stock_model) if stock_model_load else []
         )
@@ -1317,6 +1389,9 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         factor_list_arg=cfg.factors.factor_list,
         default_set=default_set,
     )
+    # Keep stock-model input columns separate from the broader panel build list.
+    # Timing load may require extra raw factors, but those must not leak into a
+    # stock model that is being trained or loaded with its own fixed factor_cols.
     factor_panel_cols = list(selected_factors)
     factor_names_available = set(factor_lib.names(factor_freq))
     if timing_load_hint_factor_cols:
@@ -1536,7 +1611,12 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         summary_payload = _safe_read_json_dict(summary_path)
         strict_fe = dict(summary_payload.get("notes", {}).get("feature_engineering_summary", {}) or {})
         if not strict_fe:
-            raise RuntimeError("strict FE replay requires notes.feature_engineering_summary in model summary.")
+            strict_fe = dict(_summary_nested(summary_payload, "run_context", "model_run", "feature_engineering_summary") or {})
+        if not strict_fe:
+            raise RuntimeError(
+                "strict FE replay requires notes.feature_engineering_summary in parent summary "
+                "or run_context.model_run.feature_engineering_summary in model meta_json."
+            )
         if not bool(strict_fe.get("enabled", False)):
             raise RuntimeError("strict FE replay requires source run with feature_engineering enabled.")
         strict_orth = str(strict_fe.get("orth_method", "none")).strip().lower()
@@ -1547,7 +1627,7 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             )
         strict_selected = [str(x) for x in strict_fe.get("selected_factors", []) if str(x).strip()]
         if not strict_selected:
-            raise RuntimeError("strict FE replay requires non-empty selected_factors in source summary.")
+            raise RuntimeError("strict FE replay requires non-empty selected_factors in source metadata.")
         missing_strict = [c for c in strict_selected if c not in train_df.columns or c not in test_df.columns]
         if missing_strict:
             raise RuntimeError(
@@ -1675,6 +1755,12 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         model_component_source["stock_model"] = stock_source
 
         loaded_factor_cols = stock_model_factor_cols(stock_model, fallback=selected_factors)
+        loaded_target_col = str(getattr(stock_model, "_target_col", "") or "").strip()
+        if loaded_target_col and loaded_target_col != target_col:
+            raise RuntimeError(
+                f"loaded stock model target_col={loaded_target_col} 与当前 label_task={cfg.factors.label_task} "
+                f"对应的 target_col={target_col} 不一致；请对齐 --label-task 或使用来源 summary 加载。"
+            )
         missing_loaded_factors = [c for c in loaded_factor_cols if c not in train_df.columns or c not in test_df.columns]
         if missing_loaded_factors:
             raise RuntimeError(
@@ -1718,6 +1804,8 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
             model_paths = resolve_model_artifact_paths(cfg, components=load_components)
         timing_model, timing_source = load_timing_model(cfg.timing_model, model_paths.timing_model)
         model_component_source["timing_model"] = timing_source
+        if bootstrap_timing_model_history(timing_model, history_df=train_df):
+            log_progress("timing load 模式下已用当前 train 窗口 bootstrap 择时运行时历史。", module="pipeline")
     else:
         timing_model = build_timing_model(cfg.timing_model).fit(train_df)
         model_component_source["timing_model"] = "trained"
@@ -1951,6 +2039,12 @@ def run_pipeline(cfg: RunConfig) -> Dict[str, object]:
         model_files["timing_model"] = timing_model.save(model_dir, run_tag)
         model_files["portfolio_model"] = portfolio_model.save(model_dir, run_tag)
         model_files["execution_model"] = execution_model.save(model_dir, run_tag)
+        _attach_run_context_to_model_meta(
+            model_files=model_files,
+            cfg=cfg,
+            selected_factors=selected_factors,
+            fe_report=fe_report,
+        )
         log_progress(f"模型文件保存完成：{len(model_files)} 个组件。", module="pipeline")
 
     top_factors = factor_ic_summary_df.head(10).copy() if not factor_ic_summary_df.empty else pd.DataFrame()

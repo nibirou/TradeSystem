@@ -358,7 +358,11 @@ class DynamicOptimizationPortfolioModel(PortfolioModel):
         folder.mkdir(parents=True, exist_ok=True)
         pkl = folder / f"portfolio_dynamic_{run_tag}.pkl"
         meta = folder / f"portfolio_dynamic_{run_tag}.json"
+        # state_tracker is runtime context accumulated while walking a backtest.
+        # Do not persist the end-of-test state as model state; load runs should
+        # start from the same clean optimizer state as train-then-backtest.
+        clean_model = DynamicOptimizationPortfolioModel(cfg=self.cfg)
         with open(pkl, "wb") as f:
-            pickle.dump(self, f)
+            pickle.dump(clean_model, f)
         dump_json(meta, {"model_type": "dynamic_opt", "config": self.cfg.__dict__})
         return {"model_pkl": str(pkl), "meta_json": str(meta)}

@@ -1066,6 +1066,11 @@ def load_timing_model(cfg: TimingModelConfig, model_path: str | None) -> Tuple[T
         return LSTMMADLTimingModel.load(p, cfg_obj=cfg), "artifact_file"
 
     if canonical == "volatility_regime":
+        if not model_path:
+            raise ValueError(
+                "volatility_regime timing load mode requires a timing model source "
+                "(--timing-model-summary-json or --timing-models-load-dir; compatible legacy args also work)."
+            )
         if model_path:
             p = Path(model_path).expanduser()
             if not p.exists():
@@ -1075,6 +1080,10 @@ def load_timing_model(cfg: TimingModelConfig, model_path: str | None) -> Tuple[T
                     model = pickle.load(f)
                 if not isinstance(model, TimingModel):
                     raise TypeError("timing model pickle does not contain TimingModel.")
+                if isinstance(model, VolatilityRegimeTimingModel):
+                    model.history_vol = []
+                    model.history_crowding = []
+                    model.history_momentum = []
                 return model, "artifact_file"
             if p.suffix.lower() == ".json":
                 meta = _safe_read_json(p)
@@ -1086,13 +1095,6 @@ def load_timing_model(cfg: TimingModelConfig, model_path: str | None) -> Tuple[T
                     "artifact_meta",
                 )
             raise ValueError(f"volatility_regime supports .pkl/.json model files, got: {p.suffix}")
-        return (
-            VolatilityRegimeTimingModel(
-                vol_threshold=float(cfg.vol_threshold),
-                momentum_threshold=float(cfg.momentum_threshold),
-            ),
-            "config_default",
-        )
 
     raise ValueError(f"unsupported timing model type in load mode: {cfg.model_type}")
 
@@ -1112,6 +1114,11 @@ def load_portfolio_model(cfg: PortfolioOptConfig, model_path: str | None) -> Tup
         return EqualWeightPortfolioModel(), "config_default"
 
     if canonical == "dynamic_opt":
+        if not model_path:
+            raise ValueError(
+                "dynamic_opt portfolio load mode requires a portfolio model source "
+                "(--portfolio-model-summary-json or --portfolio-models-load-dir; compatible legacy args also work)."
+            )
         if model_path:
             p = Path(model_path).expanduser()
             if not p.exists():
@@ -1121,13 +1128,14 @@ def load_portfolio_model(cfg: PortfolioOptConfig, model_path: str | None) -> Tup
                     model = pickle.load(f)
                 if not isinstance(model, PortfolioModel):
                     raise TypeError("portfolio model pickle does not contain PortfolioModel.")
+                if isinstance(model, DynamicOptimizationPortfolioModel):
+                    model.state_tracker = {"market_vol": [], "crowding": [], "style_disp": []}
                 return model, "artifact_file"
             if p.suffix.lower() == ".json":
                 meta = _safe_read_json(p)
                 merged = _coerce_dataclass_kwargs(PortfolioOptConfig, dict(meta.get("config", {}) or {}), cfg)
                 return DynamicOptimizationPortfolioModel(cfg=PortfolioOptConfig(**merged)), "artifact_meta"
             raise ValueError(f"dynamic_opt supports .pkl/.json model files, got: {p.suffix}")
-        return DynamicOptimizationPortfolioModel(cfg=cfg), "config_default"
 
     raise ValueError(f"unsupported portfolio mode in load mode: {cfg.mode}")
 
@@ -1147,6 +1155,11 @@ def load_execution_model(cfg: ExecutionModelConfig, model_path: str | None) -> T
         return IdealFillExecutionModel(), "config_default"
 
     if canonical == "realistic_fill":
+        if not model_path:
+            raise ValueError(
+                "realistic_fill execution load mode requires an execution model source "
+                "(--execution-model-summary-json or --execution-models-load-dir; compatible legacy args also work)."
+            )
         if model_path:
             p = Path(model_path).expanduser()
             if not p.exists():
@@ -1162,7 +1175,6 @@ def load_execution_model(cfg: ExecutionModelConfig, model_path: str | None) -> T
                 merged = _coerce_dataclass_kwargs(ExecutionModelConfig, dict(meta.get("config", {}) or {}), cfg)
                 return RealisticFillExecutionModel(cfg=ExecutionModelConfig(**merged)), "artifact_meta"
             raise ValueError(f"realistic_fill supports .pkl/.json model files, got: {p.suffix}")
-        return RealisticFillExecutionModel(cfg=cfg), "config_default"
 
     raise ValueError(f"unsupported execution model type in load mode: {cfg.model_type}")
 
@@ -1172,6 +1184,38 @@ def stock_model_factor_cols(model: StockSelectionModel, fallback: List[str]) -> 
     if isinstance(cols, list) and cols:
         return [str(x) for x in cols if str(x).strip()]
     return list(fallback)
+
+
+def bootstrap_timing_model_history(model: TimingModel, history_df: pd.DataFrame) -> bool:
+    """Seed load-mode timing runtime history from the current run's context window.
+
+    Learned parameters and scalers remain loaded from the artifact. Only the
+    rolling market context used to build the next inference sequence is replaced,
+    mirroring stock sequence-model bootstrapping and avoiding stale source-test
+    history from a previous backtest.
+    """
+    if history_df.empty:
+        return False
+    if isinstance(model, LSTMMADLTimingModel):
+        try:
+            raw = model._aggregate_market_raw(history_df, fit=False)
+        except Exception:
+            return False
+        if raw.empty or "_time_key" not in raw.columns:
+            return False
+        raw = raw.copy()
+        raw["_time_key"] = pd.to_datetime(raw["_time_key"], errors="coerce")
+        raw = (
+            raw.dropna(subset=["_time_key"])
+            .drop_duplicates(subset=["_time_key"], keep="last")
+            .sort_values("_time_key")
+            .tail(max(300, int(getattr(model, "_effective_seq_len", 20)) + 80))
+            .reset_index(drop=True)
+        )
+        if not raw.empty:
+            model._history_market_raw = raw
+            return True
+    return False
 
 
 def bootstrap_stock_model_history(
