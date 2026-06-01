@@ -1218,6 +1218,24 @@ def bootstrap_timing_model_history(model: TimingModel, history_df: pd.DataFrame)
     return False
 
 
+def _resolve_bootstrap_time_col(model: StockSelectionModel, history_df: pd.DataFrame) -> str | None:
+    preferred = str(getattr(model, "_time_col", "") or "").strip()
+    if preferred and preferred in history_df.columns:
+        return preferred
+    for col in ("signal_ts", "datetime", "date"):
+        if col in history_df.columns:
+            return col
+    resolver = getattr(model, "_resolve_time_col", None)
+    if callable(resolver):
+        try:
+            resolved = str(resolver(history_df))
+        except Exception:
+            resolved = ""
+        if resolved and resolved in history_df.columns:
+            return resolved
+    return None
+
+
 def bootstrap_stock_model_history(
     model: StockSelectionModel,
     history_df: pd.DataFrame,
@@ -1226,7 +1244,9 @@ def bootstrap_stock_model_history(
     if isinstance(model, FactorGCLStockModel):
         if not factor_cols:
             return
-        time_col = model._time_col or model._resolve_time_col(history_df)
+        time_col = _resolve_bootstrap_time_col(model, history_df)
+        if not time_col:
+            return
         missing = [c for c in factor_cols if c not in history_df.columns]
         if missing:
             return
@@ -1255,7 +1275,9 @@ def bootstrap_stock_model_history(
     if isinstance(model, DFQTimesNetStockModel):
         if not factor_cols:
             return
-        time_col = model._time_col or model._resolve_time_col(history_df)
+        time_col = _resolve_bootstrap_time_col(model, history_df)
+        if not time_col:
+            return
         missing = [c for c in factor_cols if c not in history_df.columns]
         if missing:
             return
@@ -1287,7 +1309,9 @@ def bootstrap_stock_model_history(
     if isinstance(model, DAFATStockModel):
         if not factor_cols:
             return
-        time_col = model._time_col or model._resolve_time_col(history_df)
+        time_col = _resolve_bootstrap_time_col(model, history_df)
+        if not time_col:
+            return
         missing = [c for c in factor_cols if c not in history_df.columns]
         if missing:
             return
@@ -1320,7 +1344,9 @@ def bootstrap_stock_model_history(
     if isinstance(model, DTLCRLStockModel):
         if not factor_cols:
             return
-        time_col = model._time_col or model._resolve_time_col(history_df)
+        time_col = _resolve_bootstrap_time_col(model, history_df)
+        if not time_col:
+            return
         missing = [c for c in factor_cols if c not in history_df.columns]
         if missing:
             return
@@ -1374,7 +1400,9 @@ def bootstrap_stock_model_history(
     if isinstance(model, StockFormerStockModel):
         if not factor_cols:
             return
-        time_col = model._time_col or model._resolve_time_col(history_df)
+        time_col = _resolve_bootstrap_time_col(model, history_df)
+        if not time_col:
+            return
         missing = [c for c in factor_cols if c not in history_df.columns]
         if missing:
             return

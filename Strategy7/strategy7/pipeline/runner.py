@@ -234,6 +234,11 @@ def _slice_next_bar_only_frames(
             train_df = train_df.loc[train_time < first_signal].copy()
     else:
         first_signal = None
+    if not train_df.empty and "signal_ts" not in train_df.columns and time_col in train_df.columns:
+        train_signal_ts = pd.to_datetime(train_df[time_col], errors="coerce")
+        if factor_freq in {"D", "W", "M"}:
+            train_signal_ts = train_signal_ts.dt.normalize()
+        train_df["signal_ts"] = train_signal_ts
     meta: Dict[str, object] = {
         "mode": "next_bar_only",
         "status": "ok" if not train_df.empty and not test_df.empty else "empty_slice",
@@ -885,6 +890,8 @@ def _score_next_bar_signal_slice(
         )
 
     latest_df = latest_df.copy()
+    if "signal_ts" not in latest_df.columns:
+        latest_df["signal_ts"] = pd.Timestamp(latest_signal)
     latest_df["pred_score"] = stock_model.predict_score(latest_df, factor_cols)
     latest_df["pred_up"] = (latest_df["pred_score"] >= cfg.backtest.long_threshold).astype(int)
 

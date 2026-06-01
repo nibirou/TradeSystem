@@ -7,7 +7,7 @@ quant_root="${QUANT_ROOT:-$(cd "${repo_root}/.." && pwd)}"
 cd "${repo_root}"
 
 infer_dates=()
-default_infer_dates="${STRATEGY7_INFER_DATES:-2025-01-16}"
+default_infer_dates="${STRATEGY7_INFER_DATES:-2025-01-16, 2025-01-17}"
 stock_model_summary_json=""
 stock_models_dir="${repo_root}/Strategy7/outputs/run_strategy7_27_train_stockformer/models"
 stock_models_run_tag=""
@@ -77,11 +77,11 @@ mkdir -p "${output_dir}"
 
 test_start="${STRATEGY7_TEST_START:-${first_infer_date}}"
 test_end="${STRATEGY7_TEST_END:-${last_infer_date}}"
-train_start="${STRATEGY7_TRAIN_START:-2024-01-01}"
-train_end="${STRATEGY7_TRAIN_END:-2024-12-31}"
+train_start="${STRATEGY7_TRAIN_START:-2025-01-01}"
+train_end="${STRATEGY7_TRAIN_END:-2025-01-15}"
 
 cmd=(
-conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python
+conda run -n "${CONDA_ENV:-quant}" --no-capture-output python
   ./Strategy7/run_strategy7.py \
   --train-start "${train_start}" \
   --train-end "${train_end}" \
@@ -91,7 +91,7 @@ conda run -n "${CONDA_ENV:-env_quant}" --no-capture-output python
   --data-root auto \
   --index-root "${quant_root}/data_baostock/ak_index" \
   --factor-freq "${STRATEGY7_FACTOR_FREQ:-D}" \
-  --lookback-days "${STRATEGY7_LOOKBACK_DAYS:-252}" \
+  --lookback-days "${STRATEGY7_LOOKBACK_DAYS:-10}" \
   --disable-text-data \
   --label-task return \
   --data-load-workers "${STRATEGY7_DATA_LOAD_WORKERS:-8}" \
