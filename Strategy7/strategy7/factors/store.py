@@ -292,15 +292,15 @@ def load_factors_from_store(
         for fac in present_cols:
             factor_present_cov[str(fac)] = max(float(factor_present_cov.get(str(fac), 0.0)), float(pkg_present_cov))
 
-    out = pd.DataFrame(index=base_df.index)
+    out_cols: Dict[str, np.ndarray] = {}
     full_cnt = 0
     partial_cnt = 0
     for fac in factors:
         if fac not in merged.columns:
-            out[str(fac)] = np.nan
+            out_cols[str(fac)] = np.full(len(base_df), np.nan, dtype="float64")
             continue
         s = pd.to_numeric(merged[fac], errors="coerce")
-        out[str(fac)] = s.to_numpy()
+        out_cols[str(fac)] = s.to_numpy(dtype="float64", copy=False)
         val_cov = float(s.notna().mean()) if len(s) else 0.0
         factor_value_cov[str(fac)] = float(val_cov)
         present_cov = float(factor_present_cov.get(str(fac), 0.0))
@@ -308,6 +308,7 @@ def load_factors_from_store(
             full_cnt += 1
         elif present_cov > 0.0:
             partial_cnt += 1
+    out = pd.DataFrame(out_cols, index=base_df.index)
     return out, {
         "loaded_factor_count": int(len(set(loaded_cols))),
         "loaded_full_count": int(full_cnt),
@@ -550,6 +551,7 @@ def hydrate_factor_panel_with_store(
         io_workers=io_workers,
     )
     need_compute: List[str] = []
+    loaded_cols: Dict[str, np.ndarray] = {}
     present_cov_map: Dict[str, float] = {
         str(k): float(v)
         for k, v in dict(load_stats.get("factor_present_coverage", {})).items()
@@ -559,10 +561,19 @@ def hydrate_factor_panel_with_store(
             need_compute.append(str(fac))
             continue
         s = pd.to_numeric(loaded_df[fac], errors="coerce")
-        panel[fac] = s.to_numpy()
+        loaded_cols[str(fac)] = s.to_numpy(dtype="float64", copy=False)
         present_cov = float(present_cov_map.get(str(fac), 0.0))
         if present_cov < float(coverage_threshold):
             need_compute.append(str(fac))
+    if loaded_cols:
+        panel = pd.concat(
+            [
+                panel.drop(columns=list(loaded_cols.keys()), errors="ignore"),
+                pd.DataFrame(loaded_cols, index=panel.index),
+            ],
+            axis=1,
+            copy=False,
+        )
 
     computed_count = 0
     if need_compute:
@@ -572,14 +583,29 @@ def hydrate_factor_panel_with_store(
             freq=freq,
             selected_factors=need_compute,
         )
+        computed_cols: Dict[str, pd.Series] = {}
         for fac in need_compute:
             computed_count += 1
             new_s = pd.to_numeric(comp_panel[fac], errors="coerce")
             if fac in panel.columns:
                 old_s = pd.to_numeric(panel[fac], errors="coerce")
-                panel[fac] = old_s.where(old_s.notna(), new_s)
+                computed_cols[str(fac)] = old_s.where(old_s.notna(), new_s)
             else:
-                panel[fac] = new_s
+                computed_cols[str(fac)] = new_s
+        if computed_cols:
+            panel = pd.concat(
+                [
+                    panel.drop(columns=list(computed_cols.keys()), errors="ignore"),
+                    pd.DataFrame(computed_cols, index=panel.index),
+                ],
+                axis=1,
+                copy=False,
+            )
+
+    if loaded_cols or need_compute:
+        # Consolidate pandas blocks after bulk column hydration so downstream
+        # preprocessing does not inherit a fragmented frame.
+        panel = panel.copy()
 
     save_stats = {"saved_factor_count": 0, "saved_code_files": 0, "span_summary_path": ""}
     if write_back:
