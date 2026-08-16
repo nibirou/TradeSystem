@@ -9,7 +9,7 @@
 ### Trading
 
 - `Data/Trading/TradingData_TDX_Optional_ED1.py`
-  - 可选依赖：`xmtdx` 或 `pytdx`
+  - 可选依赖：`xmtdx` 或 `pytdx` `mootdx` `eltdx` `tdxquant`
   - 数据：通达信 K 线、当前五档盘口快照、历史逐笔成交（取决于公共 TDX 服务器支持）
   - 保存：
     - K 线：`data_baostock/stock_hist/<pool>/<freq>/<code>_<freq>.csv|parquet`
